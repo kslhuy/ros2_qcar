@@ -141,20 +141,6 @@ class FollowingPathState(StateBase):
         self._general_obstacle_path_active = False
         self._general_last_replan = 0.0
 
-        self._prev_u = 0.0
-        self._prev_delta = 0.0
-
-    def _smooth_cmd(self, raw: float, prev: float, dt: float, alpha: float, rise_rate: float, fall_rate: float) -> float:
-        if prev is None or dt <= 1e-6:
-            return raw
-
-        if raw > prev:
-            limited = min(raw, prev + rise_rate * dt)
-        else:
-            limited = max(raw, prev - fall_rate * dt)
-
-        return alpha * prev + (1.0 - alpha) * limited
-
     def _init_controllers(self, force: bool = False):
         """
         Initialize controllers for this state using ControllerManager.
@@ -993,6 +979,7 @@ class FollowingPathState(StateBase):
 
         # dt_safe = max(float(dt), 1e-3)
         dt_safe = max(float(dt), 1e-3)
+        speed_target = self._condition_path_speed_target(speed_target, dt_safe)
         u = self._compute_speed_control(
             velocity,
             dt_safe,
@@ -1032,7 +1019,7 @@ class FollowingPathState(StateBase):
 
             # Check if enabled in config
             if not settings.enabled:
-                # self.logger.logger.info("[PATH] Lane Fusion disabled in config")
+                self.logger.logger.info("[PATH] Lane Fusion disabled in config")
                 self._lane_fusion_enabled = False
                 return
 
@@ -1346,25 +1333,7 @@ class FollowingPathState(StateBase):
         self._monitor_progress()
 
         # Periodic logging
-        # Apply unified command smoothing
-        if hasattr(self.vehicle_logic, "controller_manager"):
-            cm = self.vehicle_logic.controller_manager
-            if hasattr(cm, "config") and hasattr(cm.config, "get_command_smoothing_config"):
-                smooth_cfg = cm.config.get_command_smoothing_config()
-                long_cfg = smooth_cfg.get("longitudinal", {})
-                lat_cfg = smooth_cfg.get("lateral", {})
-
-                u = self._smooth_cmd(u, self._prev_u, dt, 
-                                     long_cfg.get("alpha", 0.7),
-                                     long_cfg.get("rise_rate", 0.25),
-                                     long_cfg.get("fall_rate", 0.40))
-                delta = self._smooth_cmd(delta, self._prev_delta, dt,
-                                         lat_cfg.get("alpha", 0.8),
-                                         lat_cfg.get("rise_rate", 1.0),
-                                         lat_cfg.get("fall_rate", 1.0))
-                
-        self._prev_u = u
-        self._prev_delta = delta
+        self._periodic_logging(x, y, theta, velocity, u, delta)
 
         return u, delta, None
 
@@ -1506,6 +1475,34 @@ class FollowingPathState(StateBase):
 
         return False
 
+    def _condition_path_speed_target(self, target_speed: float, dt: float) -> float:
+        """
+        Apply simple slew-rate limiting to the path speed target.
+
+        PP-map can change its local target quickly when the nearest waypoint,
+        lateral error, or curvature window changes. A small rate limit makes
+        the commanded reference easier to follow before it is passed to the
+        longitudinal controller.
+        """
+        target_speed = max(float(target_speed), 0.0)
+
+        if self._path_speed_target_filtered is None or dt <= 1e-6:
+            self._path_speed_target_filtered = target_speed
+            return target_speed
+
+        rise_rate = float(self.pp_map_params.get("target_speed_rise_rate", 0.8))
+        fall_rate = float(self.pp_map_params.get("target_speed_fall_rate", 1.2))
+        max_step_up = max(rise_rate, 0.0) * dt
+        max_step_down = max(fall_rate, 0.0) * dt
+        current = float(self._path_speed_target_filtered)
+
+        if target_speed > current:
+            current = min(current + max_step_up, target_speed)
+        else:
+            current = max(current - max_step_down, target_speed)
+
+        self._path_speed_target_filtered = max(current, 0.0)
+        return self._path_speed_target_filtered
 
     def _compute_speed_control(
         self,
@@ -1594,7 +1591,12 @@ class FollowingPathState(StateBase):
             return 0.0
 
         # Primary: Waypoint-based steering (global path following)
-        p = np.array([x, y])
+        # Add lookahead point slightly ahead of vehicle
+        lookahead_offset = 0.2  # meters
+        p = (
+            np.array([x, y])
+            + np.array([np.cos(theta), np.sin(theta)]) * lookahead_offset
+        )
         waypoint_steering = self.steering_controller.update(
             p, theta, max(velocity, 0.1)
         )

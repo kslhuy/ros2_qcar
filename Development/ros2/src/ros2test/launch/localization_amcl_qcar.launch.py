@@ -15,7 +15,7 @@ def generate_launch_description():
     qcar2_share = get_package_share_directory('qcar2_nodes')
     ros2test_share = get_package_share_directory('ros2test')
 
-    default_map_yaml = '/home/nvidia/Documents/qcar2/Development/ros2/src/ros2test/map/my_new_map2.yaml'
+    default_map_yaml = '/home/nvidia/Documents/qcar2/Development/ros2/src/ros2test/map/outlab.yaml'
     default_params_file = os.path.join(qcar2_share, 'config', 'qcar2_slam_and_nav.yaml')
     default_ekf_params_file = os.path.join(ros2test_share, 'config', 'qcar_amcl_ekf.yaml')
     default_rf2o_params_file = os.path.join(ros2test_share, 'config', 'qcar_rf2o.yaml')

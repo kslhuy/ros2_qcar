@@ -63,9 +63,11 @@ This implementation is part of the QCar Multi-Vehicle Research Project and suppo
 | **Influence Capping** | No single neighbor can exceed a configurable weight cap (default 40%) |
 | **EMA Smoothing** | Temporal stability for both trust scores and consensus weights |
 | **Generalized Trust Vector O_i(j)** | Multi-hop trust propagation via weighted median aggregation of neighbor opinions |
+| **Prediction-Only Mode** | MATLAB-parity switching: when normal estimates diverge too much from dynamics prediction, the system isolates suspicious data by relying on dynamics alone |
 | **Contamination Rollback** | When a vehicle is newly flagged as malicious, the system replays the last N steps while excluding that vehicle's contributions |
 | **Physical & Temporal Validation** | Optional kinematic plausibility gates (max velocity, acceleration, jerk) and one-step motion-prediction consistency checks |
 | **Trust Decay on Packet Loss** | Local and global trust decay separately with configurable λ when beacons are missed, with a minimum floor to prevent irreversible collapse |
+| **Self-Belief** | Aggregated estimation confidence metric across all targets, used for system-level health monitoring |
 | **Non-Blocking CSV Logger** | Dedicated `TrustWeightLogger` writes per-vehicle trust/weight/estimation data to CSV in a background thread |
 | **Pluggable Architecture** | Drop-in replacement for other fleet estimators via `FleetStateEstimatorBase` inheritance |
 
@@ -132,8 +134,10 @@ TrustbasedDistributedObserver/
 │  │              + L · (dynamics_pred − x̂_old(T))        [if no direct]    │   │
 │  │                                                                        │   │
 │  │  Additional stages:                                                    │   │
+│  │  • Prediction-only mode switch  (MATLAB-parity)                        │   │
 │  │  • Contamination rollback       (trust-triggered replay)               │   │
 │  │  • State constraints            (angle wrap, velocity/accel clamp)     │   │
+│  │  • Self-belief computation      (mean estimation confidence)           │   │
 │  └────────────────────────────────────────────────────────────────────────┘   │
 │             │                                                                 │
 │             ▼                                                                 │
@@ -198,6 +202,14 @@ flowchart TD
         F5["x̂_new = x̂_old + total_correction"]
         F6["Apply state constraints"]
     end
+
+    subgraph "7 — Prediction Mode"
+        G1{"use_predict_observer?"}
+        G2["Compare normal_est vs dynamics_pred<br/>against similarity_tolerances"]
+        G3["Switch to prediction-only mode<br/>if normal est diverges too much<br/>(isolate suspicious V2V data)"]
+        G4["Blend or use prediction-only<br/>depending on divergence severity"]
+    end
+
     subgraph "8 — Rollback"
         H1{"rollback_enabled?"}
         H2["Store per-step contributions<br/>in rolling buffer"]
@@ -222,7 +234,10 @@ flowchart TD
     D1 -->|no| E1
     E1 --> E2 --> F1
     F1 --> F2 --> F3 --> F4 --> F5 --> F6
-    F6 --> H1
+    F6 --> G1
+    G1 -->|yes| G2 --> G3 --> G4
+    G1 -->|no| H1
+    G4 --> H1
     H1 -->|yes| H2 --> H3
     H3 -->|yes| H4 --> I1
     H3 -->|no| I1
@@ -508,6 +523,16 @@ v_new = v + throttle · dt
 a_new = throttle / dt
 ```
 
+#### Prediction-Only Mode (MATLAB Parity)
+
+When `use_predict_observer: true`, the system compares `normal_est` (from consensus) against `predicted_est` (from dynamics). If they differ by more than `similarity_tolerances`, the system enters prediction-only mode:
+
+- Normal mode requires **n_good** consecutive passes before trust
+- In prediction-only mode: if mismatch is moderate (< `blend_thresh`), **blend** normal and predicted estimates; otherwise use pure prediction
+- After `max_predict_only_time` seconds in prediction-only mode, force recovery
+
+This isolates the estimator from suspicious V2V data while still allowing recovery.
+
 #### Contamination Rollback
 
 When `rollback_enabled: true`, the system maintains a rolling buffer of the last `rollback_window_size` update steps, storing the per-target contribution breakdown (direct, each neighbor, dynamics). When a vehicle's trust drops below the threshold for the first time:
@@ -633,6 +658,13 @@ observer:
   consensus_gain: 0.2                    # Consensus correction gain (Kalman variant)
   attack_mitigation: true
 
+  # Prediction-only switch
+  use_predict_observer: true
+  max_predict_only_time: 3.0
+  n_good: 3
+  blend_thresh: 3.0
+  similarity_tolerances: [3.5, 2.0, 0.13962634, 2.0, 1.0]
+
   # Contamination rollback
   rollback_enabled: true
   rollback_window_size: 15
@@ -695,6 +727,7 @@ estimator = create_trust_based_estimator(
         },
         'observer_gain': 0.1,
         'attack_mitigation': True,
+        'use_predict_observer': True,
         'rollback_enabled': True,
     }
 )
@@ -721,9 +754,10 @@ while running:
 
     # 3. Access trust information
     trust_scores = estimator.get_all_trust_scores()        # {vid: float}
-    attack_flags = estimator.get_attack_flags()              # {vid: {flag: bool}}
+    attack_flags = estimator.get_attack_flags()            # {vid: {flag: bool}}
     trust_vector = estimator.get_generalized_trust_vector()  # O_i(j)
-    weights = estimator.get_current_weights()                # np.ndarray
+    self_belief = estimator.get_self_belief()               # float
+    weights = estimator.get_current_weights()               # np.ndarray
 
     # 4. Check for attacks
     for vid, flags in attack_flags.items():
@@ -761,6 +795,8 @@ observer = VehicleObserver(
 | `is_vehicle_trusted(vid)` | `vehicle_id: int` | `bool` | Whether a vehicle is trusted |
 | `get_attack_flags()` | — | `Dict[int, Dict[str, bool]]` | Attack flags per vehicle |
 | `get_current_weights()` | — | `np.ndarray` | Current consensus weight array |
+| `get_self_belief()` | — | `float` | Self-belief (mean estimation confidence) |
+| `is_vehicle_in_prediction_mode(vid)` | `vehicle_id: int` | `bool` | Whether target is in prediction-only mode |
 | `get_statistics()` | — | `Dict` | Update counts, attack stats, rollback stats |
 | `add_neighbor_trust_report()` | `reporter_id, target_id, trust` | `None` | Feed cross-validation trust report |
 | `reset()` | — | `None` | Full reset of estimator, trust, weights, rollback |
@@ -820,7 +856,8 @@ When `attack_mitigation: true`:
 
 1. **Influence reduction**: Flagged vehicles' trust scores are immediately halved (×0.5)
 2. **Weight recomputation**: Weights are recalculated *after* trust reduction, automatically reducing the flagged vehicle's contribution
-3. **Contamination rollback**: If enabled, newly flagged vehicles trigger a full replay that excludes their historical contributions
+3. **Prediction-mode isolation**: If enabled, the prediction-only mode further isolates suspicious data by preferring dynamics predictions
+4. **Contamination rollback**: If enabled, newly flagged vehicles trigger a full replay that excludes their historical contributions
 
 ### Checking Attacks Programmatically
 
@@ -862,7 +899,7 @@ estimator = create_trust_based_estimator(
 # In fleet_state_estimators.py, register:
 from Observer.TrustbasedDistributedObserver import (
     TrustBasedFleetEstimator,
-    
+    TrustBasedKalmanEstimator
 )
 
 ESTIMATOR_TYPES = {
@@ -870,6 +907,7 @@ ESTIMATOR_TYPES = {
     'distributed_kalman': DistributedKalmanEstimator,
     'distributed_luenberger': DistributedLuenbergerEstimator,
     'trust_consensus': TrustBasedFleetEstimator,
+    'trust_kalman': TrustBasedKalmanEstimator,
 }
 ```
 
@@ -927,6 +965,7 @@ python plot_trust_data.py
 ### v2.0.0 (2026-03)
 - **Paper weight mode** (`weight_type: paper`) with bounded LN-set normalization
 - **Generalized trust vector** O_i(j) with weighted-median multi-hop propagation
+- **Prediction-only mode** (MATLAB parity) for suspicious data isolation
 - **Contamination rollback** with trust-triggered replay excluding malicious sources
 - **Paper-style distributed trust** (γ_host × γ_local × γ_self via Mahalanobis)
 - **Physical constraints & temporal consistency gates**
@@ -1012,8 +1051,9 @@ flowchart TD
         E8["<b>Prediction mode switch</b><br/>Compare normal vs predicted est<br/>→ blend/switch if needed"]
     end
 
-    subgraph STEP5["⑤ Logging"]
-        SB1["Log trust, weights, fleet estimates"]
+    subgraph STEP5["⑤ Self-Belief & Logging"]
+        SB1["self_belief = mean(confidence scores)"]
+        SB2["Log trust, weights, fleet estimates"]
     end
 
     subgraph STEP6["⑥ Contamination Rollback"]
@@ -1111,8 +1151,11 @@ For each target vehicle `j ≠ self`:
    ```
 5. **Final update**: `x̂_new = x̂_old + Δ_direct + Δ_neighbors + Δ_dyn`
 6. **State constraints**: wrap θ to [-π,π], clamp velocity ∈ [-2,2], accel ∈ [-5,5]
-### ⑤ **Logging**
-- Log all trust scores, weights, and fleet estimates
+7. **Prediction mode switch**: compare `normal_est` vs `predicted_est` → output confidence, optionally blend
+
+### ⑤ **Self-Belief & Logging**
+- `self_belief = mean(per-target confidences)` — how well consensus matches dynamics
+- Log all trust scores, weights, fleet estimates, prediction modes
 
 ### ⑥ **Contamination Rollback** ([ContaminationRollback](cci:2://file:///c:/Users/Quang%20Huy%20Nugyen/Desktop/PHD_paper/Simulation/QCAR/QCar2_Cran/Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/TrustbasedDistributedObserver/contamination_rollback.py:13:0-195:68))
 - Record the step's components (direct delta, neighbor deltas, dynamics delta) in a rolling buffer
@@ -1135,4 +1178,3 @@ x̂_i^(j)[k+1] = x̂_i^(j)[k]
 ```
 
 Where weights `w0, w_l` are **trust-modulated** via the TriP model + Dirichlet levels.
-

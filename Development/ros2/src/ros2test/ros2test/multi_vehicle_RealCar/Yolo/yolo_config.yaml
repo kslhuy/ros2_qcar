@@ -14,7 +14,7 @@ server:
   probing: false
   show_image: true
   show_lane_debug: false
-  show_obstacle_box: false
+  show_obstacle_box: true
 
 ports:
   data_port_base: 18660
@@ -41,8 +41,6 @@ yolo:
     name: botsort.yaml
   postprocess:
     clipping_distance_m: 10.0
-    # Positive values are subtracted from published YOLO distances.
-    distance_offset_m: 0.20
 
 sign_filter:
   invert_lr: false

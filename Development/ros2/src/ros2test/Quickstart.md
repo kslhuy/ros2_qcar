@@ -7,6 +7,7 @@ The current package name is `ros2test`. Older examples that use
 
 ```bash
 cd /home/nvidia/Documents/qcar2/Development/ros2
+colcon build --packages-select qcar2_interfaces
 colcon build --packages-select qcar2_nodes
 colcon build --packages-select ros2test
 
@@ -51,7 +52,9 @@ ros2 run ros2test vehicle_main_ros_qcar --ros-args -p car_id:=0 -p host:=192.168
 ros2 run ros2test vehicle_main_ros_qcar --ros-args -p car_id:=1 -p host:=192.168.2.200 -p v_ref:=0.6 -p vehicle_type:=Qcar
 ```
 
+```bash
 ros2 run ros2test vehicle_main_ros_qcar --ros-args -p car_id:=2 -p host:=192.168.2.200 -p v_ref:=0.6 -p vehicle_type:=Qcar
+  ```                                                                                             
 
 
 After AMCL starts, publish an initial pose in RViz or from your helper so the
@@ -202,7 +205,7 @@ After the map looks good in RViz:
 cd /home/nvidia/Documents/qcar2/Development/ros2
 source /opt/ros/humble/setup.bash
 source install/setup.bash
-ros2 service call /write_state cartographer_ros_msgs/srv/WriteState "{filename: '/home/nvidia/Documents/qcar2/Development/ros2/src/ros2test/map/my_new_map.pbstream', include_unfinished_submaps: false}"
+ros2 service call /write_state cartographer_ros_msgs/srv/WriteState "{filename: '/home/nvidia/Documents/qcar2/Development/ros2/src/ros2test/map/outlab.pbstream', include_unfinished_submaps: false}"
 ```
 
 ### Export `.yaml` and `.pgm`
@@ -212,8 +215,8 @@ Convert the saved Cartographer state into a standard ROS map:
 ```bash
 source /opt/ros/humble/setup.bash
 /opt/ros/humble/lib/cartographer_ros/cartographer_pbstream_to_ros_map \
-  -pbstream_filename /home/nvidia/Documents/qcar2/Development/ros2/src/ros2test/map/my_new_map2.pbstream \
-  -map_filestem /home/nvidia/Documents/qcar2/Development/ros2/src/ros2test/map/my_new_map \
+  -pbstream_filename /home/nvidia/Documents/qcar2/Development/ros2/src/ros2test/map/outlab.pbstream \
+  -map_filestem /home/nvidia/Documents/qcar2/Development/ros2/src/ros2test/map/outlab \
   -resolution 0.05
 ```
 

@@ -14,6 +14,7 @@ data_logs/
 Development/ros2/build/
 Development/ros2/install/
 Development/ros2/log/
+Development/ros2/scope_recordings/
 Development/ros2/src/ros2test/ros2test/multi_vehicle_RealCar/data_logs
 Development/ros2/src/ros2test/ros2test/multi_vehicle_RealCar/Observer/LocalNeuralObs/neural_obs_recordings
 ros2/src/ros2test/ros2test/qcar/data_logs
@@ -22,7 +23,6 @@ docker/libraries/resources/pretrained_models/
 docker/libraries/resources/pretrained_models/yolov8s-seg.engine
 docker/libraries/resources/pretrained_models/yolov8s-seg.onnx
 docker/libraries/resources/pretrained_models/yolov8s-seg.pt
-
 
 
 .history

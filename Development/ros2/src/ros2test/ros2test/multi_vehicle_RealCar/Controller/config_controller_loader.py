@@ -87,85 +87,6 @@ class ControllerConfig:
             self.get_lateral_controller_type(),  # legacy fallback
         )
 
-    def get_leader_reverse_follow_config(self) -> Dict[str, Any]:
-        """Get reverse-follow safety config for Following Leader state."""
-        reverse_cfg = self.config.get("leader_reverse_follow", {})
-        return {
-            "enabled": reverse_cfg.get("enabled", False),
-            "trigger_velocity_threshold": reverse_cfg.get(
-                "trigger_velocity_threshold", -0.03
-            ),
-            "max_reverse_throttle": reverse_cfg.get("max_reverse_throttle", 0.08),
-            "max_reverse_speed": reverse_cfg.get("max_reverse_speed", 0.12),
-            "min_gap": reverse_cfg.get("min_gap", 0.20),
-            "max_gap": reverse_cfg.get("max_gap", 0.90),
-            "max_heading_error_deg": reverse_cfg.get(
-                "max_heading_error_deg", 20.0
-            ),
-            "reverse_steering_gain": reverse_cfg.get("reverse_steering_gain", 0.5),
-            "stop_on_v2v_loss": reverse_cfg.get("stop_on_v2v_loss", True),
-        }
-
-    def get_leader_sensor_acc_config(self) -> Dict[str, Any]:
-        """Get optional YOLO-distance ACC blend config for Following Leader."""
-        sensor_acc_cfg = self.config.get("leader_sensor_acc", {})
-        return {
-            "enabled": sensor_acc_cfg.get("enabled", False),
-            "blend_alpha": sensor_acc_cfg.get("blend_alpha", 0.7),
-            "desired_distance": sensor_acc_cfg.get("desired_distance", 0.35),
-            "time_headway": sensor_acc_cfg.get("time_headway", 0.0),
-            "distance_gain": sensor_acc_cfg.get("distance_gain", 1.0),
-            "min_target_velocity": sensor_acc_cfg.get("min_target_velocity", 0.0),
-            "max_target_velocity": sensor_acc_cfg.get("max_target_velocity", 0.8),
-            "stop_distance": sensor_acc_cfg.get("stop_distance", 0.20),
-            "max_distance": sensor_acc_cfg.get("max_distance", 2.0),
-            "max_offset": sensor_acc_cfg.get("max_offset", 0.75),
-            "distance_smoothing": sensor_acc_cfg.get("distance_smoothing", 0.6),
-        }
-
-    def get_leader_longitudinal_state_source_config(self) -> Dict[str, Any]:
-        """Get leader-state source selection for FOLLOWING_LEADER longitudinal control."""
-        source_cfg = self.config.get("leader_longitudinal_state_source", {})
-        mode = str(source_cfg.get("mode", "direct_v2v_attacked")).strip().lower()
-        legacy_mode_map = {
-            "direct_v2v": "direct_v2v_attacked",
-            "v2v": "direct_v2v_attacked",
-            "clean_v2v": "direct_v2v_clean",
-            "attacked_v2v": "direct_v2v_attacked",
-        }
-        mode = legacy_mode_map.get(mode, mode)
-        if mode not in {
-            "direct_v2v_attacked",
-            "direct_v2v_clean",
-            "fleet_estimator",
-        }:
-            mode = "direct_v2v_attacked"
-
-        return {
-            "mode": mode,
-            "fallback_to_v2v": source_cfg.get("fallback_to_v2v", True),
-        }
-
-    def get_command_smoothing_config(self) -> Dict[str, Dict[str, float]]:
-        """Get command smoothing filter parameters."""
-        cfg = self.config.get("command_smoothing", {})
-        
-        long_cfg = cfg.get("longitudinal", {})
-        lat_cfg = cfg.get("lateral", {})
-        
-        return {
-            "longitudinal": {
-                "alpha": float(long_cfg.get("alpha", 0.7)),
-                "rise_rate": float(long_cfg.get("rise_rate", 0.25)),
-                "fall_rate": float(long_cfg.get("fall_rate", 0.40)),
-            },
-            "lateral": {
-                "alpha": float(lat_cfg.get("alpha", 0.8)),
-                "rise_rate": float(lat_cfg.get("rise_rate", 1.0)),
-                "fall_rate": float(lat_cfg.get("fall_rate", 1.0)),
-            }
-        }
-
     def get_available_longitudinal_types(self) -> list:
         """Get list of available longitudinal controller types based on config"""
         types = []
@@ -294,20 +215,12 @@ class ControllerConfig:
             "brake_smoothing": cacc_config.get("brake_smoothing", 0.5),
             "max_acc_rate": cacc_config.get("max_acc_rate", 2.0),
             "use_feedforward": cacc_config.get("use_feedforward", False),
-            "ff_gain": cacc_config.get("ff_gain", 0.1 / 0.62),
             "leader_acceleration_weight": cacc_config.get(
                 "leader_acceleration_weight",
                 cacc_config.get("leader_acceleration_gain", 0.0),
             ),
             "leader_acceleration_gain": cacc_config.get(
                 "leader_acceleration_gain", 0.0
-            ),
-            "target_velocity_weight": cacc_config.get("target_velocity_weight", 0.0),
-            "target_velocity_gap_window": cacc_config.get(
-                "target_velocity_gap_window", 0.15
-            ),
-            "target_velocity_turn_scale": cacc_config.get(
-                "target_velocity_turn_scale", 0.35
             ),
             "limo_max_speed": cacc_config.get("limo_max_speed", 0.8),
             "limo_max_accel": cacc_config.get("limo_max_accel", 0.4),
@@ -340,15 +253,6 @@ class ControllerConfig:
             "min_throttle": pid_config.get("min_throttle", 0.0),
             "ei_max": pid_config.get("ei_max", 1.0),
             "v_ref": pid_config.get("v_ref", 0.6),
-            "limo_max_accel": pid_config.get("limo_max_accel", 1.0),
-            "limo_max_decel": pid_config.get("limo_max_decel", 1.0),
-            "limo_max_speed": pid_config.get("limo_max_speed", 3.0),
-            "limo_stop_speed_threshold": pid_config.get(
-                "limo_stop_speed_threshold", 0.05
-            ),
-            "limo_stop_command_threshold": pid_config.get(
-                "limo_stop_command_threshold", 0.1
-            ),
         }
 
     def _get_qcar2_speed_params(self) -> Dict[str, Any]:
@@ -429,12 +333,6 @@ class ControllerConfig:
             "curvature_threshold": pp_config.get("curvature_threshold", 0.3),
             "turn_lookahead_offset": pp_config.get("turn_lookahead_offset", 0.1),
             "turn_lookahead_gain": pp_config.get("turn_lookahead_gain", 1.5),
-            "turn_preview_cap": pp_config.get("turn_preview_cap", 0.05),
-            "heading_alignment_gain": pp_config.get("heading_alignment_gain", 0.0),
-            "heading_alignment_window_deg": pp_config.get(
-                "heading_alignment_window_deg", 45.0
-            ),
-            "heading_preview_cap": pp_config.get("heading_preview_cap", 0.0),
         }
 
     def _get_stanley_params(self) -> Dict[str, Any]:
@@ -445,10 +343,6 @@ class ControllerConfig:
             "k_e": stanley_config.get("k_e", 0.5),
             "k_soft": stanley_config.get("k_soft", 1.0),
             "max_steering": stanley_config.get("max_steering", 0.5),
-            "lookahead_distance": stanley_config.get("lookahead_distance", 0.0),
-            "position_lookahead_offset": stanley_config.get(
-                "position_lookahead_offset", 0.2
-            ),
         }
 
     def _get_pp_map_params(self) -> Dict[str, Any]:

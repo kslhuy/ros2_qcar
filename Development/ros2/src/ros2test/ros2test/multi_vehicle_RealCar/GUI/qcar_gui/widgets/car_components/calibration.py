@@ -209,15 +209,6 @@ class CalibrationControl(BaseWidget):
             pady=2,
         ).pack(side="left", expand=True, fill="x", padx=1)
 
-        ThemedButton(
-            row2,
-            text="Disconnect",
-            button_type="secondary",
-            command=self._disconnect_passive,
-            padx=5,
-            pady=2,
-        ).pack(side="left", expand=True, fill="x", padx=1)
-
         # Row 3: Active Controls
         row3 = tk.Frame(content, bg=c.bg_medium)
         row3.pack(fill="x")
@@ -268,24 +259,13 @@ class CalibrationControl(BaseWidget):
         if self.callbacks.on_clear_online_calibration:
             self.callbacks.on_clear_online_calibration(self.car_id)
 
-    def _disconnect_passive(self):
-        if self.callbacks.on_disconnect_online_calibration:
-            self.callbacks.on_disconnect_online_calibration(self.car_id)
-
     def _trigger_active(self):
         if self.callbacks.on_trigger_active_calibration:
             cal_type = self._cal_type_var.get()
             self.callbacks.on_trigger_active_calibration(self.car_id, cal_type, {})
 
-    def update_status(self, calib_status: dict) -> None:
-        if not self._status_label or not calib_status:
-            return
-
-        zmq_status = calib_status.get("zmq", {})
-        if not zmq_status:
-            self._status_label.config(
-                text="Passive Status: Offline", fg=self.theme.colors.fg_muted
-            )
+    def update_status(self, zmq_status: dict) -> None:
+        if not self._status_label or not zmq_status:
             return
 
         is_running = zmq_status.get("running", False)
@@ -460,4 +440,5 @@ class RobustDatasetControl(BaseWidget):
             self._buttons["stop"].set_enabled(False)
             self._buttons["save"].set_enabled(False)
             self._buttons["discard"].set_enabled(False)
+
 

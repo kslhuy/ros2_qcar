@@ -45,6 +45,7 @@ from Observer.TrustbasedDistributedObserver.weight_trust_module import (
 
 from Observer.TrustbasedDistributedObserver.trust_based_fleet_estimator import (
     TrustBasedFleetEstimator,
+    TrustBasedKalmanEstimator,
     create_trust_based_estimator
 )
 
@@ -63,6 +64,7 @@ __all__ = [
     
     # Fleet Estimators
     'TrustBasedFleetEstimator',
+    'TrustBasedKalmanEstimator',
     'create_trust_based_estimator',
 ]
 

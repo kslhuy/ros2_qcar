@@ -1,0 +1,16 @@
+mass: 3.4,
+C_w: 0.3,
+R_d: Optional[float] = None,
+tau: Optional[float] = None,
+mu: float = DEFAULT_MU,
+g: float = DEFAULT_G,
+# --- control parameters ---
+alpha: 1,
+beta: 2,
+v_h: float = 0.0,
+v_max: float = DEFAULT_V_MAX,
+s_st: float = DEFAULT_S_ST,
+s_go: float = DEFAULT_S_GO,
+# --- output mapping ---
+max_throttle: float = 0.3,
+torque_to_throttle: float = 0.02,

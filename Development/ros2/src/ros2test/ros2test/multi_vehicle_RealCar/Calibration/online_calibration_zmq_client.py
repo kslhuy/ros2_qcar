@@ -32,7 +32,7 @@ STATUS_RCVHWM = 64
 class OnlineCalibrationZMQClient:
     """Vehicle-side ZMQ transport for external calibration worker."""
 
-    SAMPLE_SIZE = 12  # [v, throttle, steering, yaw_rate, ax, ay, az, x, y, theta, a_ref, v_raw]
+    SAMPLE_SIZE = 7  # [v, throttle, steering, yaw_rate, ax, ay, az]
 
     def __init__(
         self,
@@ -148,9 +148,6 @@ class OnlineCalibrationZMQClient:
 
     def clear_buffer(self) -> bool:
         return self.send_command("clear")
-
-    def request_status(self) -> bool:
-        return self.send_command("status")
 
     def trigger_analyse(
         self,

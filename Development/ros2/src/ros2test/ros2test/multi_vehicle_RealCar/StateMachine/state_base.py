@@ -237,16 +237,11 @@ class StateBase:
             # Handle V2V activation
             peer_vehicles = data.get("peer_vehicles", [])
             peer_ips = data.get("peer_ips", [])
-            time_reference = data.get("time_reference")
-            vehicle_manifest = data.get("vehicle_manifest")
 
             if peer_vehicles and peer_ips:
                 if hasattr(self.vehicle_logic, "v2v_manager"):
                     success = self.vehicle_logic.v2v_manager.activate_v2v(
-                        peer_vehicles,
-                        peer_ips,
-                        time_reference=time_reference,
-                        vehicle_manifest=vehicle_manifest,
+                        peer_vehicles, peer_ips
                     )
                     if success and self.logger:
                         self.logger.logger.info(
@@ -477,39 +472,6 @@ class StateBase:
                 )
             return None
 
-        elif command_type == CommandType.START_LOCAL_SENSOR_ATTACK:
-            attack_config = data.get("config", data)
-            self.logger.logger.info("[CMD] Starting local sensor attack")
-            try:
-                success = self.vehicle_logic.start_local_sensor_attack(attack_config)
-                if success:
-                    self.logger.logger.info(
-                        "[CMD] Local sensor attack enabled successfully"
-                    )
-                else:
-                    self.logger.logger.warning(
-                        "[CMD] Local sensor attack request was ignored"
-                    )
-            except Exception as e:
-                self.logger.log_error("[CMD] Error starting local sensor attack", e)
-            return None
-
-        elif command_type == CommandType.STOP_LOCAL_SENSOR_ATTACK:
-            self.logger.logger.info("[CMD] Stopping local sensor attack")
-            try:
-                success = self.vehicle_logic.stop_local_sensor_attack()
-                if success:
-                    self.logger.logger.info(
-                        "[CMD] Local sensor attack disabled successfully"
-                    )
-                else:
-                    self.logger.logger.warning(
-                        "[CMD] Local sensor attack stop request was ignored"
-                    )
-            except Exception as e:
-                self.logger.log_error("[CMD] Error stopping local sensor attack", e)
-            return None
-
         elif command_type == CommandType.SET_FLEET_OBSERVER:
             observer_type = data.get("observer_type")
             if observer_type:
@@ -677,12 +639,12 @@ class StateBase:
             return None
 
         elif command_type == CommandType.DISABLE_ONLINE_CALIBRATION:
-            self.logger.logger.info("[CMD] Pausing passive online calibration")
+            self.logger.logger.info("[CMD] Disabling passive online calibration")
             try:
                 if hasattr(self.vehicle_logic, "disable_online_calibration_zmq"):
                     self.vehicle_logic.disable_online_calibration_zmq()
                     self.logger.logger.info(
-                        "[CMD] Online calibration paused successfully"
+                        "[CMD] Online calibration disabled successfully"
                     )
                 else:
                     self.logger.log_warning(
@@ -891,40 +853,17 @@ class StateBase:
     def _handle_online_calibration_params(self, params: Dict[str, Any]) -> bool:
         """
         Handle SET_PARAMS category='online_calibration'.
-        action: 'analyse', 'clear', 'status', 'disconnect'
+        action: 'analyse', 'clear', 'status'
         calibration_type: 'throttle_velocity', 'steering_curvature', etc.
         """
         action = str(params.get("action", "status")).strip().lower()
-
-        import time
-        if action in ("disconnect", "close", "close_transport"):
-            client = getattr(self.vehicle_logic, "online_calibration_zmq", None)
-            if client is not None:
-                try:
-                    client.stop_collection()
-                except Exception as e:
-                    self.logger.log_error(
-                        "[CMD] Failed to pause online calibration before disconnect",
-                        e,
-                    )
-
-            if hasattr(self.vehicle_logic, "close_online_calibration_zmq"):
-                self.vehicle_logic.close_online_calibration_zmq()
-                self.logger.logger.info(
-                    "[CMD] ZMQ Online Calibration transport disconnected"
-                )
-                return True
-
-            self.logger.log_warning(
-                "[CMD] vehicle_logic does not expose close_online_calibration_zmq"
-            )
-            return False
-
         client = getattr(self.vehicle_logic, "online_calibration_zmq", None)
+
         if client is None:
             self.logger.log_warning("[CMD] Online calibration client not available")
             return False
 
+        import time
         if action in ("analyse", "trigger_analyse", "analyze"):
             calibration_type = params.get("calibration_type")
             if calibration_type:
@@ -959,7 +898,7 @@ class StateBase:
 
         self.logger.log_warning(
             f"[CMD] Unknown online_calibration action '{action}'. "
-            "Valid: analyse, status, clear, disconnect"
+            "Valid: analyse, status, clear"
         )
         return False
 
@@ -1570,6 +1509,7 @@ class StateBase:
                 "dead_reckoning",
                 "neural_luenberger",
                 "robust_kalman_net",
+                "high_gain_observer",
             ]
             if observer_type not in valid_types:
                 self.logger.log_error(
@@ -1641,13 +1581,7 @@ class StateBase:
         try:
             from Observer.fleet_state_estimators import FleetEstimatorFactory
 
-            valid_types = [
-                "consensus",
-                "distributed_kalman",
-                "distributed_luenberger",
-                "trust_consensus",
-                "trust_kalman",
-            ]
+            valid_types = FleetEstimatorFactory.get_available_types()
             if observer_type not in valid_types:
                 self.logger.log_error(
                     f"Invalid fleet observer type: {observer_type}. Valid: {valid_types}"
@@ -1663,13 +1597,19 @@ class StateBase:
 
             vehicle_observer = self.vehicle_logic.vehicle_observer
 
-            # Get observer config
-            obs_config = vehicle_observer._get_observer_config()
+            old_observer_type = vehicle_observer.fleet_estimator_type
+            vehicle_observer.fleet_estimator_type = observer_type
+            try:
+                obs_config = vehicle_observer._resolve_fleet_estimator_config()
+            finally:
+                vehicle_observer.fleet_estimator_type = old_observer_type
 
             # Create new fleet estimator using factory
             new_estimator = FleetEstimatorFactory.create(
                 estimator_type=observer_type,
                 vehicle_id=self.vehicle_logic.vehicle_id,
+                fleet_size=vehicle_observer.fleet_size,
+                state_dim=vehicle_observer.state_dim,
                 config=obs_config,
                 logger=self.logger,
             )

@@ -34,7 +34,7 @@ upload:
 # This lets QCar and Limo coexist in the same fleet with the correct model dimensions.
 vehicle_geometry:
   Qcar:
-    wheelbase: 0.2
+    wheelbase: 0.256
     l_r: 0.141
     l_f: 0.115
   Limo:
@@ -46,11 +46,6 @@ vehicle_geometry:
 # Vehicle Configurations
 # Each vehicle can have individual settings
 # vehicle_type can be: "Qcar" or "Limo"
-observer:
-  # Added to YOLO relative measurements before relative/fleet estimators consume them.
-  # Keep this at 0.0 when YOLO distance is already corrected at the source.
-  camera_distance_offset: 0.0
-
 vehicles:
   - car_id: 0
     ip: 192.168.2.137
@@ -62,7 +57,7 @@ vehicles:
     calibrate: false       # Start in calibration mode
     path_number: 0         # Path selection (0, 1, 2, etc.)
     left_hand_traffic: false
-    initial_v_ref: 0.4    # Initial velocity reference (m/s)
+    initial_v_ref: 0.6    # Initial velocity reference (m/s)
     description: "Leader vehicle with probing"
     
   - car_id: 1
@@ -73,9 +68,9 @@ vehicles:
     enable_v2v_attack: false # Set true to inject attacks from this car
     probing: true         # Enable probing for follower
     calibrate: false
-    path_number: 0         # Different path from leader
+    path_number: 1         # Different path from leader
     left_hand_traffic: false
-    initial_v_ref: 0.4
+    initial_v_ref: 0.6
     description: "Follower vehicle"
   
   - car_id: 2
@@ -87,7 +82,7 @@ vehicles:
     calibrate: false
     path_number: 0         # Same path as leader
     left_hand_traffic: false
-    initial_v_ref: 0.4
+    initial_v_ref: 0.6
     description: "Follower vehicle"
 
 # Path Definitions

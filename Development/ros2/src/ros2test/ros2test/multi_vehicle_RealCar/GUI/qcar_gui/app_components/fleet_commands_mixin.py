@@ -1,4 +1,3 @@
-import time
 from tkinter import messagebox
 
 class FleetCommandsMixin:
@@ -133,42 +132,6 @@ class FleetCommandsMixin:
         self.log(f"🚗 Disabled platoons: {successes}/{len(results)} cars", "INFO")
         self._broadcast_global_status()
 
-    def _build_v2v_vehicle_manifest(self, vehicle_ids: list) -> dict:
-        """Build per-vehicle metadata sent once during V2V activation."""
-        manifest = {}
-        for car_id in vehicle_ids:
-            try:
-                telemetry = self._remote.get_telemetry(car_id)
-            except Exception:
-                telemetry = None
-
-            if hasattr(self, "_get_car_panel_config"):
-                meta = self._get_car_panel_config(car_id, telemetry)
-            else:
-                meta = {
-                    "vehicle_type": getattr(
-                        self.config.deployment, "default_vehicle_type", "Qcar"
-                    ),
-                    "programme_type": getattr(
-                        self.config.deployment, "default_programme_type", "Py"
-                    ),
-                }
-
-            vehicle_type = meta.get("vehicle_type", "Qcar")
-            programme_type = meta.get("programme_type", "Py")
-            geometry = {}
-            connector = getattr(self, "_vehicle_connector", None)
-            if connector is not None and hasattr(connector, "get_vehicle_geometry"):
-                geometry = connector.get_vehicle_geometry(vehicle_type)
-
-            manifest[int(car_id)] = {
-                "vehicle_id": int(car_id),
-                "vehicle_type": vehicle_type,
-                "programme_type": programme_type,
-                "geometry": geometry,
-            }
-        return manifest
-
     def _activate_v2v(self) -> None:
         """Activate V2V communication."""
         if len(self._connected_cars) < 2:
@@ -184,12 +147,6 @@ class FleetCommandsMixin:
 
         success_count = 0
         connected_list = list(self._connected_cars)
-        vehicle_manifest = self._build_v2v_vehicle_manifest(connected_list)
-        shared_time_reference = {
-            "source": "ground_station",
-            "reference_time_ns": int(time.time_ns()),
-            "reference_vehicle_id": None,
-        }
 
         for car_id in connected_list:
             peers = [cid for cid in connected_list if cid != car_id]
@@ -208,8 +165,6 @@ class FleetCommandsMixin:
                 "peer_vehicles": peers,
                 "peer_ips": vehicle_ips,
                 "my_id": car_id,
-                "time_reference": dict(shared_time_reference),
-                "vehicle_manifest": vehicle_manifest,
             }
 
             if self._remote.send_command(car_id, command):
