@@ -1,0 +1,4 @@
+[submodule "isaac_ros_common"]
+	path = isaac_ros_common
+	url = https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_common.git
+	branch = release-2.1

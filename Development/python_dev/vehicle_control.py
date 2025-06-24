@@ -77,6 +77,9 @@ calibrate=False
 #calibrationPose = [0,0,-np.pi/2]
 calibrationPose = [0,2,-np.pi/2]
 
+print("calibrationPose = " + str(calibrationPose))
+print("initialPose = " + str(initialPose))
+
 # Used to enable safe keyboard triggered shutdown
 global KILL_THREAD
 KILL_THREAD = False

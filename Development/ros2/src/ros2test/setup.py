@@ -28,7 +28,8 @@ setup(
             "nav_goal_sender = ros2test.nav_goal_sender:main",
             "odom = ros2test.odom:main",
             "waypoints = ros2test.waypoints:main",
-            "pure_pursuit = ros2test.pure_pursuit:main"
+            "pure_pursuit = ros2test.pure_pursuit:main",
+            "vehicle_control_ros = ros2test.vehicle_control_ros:main"
         ],
     },
 )
