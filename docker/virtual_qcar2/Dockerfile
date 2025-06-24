@@ -42,6 +42,14 @@ RUN apt-get update && apt-get install -y \
     python3-opencv \
     python3-pyqtgraph \
     python3-transforms3d \
+    libopencv-dev \
+    libgl1 \
+    libgl1-mesa-dri \
+    libgtk-3-0 \
+    libqt5gui5 \
+    mesa-utils \
+    x11-xserver-utils \
+    xauth \
     && rm -rf /var/lib/apt/lists/*
     
 RUN apt-get update && apt-get install -y nano
@@ -67,6 +75,10 @@ ENV QAL_DIR=/QLabs_Resources/
 ENV PYTHONPATH=/QLabs_Resources/libraries/python/
 ENV RTMODELS_DIR=/virtual_plants/rt_models/
 
+# Set environment variables
+ENV DISPLAY=:0
+ENV XDG_RUNTIME_DIR=/tmp/runtime-root
+RUN mkdir -p /tmp/runtime-root && chmod 700 /tmp/runtime-root
 
 CMD ["bash"]
 

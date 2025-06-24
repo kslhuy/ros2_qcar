@@ -2,7 +2,8 @@ from follower import Follower
 from qvl.qlabs import QuanserInteractiveLabs
 from qvl.qcar2 import QLabsQCar2
 from qvl.real_time import QLabsRealTime
-import time, os, math
+import os
+
 
 # Connect to QLabs
 os.system('cls')
@@ -27,10 +28,18 @@ leader_id = 0
 follower_id = 1
 
 # Spawn cars
-leader.spawn_id(actorNumber=leader_id, location=[0, 0, 0], rotation=[0, 0, 0],
-        scale=[0.1, 0.1, 0.1])
-follower.spawn_id(actorNumber=follower_id, location=[-5.5, -5, 0], 
-        rotation=[0, 0, 0], scale=[0.1, 0.1, 0.1])
+leader.spawn_id(
+    actorNumber=leader_id, 
+    location=[0, 0, 0], 
+    rotation=[0, 0, 0],
+    scale=[0.1, 0.1, 0.1]
+)
+follower.spawn_id(
+    actorNumber=follower_id, 
+    location=[-5.5, -5, 0], 
+    rotation=[0, 0, 0], 
+    scale=[0.1, 0.1, 0.1]
+)
 
 rtModel = os.path.normpath(os.path.join(os.environ['RTMODELS_DIR'], 'QCar2/QCar2_Workspace_studio'))
 QLabsRealTime().start_real_time_model(rtModel, actorNumber=0)  
