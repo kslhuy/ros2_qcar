@@ -60,10 +60,7 @@ class VehicleControl(Node):
         tp = self.t
         self.t = time.time() - self.t0
         dt = self.t-tp
-        self.get_logger().info("dt " + str(dt))
-        #endregion
 
-        #region : Read from sensors and update state estimates
         if self.imu_data:
             if self.gps.readGPS():
                 y_gps = np.array([
@@ -93,7 +90,6 @@ class VehicleControl(Node):
             p = ( np.array([x, y])
                 + np.array([np.cos(th), np.sin(th)]) * 0.2)
         v = self.motorTach
-        #endregion
 
         u = self.speedController.update(v, self.v_ref, dt)
         self.delta = self.steeringController.update(p, th, v)
@@ -107,7 +103,6 @@ class VehicleControl(Node):
         msg.values.append(steer)
         msg.values.append(motor)
         self.pub.publish(msg)
-        self.get_logger().info("motor " + str(motor))
 
 
 def main(args=None):
