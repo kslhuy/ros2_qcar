@@ -84,3 +84,22 @@ CMD ["bash"]
 
 # start image by:
 # sudo docker run --rm -it --network host --name virtual-qcar2 quanser/acc2025-virtual-qcar2 bash
+
+#by:
+# viet@viet-B760M-DS3H-AX:~/Documents/qcar2/docker/virtual_qcar2$ sudo docker run --rm -it --network host --name my-virtual-qcar2 my-virtual-qcar2:latest bash
+
+#save files
+#do exit then 
+#viet@viet-B760M-DS3H-AX:~/Documents/qcar2/docker/virtual_qcar2$ docker build -t my-virtual-qcar2 .
+
+#or use this to start (no need to run build after modification)
+#sudo docker run -it --network host --name my-virtual-qcar2 -v ~/Documents/qcar2/dev:/workspaces/isaac_ros-dev -v ~/Documents/qcar2/scripts:/home/qcar2_scripts my-virtual-qcar2:latest bash
+
+#then next time
+#sudo docker start -ai my-virtual-qcar2
+
+#remove container(no damage)
+#sudo docker rm my-virtual-qcar2
+
+
+

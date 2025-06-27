@@ -2,8 +2,12 @@ from follower import Follower
 from qvl.qlabs import QuanserInteractiveLabs
 from qvl.qcar2 import QLabsQCar2
 from qvl.real_time import QLabsRealTime
-import os
+import time, os, math
 
+from qvl.basic_shape import QLabsBasicShape
+from qvl.walls import QLabsWalls
+from qvl.qcar_flooring import QLabsQCarFlooring
+from qvl.crosswalk import QLabsCrosswalk
 
 # Connect to QLabs
 os.system('cls')
@@ -53,19 +57,24 @@ hWall.spawn_degrees(location=[-2.03 + x_offset, -2.275+ y_offset, 0.001], rotati
 hWall.spawn_degrees(location=[-1.575+ x_offset, -2.7+ y_offset, 0.001], rotation=[0, 0, 48])
 
 
+# Spawning crosswalks
+myCrossWalk = QLabsCrosswalk(qlabs)
+myCrossWalk.spawn_degrees   (location =[-2 + x_offset, -1.475 + y_offset, 0.01],
+                            rotation=[0,0,0], 
+                            scale = [0.1,0.1,0.075],
+                            configuration = 0)
+
+mySpline = QLabsBasicShape(qlabs)
+mySpline.spawn_degrees (location=[2.05 + x_offset, -1.5 + y_offset, 0.01], 
+                        rotation=[0, 0, 0], 
+                        scale=[0.27, 0.02, 0.001], 
+                        waitForConfirmation=False)
+
 # Spawn cars
-leader.spawn_id(
-    actorNumber=leader_id, 
-    location=[0, 0, 0], 
-    rotation=[0, 0, 0],
-    scale=[0.1, 0.1, 0.1]
-)
-follower.spawn_id(
-    actorNumber=follower_id, 
-    location=[-5.5, -5, 0], 
-    rotation=[0, 0, 0], 
-    scale=[0.1, 0.1, 0.1]
-)
+leader.spawn_id(actorNumber=leader_id, location=[-1.205, -0.83, 0.005], rotation=[0, 0, -44.7],
+        scale=[0.1, 0.1, 0.1])
+follower.spawn_id(actorNumber=follower_id, location=[-1.735, -0.35, 0.005], 
+        rotation=[0, 0, -44.7], scale=[0.1, 0.1, 0.1])
 
 rtModel = os.path.normpath(os.path.join(os.environ['RTMODELS_DIR'], 'QCar2/QCar2_Workspace_studio'))
 QLabsRealTime().start_real_time_model(rtModel, actorNumber=0)  
