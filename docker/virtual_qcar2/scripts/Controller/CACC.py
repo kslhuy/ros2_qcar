@@ -42,11 +42,12 @@ class CACC:
         else:
             u_coop = np.zeros(2)
             for car_j in surrounding_vehicles:
-                # print(car_j)
+                # print('carj',car_j)
                 if type_state == "true":
                     x_j = car_j.state[0]
                     y_j = car_j.state[1]
                     v_j = car_j.state[3]
+                    # print('carj state',car_j.state)
                 else:
                     est = self.controller.vehicle.observer.est_global_state_current
                     x_j = est[0, car_j.vehicle_number]
@@ -63,7 +64,8 @@ class CACC:
 
                 spacing_target = ((host_car_id - car_j.vehicle_number) * s0 + h * v)
                 spacing_error = s - spacing_target
-                
+                print('vj',v_j)
+                print('v',v)
                 velocity_error = v_j - v
 
                 u_coop += K @ np.array([spacing_error, velocity_error])

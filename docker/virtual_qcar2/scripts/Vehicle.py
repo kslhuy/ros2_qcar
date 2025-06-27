@@ -1,20 +1,9 @@
-import math
-import numpy as np
-import threading
-import time
 import socket
 import pickle
 import random
-from qvl.qlabs import QuanserInteractiveLabs
-from qvl.qcar2 import QLabsQCar2
-from qvl.real_time import QLabsRealTime
-from qvl.basic_shape import QLabsBasicShape
-from qvl.walls import QLabsWalls
-from qvl.qcar_flooring import QLabsQCarFlooring
-from qvl.crosswalk import QLabsCrosswalk
-from Controller.idm_control import IDMControl
-from Controller.CACC import CACC
-import os
+import threading
+import math
+import time
 
 class GPSSync:
     """Simulates GPS-based time synchronization for vehicles."""
@@ -61,6 +50,12 @@ class Vehicle:
         self.leader_state = {'pos': [0, 0, 0], 'rot': [0, 0, 0], 'v': 0.}
         self.last_seq = -1
         self.sequence_number = 0
+
+        # Velocity calculation
+        self.prev_pos = None
+        self.prev_time = None
+        self.velocity = 0.5  # Initial velocity estimate
+
 
         # Start communication threads
         threading.Thread(target=self.send_state, daemon=True).start()
@@ -117,8 +112,11 @@ class Vehicle:
 
     def update_movement(self):
         """Updates vehicle movement based on role (leader or follower)."""
+        speed_cmd = 0.0  # Default to stop if undefined
+        steering_cmd = 0.0  # Default to no steering
+
         if self.is_leader:
-            # Leader moves at constant velocity
+            # # Leader moves at constant velocity
             # speed_cmd = 0.5
             # steering_cmd = 0.0
             pass
@@ -128,7 +126,33 @@ class Vehicle:
                 _, pos_follower, rot_follower, _ = self.qcar.get_world_transform()
             except Exception as e:
                 print(f"[V{self.vehicle_id} READ ERROR]: {e}")
+                # Use default values (stop) and skip control application
+                self.qcar.set_velocity_and_request_state(
+                    forward=speed_cmd,
+                    turn=steering_cmd,
+                    headlights=False,
+                    leftTurnSignal=False,
+                    rightTurnSignal=False,
+                    brakeSignal=False,
+                    reverseSignal=False
+                )
                 return
+            
+            # Calculate velocity using position difference
+            current_time = time.time()
+            if self.prev_pos is not None and self.prev_time is not None:
+                # Compute Euclidean distance between current and previous position
+                dx = pos_follower[0] - self.prev_pos[0]
+                dy = pos_follower[1] - self.prev_pos[1]
+                distance = math.sqrt(dx**2 + dy**2)
+                dt = current_time - self.prev_time
+                if dt > 0:  # Avoid division by zero
+                    self.velocity = distance / dt
+                else:
+                    self.velocity = 0.0
+            self.prev_pos = pos_follower
+            self.prev_time = current_time
+
 
             pos_leader = self.leader_state['pos']
             rot_leader = self.leader_state['rot']
@@ -146,8 +170,9 @@ class Vehicle:
             steering_cmd = -2.0 * heading_error
             steering_cmd = max(-self.max_steering, min(self.max_steering, steering_cmd))
 
-            # IDM/CACC for speed
-            v_follower = self.qcar.motorTach if hasattr(self.qcar, 'motorTach') else 0.5
+           # IDM/CACC for speed
+            v_follower = self.velocity
+            print('v_follo',v_follower)
             follower_state = [pos_follower[0], pos_follower[1], follower_heading, v_follower]
             class DummyVehicle:
                 def __init__(self, state, vehicle_number=0):
@@ -157,29 +182,45 @@ class Vehicle:
             dummy_leader = DummyVehicle(leader_state, vehicle_number=0)
             self.idm.controller.get_surrounding_vehicles = lambda *args, **kwargs: (None, [dummy_leader], None, None)
 
-            _, input_u, _ = self.idm.get_optimal_input(
-                host_car_id=self.vehicle_id,
-                state=follower_state,
-                last_input=None,
-                lane_id=None,
-                input_log=None,
-                initial_lane_id=None,
-                direction_flag=None,
-                type_state="true",
-                acc_flag=0
-            )
-            speed_cmd = max(0, input_u[0])
+
+            class DummyVehicle:
+                def __init__(self, state, vehicle_number=0):
+                    self.state = state
+                    self.vehicle_number = vehicle_number
+            leader_state = [pos_leader[0], pos_leader[1], rot_leader[2], v_leader]
+            dummy_leader = DummyVehicle(leader_state, vehicle_number=0)
+            self.idm.controller.get_surrounding_vehicles = lambda *args, **kwargs: (None, [dummy_leader], None, None)
+
+            try:
+                _, input_u, _ = self.idm.get_optimal_input(
+                    host_car_id=self.vehicle_id,
+                    state=follower_state,
+                    last_input=None,
+                    lane_id=None,
+                    input_log=None,
+                    initial_lane_id=None,
+                    direction_flag=None,
+                    type_state="true",
+                    acc_flag=0
+                )
+                speed_cmd = max(0, input_u[0])
+            except Exception as e:
+                print(f"[V{self.vehicle_id} IDM/CACC ERROR]: {e}")
+                speed_cmd = 0.0  # Stop if controller fails
 
         # Apply control commands
-        self.qcar.set_velocity_and_request_state(
-            forward=speed_cmd,
-            turn=steering_cmd,
-            headlights=False,
-            leftTurnSignal=False,
-            rightTurnSignal=False,
-            brakeSignal=False,
-            reverseSignal=False
-        )
+        try:
+            self.qcar.set_velocity_and_request_state(
+                forward=speed_cmd,
+                turn=steering_cmd,
+                headlights=False,
+                leftTurnSignal=False,
+                rightTurnSignal=False,
+                brakeSignal=False,
+                reverseSignal=False
+            )
+        except Exception as e:
+            print(f"[V{self.vehicle_id} CONTROL ERROR]: {e}")
 
     def run(self):
         """Main control loop for the vehicle."""
@@ -204,97 +245,3 @@ class Vehicle:
             self.thread.join()
         self.send_sock.close()
         self.recv_sock.close()
-
-def main():
-    # Initialize QLabs
-    os.system('cls')
-    qlabs = QuanserInteractiveLabs()
-    print("Connecting to QLabs...")
-    try:
-        qlabs.open("localhost")
-        print("Connected to QLabs")
-    except:
-        print("Unable to connect to QLabs")
-        quit()
-
-    qlabs.destroy_all_spawned_actors()
-    QLabsRealTime().terminate_all_real_time_models()
-
-    # Setup environment
-    x_offset = 0.13
-    y_offset = 1.67
-    hFloor = QLabsQCarFlooring(qlabs)
-    hFloor.spawn_degrees([x_offset, y_offset, 0.001], rotation=[0, 0, -90], configuration=0)
-    hWall = QLabsWalls(qlabs)
-    hWall.set_enable_dynamics(False)
-    for y in range(5):
-        hWall.spawn_degrees(location=[-2.4 + x_offset, (-y*1.0)+2.55 + y_offset, 0.001], rotation=[0, 0, 0])
-    for x in range(5):
-        hWall.spawn_degrees(location=[-1.9+x + x_offset, 3.05+ y_offset, 0.001], rotation=[0, 0, 90])
-    for y in range(6):
-        hWall.spawn_degrees(location=[2.4+ x_offset, (-y*1.0)+2.55 + y_offset, 0.001], rotation=[0, 0, 0])
-    for x in range(4):
-        hWall.spawn_degrees(location=[-0.9+x+ x_offset, -3.05+ y_offset, 0.001], rotation=[0, 0, 90])
-    hWall.spawn_degrees(location=[-2.03 + x_offset, -2.275+ y_offset, 0.001], rotation=[0, 0, 48])
-    hWall.spawn_degrees(location=[-1.575+ x_offset, -2.7+ y_offset, 0.001], rotation=[0, 0, 48])
-    myCrossWalk = QLabsCrosswalk(qlabs)
-    myCrossWalk.spawn_degrees(location=[-2 + x_offset, -1.475 + y_offset, 0.01], rotation=[0, 0, 0], scale=[0.1, 0.1, 0.075], configuration=0)
-    mySpline = QLabsBasicShape(qlabs)
-    mySpline.spawn_degrees(location=[2.05 + x_offset, -1.5 + y_offset, 0.01], rotation=[0, 0, 0], scale=[0.27, 0.02, 0.001], waitForConfirmation=False)
-
-    # Initialize vehicles
-    leader = QLabsQCar2(qlabs)
-    follower = QLabsQCar2(qlabs)
-    leader.spawn_id(actorNumber=0, location=[-1.205, -0.83, 0.005], rotation=[0, 0, -44.7], scale=[0.1, 0.1, 0.1])
-    follower.spawn_id(actorNumber=1, location=[-1.735, -0.35, 0.005], rotation=[0, 0, -44.7], scale=[0.1, 0.1, 0.1])
-
-    rtModel = os.path.normpath(os.path.join(os.environ['RTMODELS_DIR'], 'QCar2/QCar2_Workspace_studio'))
-    QLabsRealTime().start_real_time_model(rtModel, actorNumber=0)
-
-    time.sleep(1)
-
-    # Initialize controller
-    class DummyController:
-        def __init__(self):
-            self.param_opt = {
-                'alpha': 1.0,
-                'beta': 1.5,
-                'v0': 1.0,
-                'delta': 4,
-                'T': 0.4,
-                's0': 1,
-                'ri': 0.5,
-                'hi': 0.5,
-                'K': np.array([[1, 0.0], [0.0, 1]])
-            }
-            self.param_sys = None
-            self.goal = None
-            self.straightlane = None
-            self.vehicle_number = 1
-
-        def get_surrounding_vehicles(self, *args, **kwargs):
-            return None, [None], None, None
-
-    controller = DummyController()
-    control_algo = CACC(controller) if True else IDMControl(controller)
-
-    # Create vehicles
-    leader_vehicle = Vehicle(qcar=leader, idm_controller=control_algo, vehicle_id=0, is_leader=True, send_port=5005, recv_port=5050)
-    follower_vehicle = Vehicle(qcar=follower, idm_controller=control_algo, vehicle_id=1, is_leader=False, send_port=5050, recv_port=5005)
-
-    # Start vehicles
-    leader_vehicle.start()
-    follower_vehicle.start()
-
-    # Run simulation for 10 seconds
-    time.sleep(40)
-
-    # Stop vehicles
-    leader_vehicle.stop()
-    follower_vehicle.stop()
-
-    qlabs.close()
-    print("Simulation ended.")
-
-if __name__ == "__main__":
-    main()

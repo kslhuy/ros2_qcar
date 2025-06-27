@@ -28,6 +28,11 @@ class Follower:
 
         }
 
+        # Velocity calculation
+        self.prev_pos = None
+        self.prev_time = None
+        self.velocity = 0.5  # Initial velocity estimate
+
         
     def wrap_to_pi(self, angle):
         return (angle + math.pi) % (2 * math.pi) - math.pi
@@ -36,6 +41,21 @@ class Follower:
         # Get positions and orientations
         _, pos_leader, rot_leader, _ = leader.get_world_transform()    
         _, pos_follower, rot_follower, _ = self.qcar.get_world_transform()
+
+        # Calculate velocity using position difference
+        current_time = time.time()
+        if self.prev_pos is not None and self.prev_time is not None:
+            # Compute Euclidean distance between current and previous position
+            dx = pos_follower[0] - self.prev_pos[0]
+            dy = pos_follower[1] - self.prev_pos[1]
+            distance = math.sqrt(dx**2 + dy**2)
+            dt = current_time - self.prev_time
+            if dt > 0:  # Avoid division by zero
+                self.velocity = distance / dt
+            else:
+                self.velocity = 0.0
+        self.prev_pos = pos_follower
+        self.prev_time = current_time
 
         lookahead_distance = 0.4  # meters
         target_x = pos_leader[0] - lookahead_distance * math.cos(rot_leader[2])
@@ -60,9 +80,10 @@ class Follower:
 
         # Form follower state: [x, y, theta, v]
         # Approximate velocity using past positions or from QCar if available
-        v_follower = self.qcar.motorTach if hasattr(self.qcar, 'motorTach') else 0.5
+        v_follower = self.velocity
+        print('v_follo',v_follower)        
         follower_state = [pos_follower[0], pos_follower[1], follower_heading, v_follower]
-
+        # print('follower state',follower_state)
 
 
         class DummyVehicle:
@@ -72,6 +93,7 @@ class Follower:
 
 
         leader_state = [pos_leader[0], pos_leader[1], rot_leader[2], v_follower]
+        print('leader',leader_state)
         dummy_leader = DummyVehicle(leader_state, vehicle_number=0)
         self.idm.controller.get_surrounding_vehicles = lambda *args, **kwargs: (None, [dummy_leader], None, None)
 
@@ -91,7 +113,7 @@ class Follower:
 
 
         speed_cmd = max(0, input_u[0])  # throttle only, no braking for now
-        print('speed cmd',speed_cmd)
+        # print('speed cmd',speed_cmd)
         
 
         # print("Let's go")
