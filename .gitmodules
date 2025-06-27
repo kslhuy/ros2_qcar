@@ -2,3 +2,8 @@
 	path = isaac_ros_common
 	url = https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_common.git
 	branch = release-2.1
+
+[submodule "ACC-Competition-2025"]
+	path = backup/ACC-Competition-2025
+	url = https://github.com/quanser/ACC-Competition-2025.git
+	branch = main
