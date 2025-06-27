@@ -33,7 +33,7 @@ class Nav2QCarConverter : public rclcpp::Node
     nav2_subscriber_ = this->create_subscription<geometry_msgs::msg::Twist>("/cmd_vel_nav",10,std::bind(&Nav2QCarConverter::nav2_command_callback, this, std::placeholders::_1));
     
     //publishing timer for converted command
-    //timer_ = this->create_wall_timer(33ms, std::bind(&Nav2QCarConverter::command_plublish, this));
+    timer_ = this->create_wall_timer(33ms, std::bind(&Nav2QCarConverter::command_plublish, this));
 
     //publishing timer for converted command
     timer2_ = this->create_wall_timer(33ms, std::bind(&Nav2QCarConverter::led_publish, this));

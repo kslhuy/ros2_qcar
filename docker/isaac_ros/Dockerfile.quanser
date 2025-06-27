@@ -40,13 +40,7 @@ RUN apt-get update && apt-get install -y \
     quarc-runtime \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python Packages if necessary
-RUN pip3 install -U \
-    pytransform3d \
-    pyqtgraph \
-    matplotlib
 
 # Copy quanser hal and pal folders inside isaac_ros and define environment variable
 COPY ./libraries /home/Quanser/libraries
 ENV PYTHONPATH=/home/Quanser/libraries/python
-
