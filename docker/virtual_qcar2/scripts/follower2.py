@@ -61,6 +61,9 @@ class Follower:
         target_x = pos_leader[0] - lookahead_distance * math.cos(rot_leader[2])
         target_y = pos_leader[1] - lookahead_distance * math.sin(rot_leader[2])
 
+        target_a = pos_leader[0] + 0.2 * math.cos(rot_leader[2])
+        target_b = pos_leader[1] + 0.2 * math.sin(rot_leader[2])
+
         dx = target_x - pos_follower[0]
         dy = target_y - pos_follower[1]
 
@@ -92,7 +95,9 @@ class Follower:
                 self.vehicle_number = vehicle_number
 
 
-        leader_state = [pos_leader[0], pos_leader[1], rot_leader[2], v_follower]
+        leader_state = [pos_leader[0], pos_leader[1], rot_leader[2], 0.3] #### do not use v follower
+        # leader_state = [target_a, target_b, rot_leader[2], 0.3] #### look ahead applied 
+
         print('leader',leader_state)
         dummy_leader = DummyVehicle(leader_state, vehicle_number=0)
         self.idm.controller.get_surrounding_vehicles = lambda *args, **kwargs: (None, [dummy_leader], None, None)
