@@ -1,7 +1,8 @@
 import os, cv2, time, signal, threading
 import numpy as np
 import pyqtgraph as pg
-import QCar2RealSize
+
+from ControlThread import ControlThread
 
 from pal.products.qcar import QCar, QCarGPS, IS_PHYSICAL_QCAR
 from pal.utilities.math import wrap_to_pi
@@ -10,10 +11,10 @@ from hal.content.qcar_functions import QCarEKF
 from src.OpenRoad import OpenRoad
 from src.Controller.ControllerLeader import SpeedController,SteeringController
 
-class LeaderControl(threading.Thread):  
-    def __init__(self, enableSteeringControl:bool = True, NodeSequence = [0,1]):
+class ControlLeader(ControlThread):  
+    def __init__(self,SimulationTime:float = 10, enableSteeringControl:bool = True, NodeSequence:list = [0,1], FlagPathRebuild:bool = False):
         super().__init__()                                  #  Initialize parent Thread class
-        self.tf = 10
+        self.tf = SimulationTime
         self.startDelay = 1
         self.controllerUpdateRate = 100
         self.K_p = 0.2
@@ -22,11 +23,9 @@ class LeaderControl(threading.Thread):
         self.K_stanley = 1
         self.calibrationPose = [0,2,-np.pi/2]
         self.calibrate = True
-        self._kill_thread = threading.Event()               #  Thread-safe kill
         print("Basic Setting Finished")
-        self.waypointSequence, self.InitialPose = self.PathGeneration(True)
+        self.waypointSequence, self.InitialPose = self.PathGeneration(FlagPathRebuild, NodeSequence)
         print("Map Generation Finished")
-
 
         self.speedController = SpeedController(
             kp=self.K_p,
@@ -57,8 +56,8 @@ class LeaderControl(threading.Thread):
                 t = time.time() - t0
                 dt = t - tp
                 qcar.read()
-                # v_ref = self.v_ref(t)
-                v_ref = 120
+                vref = self.vref(t)
+                # vref = 120
                 if self.enableSteeringControl:
                     if gps.readGPS():
                         y_gps = np.array([gps.position[0],
@@ -80,14 +79,12 @@ class LeaderControl(threading.Thread):
                 else:
                     th = 0
                     p = None
-                
-                print(t)
                 v = qcar.motorTach
                 if t < self.startDelay:
                     u = 0
                     delta = 0
                 else:
-                    u = self.speedController.update(v, v_ref, dt)
+                    u = self.speedController.update(v, vref, dt)
 
                     if self.enableSteeringControl:
                         delta = self.steeringController.update(p, th, v)
@@ -95,21 +92,18 @@ class LeaderControl(threading.Thread):
                         delta = 0
                 qcar.write(u, delta)
             qcar.read_write_std(throttle=0, steering=0)
-        self.stop()
+            print("Thread Ends: Leader Control")
 
-    def stop(self):
-        self._kill_thread.set()
-
-    def PathGeneration(self, NeedRebuild:bool = False, NodeSequence:list = [0,1]):
-        waypointSequenceLocation = "D:\\Quanser_PJD\\QcarDev\\python\\DO_1DimentionalCarFleet\\data\\waypointSequence.npy"
-        InitialPoseLocation = "D:\\Quanser_PJD\\QcarDev\\python\\DO_1DimentionalCarFleet\\data\\InitialPose.npy"
+    def PathGeneration(self, NeedRebuild:bool, NodeSequence:list):
+        waypointSequenceLocation    = "Development\\fleet_framwork\\data\\InitialPose.npy"
+        InitialPoseLocation         = "Development\\fleet_framwork\\data\\WayPintSequence.npy"
         if not NeedRebuild:
             if os.path.exists(waypointSequenceLocation):
                 print("Path Exists, no need to rebuild")
                 waypointSequence = np.load(waypointSequenceLocation)
                 InitialPose = np.load(InitialPoseLocation)
             else:
-                print("Path not Exist, rebuilding")
+                print("Path not Exist, rebuilding and save")
                 roadmap = OpenRoad()
                 waypointSequence = roadmap.generate_path(NodeSequence)
                 InitialPose = roadmap.get_node_pose(NodeSequence[0]).squeeze()
@@ -122,20 +116,18 @@ class LeaderControl(threading.Thread):
             InitialPose = roadmap.get_node_pose(NodeSequence[0]).squeeze()
             np.save(waypointSequenceLocation, waypointSequence)
             np.save(InitialPoseLocation, InitialPose)
-        print(waypointSequence)
         print("Path Create/Load Complete")
         return waypointSequence, InitialPose
-    
 
-    def v_ref(self,t):
-        if t<10:
-            v_ref = 800
+    def vref(self,t):
+        if t<5:
+            v_ref = 2
+        elif t<10:
+            v_ref = 0
+        elif t<15:
+            v_ref = -0.5
         elif t<20:
-            v_ref = 1200
-        elif t<30:
-            v_ref = 0
-        elif t<40:
-            v_ref = 300
+            v_ref = 1
         else:
-            v_ref = 0
+            v_ref = 2
         return v_ref

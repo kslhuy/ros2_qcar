@@ -18,7 +18,6 @@ class DummyController:
         self.goal = None
         self.straightlane = None
         self.vehicle_id = qcar_id
-
     def get_surrounding_vehicles(self, *args, **kwargs):
         return None, [dummy_leader], None, None  # You override this anyway
     
