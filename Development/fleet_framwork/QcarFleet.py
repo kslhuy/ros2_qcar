@@ -32,7 +32,6 @@ class QcarFleet:
 
     def __init__(self, NumQcar: int, LeaderIndex: int, Distance: float, Controller: str, Observer:str, QlabType:str = "OpenRoad"):
         """
-
         Controller/Observer     :str        - String The name in the 
         QlanType                :str        - Simulation Map
         Distance                :float      - The distance between the following position and the object car position 
@@ -63,6 +62,8 @@ class QcarFleet:
             quit()
         else:
             QLabsRealTime().start_real_time_model(self.rtModel, actorNumber=self.LeaderIndex)
+
+        self.InitThread()
         pass
 
 
@@ -92,23 +93,25 @@ class QcarFleet:
 
         match QlabType:
             case "OpenRoad":
-                InitPositionTable = pd.read_csv("QcarDev/python/DO_1DimentionalCarFleet/data/QcarInitSettingOpenRoad.csv")
+                InitPositionTable = pd.read_csv("Development\\fleet_framwork\\data\\QcarInitSettingOpenRoad.csv")
 
             case "Studio":
-                InitPositionTable = pd.read_csv("QcarDev/python/DO_1DimentionalCarFleet/data/QcarInitSettingStudio.csv")
+                InitPositionTable = pd.read_csv("Development\\fleet_framwork\\data\\QcarInitSettingStudio.csv")
                 
             case _:
                 print("Error: QlabType not found")
                 quit()
 
         InitPositionTable = InitPositionTable.to_numpy()
+        QcarScale = [1,1,1] 
+        #Real scale for simulation and physical qcar: 
+        # QcarScale =  [0.1,0.1,0.1]
         for i in range(0, self.NumQcar):
-            self.Qcars[i].spawn_id(actorNumber=i, location=InitPositionTable[i, 1:4], rotation=InitPositionTable[i,4:7], scale=[0.1,0.1,0.1])
+            self.Qcars[i].spawn_id(actorNumber=i, location=InitPositionTable[i, 1:4], rotation=InitPositionTable[i,4:7], scale=QcarScale)
         pass
 
     def InitThread(self):
-        global KILL_THREAD
-        KILL_THREAD = True
+        self.lock = threading.Lock()
         pass
     #endregion
 
@@ -132,9 +135,12 @@ class QcarFleet:
 
 
     #region: API for writing the Fleet Leader and Get/Print Fleet Data
-    def QcarInfoGet(self, CarIndex:int, InfoType:str = "position"):
+    def APIQcarInfoGet(self, CarIndex:int, InfoType:str = "position"):
         """
         Obtain the Data in current time for whole fleet or some qcar InformationType: all, position, rotation.
+        
+        CarIndex            :str                The index of the object Qcar
+        InfoType            :position           The requirement information ("all", "position", "rotation")
         """
         if CarIndex in self.QcarIndexList:
             pass
@@ -151,6 +157,24 @@ class QcarFleet:
                 return self.Qcars[CarIndex].ping()
             case _:
                 print("InfoType not in consideration, pls check")
+        pass
+
+    def APIQcarWrite(self, CarIndex:int, SpeedCMD:float = 0, SteeringCMD:float = 0 ):
+        if CarIndex in self.QcarIndexList:
+            pass
+        else:
+            print("Error: illegal car index")
+            quit()
+
+        self.Qcars(CarIndex).set_velocity_and_request_state(
+                    forward         =SpeedCMD,
+                    turn            =SteeringCMD,
+                    headlights      =False,
+                    leftTurnSignal  =False,
+                    rightTurnSignal =False,
+                    brakeSignal     =False,
+                    reverseSignal   =False
+                )
         pass
 
     def QcarInfoPrint(self, CarIndex:int, InfoType:str = "all"):
@@ -171,4 +195,6 @@ class QcarFleet:
                 print("Qcar Index: ", CarIndex, "exist", "Information:")
                 print("   ","position: ", self.GetQcarInformation(CarIndex, "all")[1])
                 print("   ","Angle: ", self.GetQcarInformation(CarIndex, "all")[2])
+
+    
     #endregion

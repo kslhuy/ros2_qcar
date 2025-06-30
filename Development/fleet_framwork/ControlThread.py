@@ -1,17 +1,17 @@
 import threading
 
-class ControlThread(threading.Threads):
+class ControlThread(threading.Thread):
     def __init__(self):
         super().__init__()
-
+        self._kill_thread = threading.Event()
         pass
 
-    def run(self,leaderid,followerid):
+    def run(self):
         
         pass
 
-    def join(self):
-        
+    def stop(self):
+        self._kill_thread.set()
         pass
 
     def WriteControlInput(self, ControlInputAPI):

@@ -62,7 +62,7 @@ class Follower:
 
         # Create a dummy leader vehicle for the IDM controller
         leader_state = [pos_leader[0], pos_leader[1], rot_leader[2], v_follower]
-        dummy_leader = DummyVehicle(leader_state, vehicle_id=self.id-1)
+        dummy_leader = DummyVehicle(leader_state, vehicle_id = self.id-1)
 
         # Override IDM's vehicle perception with dummy data
         self.idm.controller.get_surrounding_vehicles = lambda *args, **kwargs: (None, [dummy_leader], None, None)
@@ -84,11 +84,11 @@ class Follower:
 
         # Send control command to the QCar
         self.qcar.set_velocity_and_request_state(
-            forward=speed_cmd,
-            turn=steering_cmd,
-            headlights=False,
-            leftTurnSignal=False,
-            rightTurnSignal=False,
-            brakeSignal=False,
+            forward         =speed_cmd,
+            turn            =steering_cmd,
+            headlights      =False,
+            leftTurnSignal  =False,
+            rightTurnSignal =False,
+            brakeSignal     =False,
             reverseSignal=False
         )

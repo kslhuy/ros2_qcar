@@ -745,5 +745,3 @@ class QLabsQCar2(QLabsActor):
             return True
         else:
             return False        
-        
-

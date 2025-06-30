@@ -18,7 +18,7 @@ class OpenRoad(RoadMap):
 
         nodePoses = [
             [0, -6, 3.14],       # Node 0
-            [-10,-6, 3.14]
+            [-100,-6, 3.14]
         ]
         edgeConfigs = [
                 [0, 1, 0]

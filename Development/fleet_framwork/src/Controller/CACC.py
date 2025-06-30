@@ -65,9 +65,10 @@ class CACC:
                 velocity_error = v_j - v
 
                 u_coop += K @ np.array([spacing_error, velocity_error])
-
+                
             u_coop /= num_vehicles
             acc = u_coop[0]  # Cooperative acceleration
+            acc = max(-30,min(acc,30))
 
         # Constant steering
         delta = 0
