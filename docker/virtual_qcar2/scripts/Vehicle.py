@@ -8,12 +8,12 @@ import time
 class GPSSync:
     """Simulates GPS-based time synchronization for vehicles."""
     def __init__(self):
-        self.gps_time_offset = 0  # Offset between GPS and local time
-        self.last_sync_time = time.time()  # Last GPS sync
+        self.gps_time_offset = 0
+        self.last_sync_time = time.time()
 
     def get_gps_time(self):
         """Simulated function to get GPS time."""
-        simulated_gps_time = time.time() + 2  # GPS is 2 sec ahead
+        simulated_gps_time = time.time() + 2
         return simulated_gps_time
 
     def sync_with_gps(self):
@@ -44,29 +44,27 @@ class Vehicle:
         self.send_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.recv_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.recv_sock.bind(('0.0.0.0', recv_port))
+        self.recv_sock.settimeout(0.01)  # Non-blocking with 10ms timeout
         self.target_ip = ip
         self.send_port = send_port
         self.recv_port = recv_port
-        self.leader_state = {'pos': [0, 0, 0], 'rot': [0, 0, 0], 'v': 0.}
+        # self.leader_state = {'pos': [0, 0, 0], 'rot': [0, 0, 0], 'v': 0.3}
         self.last_seq = -1
         self.sequence_number = 0
 
         # Velocity calculation
         self.prev_pos = None
         self.prev_time = None
-        self.velocity = 0.5  # Initial velocity estimate
-
-
-        # Start communication threads
-        threading.Thread(target=self.send_state, daemon=True).start()
-        threading.Thread(target=self.receive_state, daemon=True).start()
+        self.velocity = 0.3  # Match leader velocity
 
     def send_state(self):
-        """Sends vehicle state with simulated network delay."""
+        """Sends vehicle state at a fixed 100 Hz."""
+        target_period = 0.01  # 100 Hz
         while self.running:
+            start_time = time.time()
             try:
                 _, pos, rot, _ = self.qcar.get_world_transform()
-                v = self.qcar.motorTach if hasattr(self.qcar, 'motorTach') else 0.5
+                v = 0.3  # Use computed velocity from update_movement
                 timestamp = self.gps_sync.get_synced_time()
                 data = {
                     'seq': self.sequence_number,
@@ -76,24 +74,26 @@ class Vehicle:
                     'v': v,
                     'timestamp': timestamp
                 }
-                network_delay = random.uniform(0.05, 0.15)  # 50-150ms delay
-                time.sleep(network_delay)
                 self.send_sock.sendto(pickle.dumps(data), (self.target_ip, self.send_port))
-                print(f"[V{self.vehicle_id} SENT] Seq: {self.sequence_number}, Delay: {network_delay:.3f} sec")
+                print(f"[V{self.vehicle_id} SENT] Seq: {self.sequence_number}, Pos: {pos}, V: {v:.3f}")
                 self.sequence_number += 1
             except Exception as e:
                 print(f"[V{self.vehicle_id} SEND ERROR]: {e}")
-                time.sleep(1.0)
-                continue
-            time.sleep(0.1)
+            # Sleep to maintain fixed frequency
+            # elapsed = time.time() - start_time
+            # sleep_time = max(0, target_period - elapsed)
+            # print('sleep time',sleep_time)
+            time.sleep(target_period)
 
     def receive_state(self):
-        """Receives state from other vehicles."""
+        """Receives state from other vehicles at a fixed 100 Hz."""
+        target_period = 0.01  # 100 Hz
         while self.running:
+            start_time = time.time()
             try:
                 data, _ = self.recv_sock.recvfrom(1024)
                 incoming = pickle.loads(data)
-                if incoming['id'] != self.vehicle_id:  # Ignore own messages
+                if incoming['id'] != self.vehicle_id:
                     seq = incoming.get('seq', -1)
                     if self.last_seq != -1:
                         missed = seq - self.last_seq - 1
@@ -102,9 +102,16 @@ class Vehicle:
                         print(f"[V{self.vehicle_id} RECEIVED] Seq: {seq} (initial packet)")
                     self.last_seq = seq
                     self.leader_state = incoming
+                    print(f"[V{self.vehicle_id}] Leader state: pos={self.leader_state['pos']}, v={self.leader_state['v']:.3f}")
+            except socket.timeout:
+                pass  # No data received, continue to maintain frequency
             except Exception as e:
                 print(f"[V{self.vehicle_id} RECEIVE ERROR]: {e}")
-                continue
+            # Sleep to maintain fixed frequency
+            # elapsed = time.time() - start_time
+            # sleep_time = max(0, target_period - elapsed)
+            # time.sleep(sleep_time)
+            time.sleep(target_period)
 
     def wrap_to_pi(self, angle):
         """Wraps angle to [-pi, pi]."""
@@ -112,103 +119,87 @@ class Vehicle:
 
     def update_movement(self):
         """Updates vehicle movement based on role (leader or follower)."""
-        speed_cmd = 0.0  # Default to stop if undefined
-        steering_cmd = 0.0  # Default to no steering
+        
 
-        if self.is_leader:
-            # # Leader moves at constant velocity
-            # speed_cmd = 0.5
-            # steering_cmd = 0.0
-            pass
-        else:
-            # Follower uses IDM/CACC to track leader
+        try:
+            _, pos_follower, rot_follower, _ = self.qcar.get_world_transform()
+        except Exception as e:
+            print(f"[V{self.vehicle_id} READ ERROR]: {e}")
             try:
-                _, pos_follower, rot_follower, _ = self.qcar.get_world_transform()
-            except Exception as e:
-                print(f"[V{self.vehicle_id} READ ERROR]: {e}")
-                # Use default values (stop) and skip control application
                 self.qcar.set_velocity_and_request_state(
-                    forward=speed_cmd,
-                    turn=steering_cmd,
+                    forward=0.0,
+                    turn=0.0,
                     headlights=False,
                     leftTurnSignal=False,
                     rightTurnSignal=False,
                     brakeSignal=False,
                     reverseSignal=False
                 )
-                return
-            
-            # Calculate velocity using position difference
-            current_time = time.time()
-            if self.prev_pos is not None and self.prev_time is not None:
-                # Compute Euclidean distance between current and previous position
-                dx = pos_follower[0] - self.prev_pos[0]
-                dy = pos_follower[1] - self.prev_pos[1]
-                distance = math.sqrt(dx**2 + dy**2)
-                dt = current_time - self.prev_time
-                if dt > 0:  # Avoid division by zero
-                    self.velocity = distance / dt
-                else:
-                    self.velocity = 0.0
-            self.prev_pos = pos_follower
-            self.prev_time = current_time
-
-
-            pos_leader = self.leader_state['pos']
-            rot_leader = self.leader_state['rot']
-            v_leader = self.leader_state['v']
-
-            # Pure pursuit for steering
-            lookahead_distance = 0.4
-            target_x = pos_leader[0] - lookahead_distance * math.cos(rot_leader[2])
-            target_y = pos_leader[1] - lookahead_distance * math.sin(rot_leader[2])
-            dx = target_x - pos_follower[0]
-            dy = target_y - pos_follower[1]
-            follower_heading = rot_follower[2]
-            target_angle = math.atan2(dy, dx)
-            heading_error = self.wrap_to_pi(target_angle - follower_heading)
-            steering_cmd = -2.0 * heading_error
-            steering_cmd = max(-self.max_steering, min(self.max_steering, steering_cmd))
-
-           # IDM/CACC for speed
-            v_follower = self.velocity
-            print('v_follo',v_follower)
-            follower_state = [pos_follower[0], pos_follower[1], follower_heading, v_follower]
-            class DummyVehicle:
-                def __init__(self, state, vehicle_number=0):
-                    self.state = state
-                    self.vehicle_number = vehicle_number
-            leader_state = [pos_leader[0], pos_leader[1], rot_leader[2], v_leader]
-            dummy_leader = DummyVehicle(leader_state, vehicle_number=0)
-            self.idm.controller.get_surrounding_vehicles = lambda *args, **kwargs: (None, [dummy_leader], None, None)
-
-
-            class DummyVehicle:
-                def __init__(self, state, vehicle_number=0):
-                    self.state = state
-                    self.vehicle_number = vehicle_number
-            leader_state = [pos_leader[0], pos_leader[1], rot_leader[2], v_leader]
-            dummy_leader = DummyVehicle(leader_state, vehicle_number=0)
-            self.idm.controller.get_surrounding_vehicles = lambda *args, **kwargs: (None, [dummy_leader], None, None)
-
-            try:
-                _, input_u, _ = self.idm.get_optimal_input(
-                    host_car_id=self.vehicle_id,
-                    state=follower_state,
-                    last_input=None,
-                    lane_id=None,
-                    input_log=None,
-                    initial_lane_id=None,
-                    direction_flag=None,
-                    type_state="true",
-                    acc_flag=0
-                )
-                speed_cmd = max(0, input_u[0])
             except Exception as e:
-                print(f"[V{self.vehicle_id} IDM/CACC ERROR]: {e}")
-                speed_cmd = 0.0  # Stop if controller fails
+                print(f"[V{self.vehicle_id} CONTROL ERROR]: {e}")
+            return
 
-        # Apply control commands
+        # Calculate follower velocity
+        current_time = time.time()
+        if self.prev_pos is not None and self.prev_time is not None:
+            dx = pos_follower[0] - self.prev_pos[0]
+            dy = pos_follower[1] - self.prev_pos[1]
+            distance = math.sqrt(dx**2 + dy**2)
+            dt = current_time - self.prev_time
+            if dt > 1e-6:
+                self.velocity = distance / dt
+            else:
+                self.velocity = 0.0
+        else:
+            self.velocity = 0.0
+        self.prev_pos = pos_follower
+        self.prev_time = current_time
+
+        # Pure pursuit for steering
+        pos_leader = self.leader_state['pos']
+        rot_leader = self.leader_state['rot']
+        v_leader = self.leader_state['v']
+        lookahead_distance = 0.6  # Increased for smoother tracking
+        target_x = pos_leader[0] - lookahead_distance * math.cos(rot_leader[2])
+        target_y = pos_leader[1] - lookahead_distance * math.sin(rot_leader[2])
+        dx = target_x - pos_follower[0]
+        dy = target_y - pos_follower[1]
+        follower_heading = rot_follower[2]
+        target_angle = math.atan2(dy, dx)
+        heading_error = self.wrap_to_pi(target_angle - follower_heading)
+        steering_cmd = -2.0 * heading_error
+        steering_cmd = max(-self.max_steering, min(self.max_steering, steering_cmd))
+
+        # CACC for speed
+        v_follower = self.velocity
+        follower_state = [pos_follower[0], pos_follower[1], follower_heading, v_follower]
+        class DummyVehicle:
+            def __init__(self, state, vehicle_number=0):
+                self.state = state
+                self.vehicle_number = vehicle_number
+        leader_state = [pos_leader[0], pos_leader[1], rot_leader[2], v_leader]
+        dummy_leader = DummyVehicle(leader_state, vehicle_number=0)
+        self.idm.controller.get_surrounding_vehicles = lambda *args, **kwargs: (None, [dummy_leader], None, None)
+
+        try:
+            _, input_u, _ = self.idm.get_optimal_input(
+                host_car_id=self.vehicle_id,
+                state=follower_state,
+                last_input=None,
+                lane_id=None,
+                input_log=None,
+                initial_lane_id=None,
+                direction_flag=None,
+                type_state="true",
+                acc_flag=0
+            )
+            speed_cmd = max(0, input_u[0])
+            print(f"[V{self.vehicle_id}] CACC speed_cmd: {speed_cmd:.3f}, v_follower: {v_follower:.3f}, v_leader: {v_leader:.3f}")
+        except Exception as e:
+            print(f"[V{self.vehicle_id} IDM/CACC ERROR]: {e}")
+            speed_cmd = 0.0
+
+        print(f"[V{self.vehicle_id}] Applying speed: {speed_cmd:.3f}, steering: {steering_cmd:.3f}, velocity: {self.velocity:.3f}")
         try:
             self.qcar.set_velocity_and_request_state(
                 forward=speed_cmd,
@@ -223,23 +214,25 @@ class Vehicle:
             print(f"[V{self.vehicle_id} CONTROL ERROR]: {e}")
 
     def run(self):
-        """Main control loop for the vehicle."""
+        print(f"[V{self.vehicle_id}] Starting run loop, is_leader: {self.is_leader}")
         self.running = True
-        self.gps_sync.sync_with_gps()  # Initial GPS sync
+        self.gps_sync.sync_with_gps()
         while self.running:
             if self.is_leader and int(time.time()) % 5 == 0:
-                self.gps_sync.sync_with_gps()  # Leader syncs GPS every 5 seconds
+                self.gps_sync.sync_with_gps()
             self.update_movement()
-            time.sleep(0.2)
+            time.sleep(0.01)  # Match 100 Hz
 
     def start(self):
-        """Start the vehicle loop in a new thread."""
+        print(f"[V{self.vehicle_id}] Starting vehicle, is_leader: {self.is_leader}")
         if self.thread is None or not self.thread.is_alive():
+            self.running = True
+            threading.Thread(target=self.send_state, daemon=True).start()
+            threading.Thread(target=self.receive_state, daemon=True).start()
             self.thread = threading.Thread(target=self.run, daemon=True)
             self.thread.start()
 
     def stop(self):
-        """Stop the vehicle and clean up."""
         self.running = False
         if self.thread is not None:
             self.thread.join()

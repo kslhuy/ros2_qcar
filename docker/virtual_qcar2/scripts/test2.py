@@ -48,7 +48,7 @@ class DummyController:
             'v0': 1.0,
             'delta': 4,
             'T': 0.4,
-            's0': 1,  # for IDM
+            's0': 0.6,  # for IDM
             'ri': 0.5,  # for CACC
             'hi': 0.5,
             'K': np.array([[1, 0.0], [0.0, 1]])  # for CACC

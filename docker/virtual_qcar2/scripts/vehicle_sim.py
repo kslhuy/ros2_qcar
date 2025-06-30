@@ -60,7 +60,7 @@ def main():
     rtModel = os.path.normpath(os.path.join(os.environ['RTMODELS_DIR'], 'QCar2/QCar2_Workspace_studio'))
     QLabsRealTime().start_real_time_model(rtModel, actorNumber=0)
 
-    time.sleep(2)
+    time.sleep(3)
 
     # Initialize controller
     class DummyController:
