@@ -32,7 +32,7 @@ class Follower:
 
         
 
-        self.leader_state = {'pos': [0, 0, 0], 'rot': [0, 0, 0], 'v': 0.5}
+        self.leader_state = {'pos': [0, 0, 0], 'rot': [0, 0, 0], 'v': 0.3}
         self.last_seq = -1
 
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
