@@ -46,6 +46,18 @@ RUN pip3 install -U \
     pyqtgraph \
     matplotlib
 
+# Update GPG key signature
+RUN curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key -o /usr/share/keyrings/ros-archive-keyring.gpg
+
+RUN rm -f /etc/apt/sources.list.d/isaac-ros.list \
+    && sed -i '/isaac.download.nvidia.com/d' /etc/apt/sources.list \
+# && wget -qO - https://isaac.download.nvidia.com/isaac-ros/repos.key | sudo apt-key add - \
+# && grep -qxF "deb https://isaac.download.nvidia.com/isaac-ros/release-3 $(lsb_release -cs) release-3.0" /etc/apt/sources.list || \
+# echo "deb https://isaac.download.nvidia.com/isaac-ros/release-3 $(lsb_release -cs) release-3.0" | sudo tee -a /etc/apt/sources.list \
+&& sed -i '/isaac.download.nvidia.com/d' /etc/apt/sources.list || true \
+ && find /etc/apt/sources.list.d -type f -exec sed -i '/isaac.download.nvidia.com/d' {} \; \
+ && rm -f /etc/apt/sources.list.d/isaac-ros.list 
+
 # Copy quanser hal and pal folders inside isaac_ros and define environment variable
 COPY ./libraries /home/Quanser/libraries
 ENV PYTHONPATH=/home/Quanser/libraries/python
