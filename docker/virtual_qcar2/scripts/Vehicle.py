@@ -48,7 +48,7 @@ class Vehicle:
         self.target_ip = ip
         self.send_port = send_port
         self.recv_port = recv_port
-        # self.leader_state = {'pos': [0, 0, 0], 'rot': [0, 0, 0], 'v': 0.3}
+        self.leader_state = {'pos': [-1.205, -0.83, 0.005], 'rot': [0, 0, -44.7], 'v': 0.3}
         self.last_seq = -1
         self.sequence_number = 0
 
@@ -80,10 +80,11 @@ class Vehicle:
             except Exception as e:
                 print(f"[V{self.vehicle_id} SEND ERROR]: {e}")
             # Sleep to maintain fixed frequency
-            # elapsed = time.time() - start_time
-            # sleep_time = max(0, target_period - elapsed)
-            # print('sleep time',sleep_time)
-            time.sleep(target_period)
+            elapsed = time.time() - start_time
+            print('elapsed',elapsed)
+            sleep_time = max(0, target_period - elapsed)
+            print('sleep time',sleep_time)
+            time.sleep(sleep_time)
 
     def receive_state(self):
         """Receives state from other vehicles at a fixed 100 Hz."""
@@ -97,7 +98,7 @@ class Vehicle:
                     seq = incoming.get('seq', -1)
                     if self.last_seq != -1:
                         missed = seq - self.last_seq - 1
-                        print(f"[V{self.vehicle_id} RECEIVED] Seq: {seq}, Last: {self.last_seq}, Missed: {missed}")
+                        # print(f"[V{self.vehicle_id} RECEIVED] Seq: {seq}, Last: {self.last_seq}, Missed: {missed}")
                     else:
                         print(f"[V{self.vehicle_id} RECEIVED] Seq: {seq} (initial packet)")
                     self.last_seq = seq
@@ -108,10 +109,11 @@ class Vehicle:
             except Exception as e:
                 print(f"[V{self.vehicle_id} RECEIVE ERROR]: {e}")
             # Sleep to maintain fixed frequency
-            # elapsed = time.time() - start_time
-            # sleep_time = max(0, target_period - elapsed)
-            # time.sleep(sleep_time)
-            time.sleep(target_period)
+            elapsed = time.time() - start_time
+            # print('elapsed',elapsed)
+            sleep_time = max(0, target_period - elapsed)
+            # print('sleep time',sleep_time)
+            time.sleep(sleep_time)
 
     def wrap_to_pi(self, angle):
         """Wraps angle to [-pi, pi]."""
@@ -194,12 +196,12 @@ class Vehicle:
                 acc_flag=0
             )
             speed_cmd = max(0, input_u[0])
-            print(f"[V{self.vehicle_id}] CACC speed_cmd: {speed_cmd:.3f}, v_follower: {v_follower:.3f}, v_leader: {v_leader:.3f}")
+            # print(f"[V{self.vehicle_id}] CACC speed_cmd: {speed_cmd:.3f}, v_follower: {v_follower:.3f}, v_leader: {v_leader:.3f}")
         except Exception as e:
             print(f"[V{self.vehicle_id} IDM/CACC ERROR]: {e}")
             speed_cmd = 0.0
 
-        print(f"[V{self.vehicle_id}] Applying speed: {speed_cmd:.3f}, steering: {steering_cmd:.3f}, velocity: {self.velocity:.3f}")
+        # print(f"[V{self.vehicle_id}] Applying speed: {speed_cmd:.3f}, steering: {steering_cmd:.3f}, velocity: {self.velocity:.3f}")
         try:
             self.qcar.set_velocity_and_request_state(
                 forward=speed_cmd,

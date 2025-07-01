@@ -12,7 +12,7 @@ from qvl.crosswalk import QLabsCrosswalk
 from Controller.idm_control import IDMControl
 from Controller.CACC import CACC
 import os
-from Vehicle import Vehicle
+from Vehicle2 import Vehicle
 
 def main():
     # Initialize QLabs
@@ -60,7 +60,7 @@ def main():
     rtModel = os.path.normpath(os.path.join(os.environ['RTMODELS_DIR'], 'QCar2/QCar2_Workspace_studio'))
     QLabsRealTime().start_real_time_model(rtModel, actorNumber=0)
 
-    time.sleep(3)
+    time.sleep(10)
 
     # Initialize controller
     class DummyController:
@@ -96,7 +96,7 @@ def main():
     follower_vehicle.start()
 
     # Run simulation for 10 seconds
-    time.sleep(40)
+    time.sleep(30)
 
     # Stop vehicles
     leader_vehicle.stop()
