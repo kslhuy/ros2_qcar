@@ -88,8 +88,8 @@ def main():
     control_algo = CACC(controller) if True else IDMControl(controller)
 
     # Create vehicles
-    leader_vehicle = Vehicle(qcar=leader, idm_controller=control_algo, vehicle_id=0, is_leader=True, send_port=5005, recv_port=5050)
-    follower_vehicle = Vehicle(qcar=follower, idm_controller=control_algo, vehicle_id=1, is_leader=False, send_port=5050, recv_port=5005)
+    leader_vehicle = Vehicle(qcar=leader, idm_controller=control_algo, vehicle_id=0, is_leader=True, send_port=6001, recv_port=6000)
+    follower_vehicle = Vehicle(qcar=follower, idm_controller=control_algo, vehicle_id=1, is_leader=False, send_port=6000, recv_port=6001)
 
     # Start vehicles
     leader_vehicle.start()
