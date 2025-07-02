@@ -64,8 +64,8 @@ class CACC:
 
                 spacing_target = ((host_car_id - car_j.vehicle_number) * s0 + h * v)
                 spacing_error = s - spacing_target
-                print('vj',v_j)
-                print('v',v)
+                # print('vj',v_j)
+                # print('v',v)
                 velocity_error = v_j - v
 
                 u_coop += K @ np.array([spacing_error, velocity_error])

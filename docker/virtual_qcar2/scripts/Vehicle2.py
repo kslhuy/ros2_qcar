@@ -47,15 +47,18 @@ class Vehicle:
         self.target_ip = ip
         self.send_port = send_port
         self.recv_port = recv_port
-        self.leader_state = {'pos': [0, 0, 0], 'rot': [0, 0, 0], 'v': 0.3}
+        self.leader_state = {'pos': [-1.205, -0.83, 0.005], 'rot': [0, 0, -44.7], 'v': 0.3}
         self.last_seq = -1
         self.sequence_number = 0
 
         # State for sending
         self.current_pos = [0, 0, 0]
         self.current_rot = [0, 0, 0]
-        self.velocity = 0.3  # Initial velocity
+        self.velocity = 0.3  # Initial velocity should be the same value with v_ref in vehicle_control.py
         self.last_update_time = time.time()
+
+        self.prev_pos = None
+        self.prev_time = None
 
     def send_state(self):
         """Sends vehicle state at a fixed 100 Hz."""
@@ -95,7 +98,9 @@ class Vehicle:
             try:
                 data, _ = self.recv_sock.recvfrom(1024)
                 incoming = pickle.loads(data)
-                if incoming['id'] != self.vehicle_id:
+                if incoming['id'] != self.vehicle_id and self.is_leader is False:
+                    # print('id veh',self.vehicle_id)
+                    # print('id income',incoming['id'])
                     seq = incoming.get('seq', -1)
                     if self.last_seq != -1:
                         missed = seq - self.last_seq - 1
@@ -105,6 +110,7 @@ class Vehicle:
                     self.last_seq = seq
                     self.leader_state = incoming
                     # print(f"[V{self.vehicle_id}] Leader state: pos={self.leader_state['pos']}, v={self.leader_state['v']:.3f}")
+                    print(f"[V{self.vehicle_id} RECEIVE] Sleep time: {sleep_time:.6f} s,Leader state: pos={self.leader_state['pos']}")
             except socket.timeout:
                 pass
             except Exception as e:
@@ -112,7 +118,7 @@ class Vehicle:
                 print(f"[V{self.vehicle_id} RECEIVE ERROR]: {e}, Elapsed: {elapsed:.6f} s")
             elapsed = time.time() - start_time
             sleep_time = max(0, target_period - elapsed)
-            print(f"[V{self.vehicle_id} RECEIVE] Sleep time: {sleep_time:.6f} s,Leader state: pos={self.leader_state['pos']}")
+            # print(f"[V{self.vehicle_id} RECEIVE] Sleep time: {sleep_time:.6f} s,Leader state: pos={self.leader_state['pos']}")
             time.sleep(sleep_time)
 
     def wrap_to_pi(self, angle):
@@ -130,7 +136,7 @@ class Vehicle:
             self.current_pos = pos_leader
             self.current_rot = rot_leader
         else:
-            print('update---------------------------------------------')
+            print('--------------------follower update---------------------------------')
 
             try:
                 start_time = time.time()
