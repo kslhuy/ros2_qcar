@@ -95,7 +95,7 @@ def main():
     leader_vehicle.start()
     follower_vehicle.start()
 
-    # Run simulation for 10 seconds
+    # Run simulation for 30 seconds
     time.sleep(30)
 
     # Stop vehicles
