@@ -12,7 +12,7 @@ from qvl.crosswalk import QLabsCrosswalk
 from Controller.idm_control import IDMControl
 from Controller.CACC import CACC
 import os
-from Vehicle2 import Vehicle
+from Vehicle4 import Vehicle
 
 def main():
     # Initialize QLabs
@@ -88,15 +88,15 @@ def main():
     control_algo = CACC(controller) if True else IDMControl(controller)
 
     # Create vehicles
-    leader_vehicle = Vehicle(qcar=leader, idm_controller=control_algo, vehicle_id=0, is_leader=True, send_port=6001, recv_port=6000)
-    follower_vehicle = Vehicle(qcar=follower, idm_controller=control_algo, vehicle_id=1, is_leader=False, send_port=6000, recv_port=6001)
+    leader_vehicle = Vehicle(qcar=leader, idm_controller=control_algo, vehicle_id=0, is_leader=True, send_port=6001, recv_port=6000,ack_port=6002)
+    follower_vehicle = Vehicle(qcar=follower, idm_controller=control_algo, vehicle_id=1, is_leader=False, send_port=6000, recv_port=6001,ack_port=6003)
 
     # Start vehicles
     leader_vehicle.start()
     follower_vehicle.start()
 
-    # Run simulation for 30 seconds
-    time.sleep(30)
+    # Run simulation for 50 seconds
+    time.sleep(50)
 
     # Stop vehicles
     leader_vehicle.stop()
