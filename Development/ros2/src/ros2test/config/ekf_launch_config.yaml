@@ -1,0 +1,14 @@
+ekf:
+  ros__parameters:
+    NODE_SEQUENCE: [10, 4, 20, 10]
+
+    ENCODER_COUNTS_PER_REV: 720.0 # counts per revolution
+    WHEEL_RADIUS: 0.033 # front/rear wheel radius in m
+    PIN_TO_SPUR_RATIO: 0.09536679536679536
+
+vehicle_control_ros:
+  ros__parameters:
+    v_ref: 0.9
+    K_p: 0.1
+    K_i: 1
+    K_stanley: 1
