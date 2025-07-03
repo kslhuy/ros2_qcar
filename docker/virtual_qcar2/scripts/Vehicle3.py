@@ -1,4 +1,4 @@
-# No improvemrnt
+# syc with GPS Server
 import socket
 import pickle
 import threading
@@ -7,27 +7,38 @@ import time
 import random
 
 class GPSSync:
-    """Simulates GPS-based time synchronization for vehicles."""
-    def __init__(self):
+    """GPS-like time sync via centralized time server."""
+    def __init__(self, gps_server_ip='127.0.0.1', gps_server_port=8001):
         self.gps_time_offset = 0
         self.last_sync_time = time.time()
+        self.gps_server_ip = gps_server_ip
+        self.gps_server_port = gps_server_port
 
-    def get_gps_time(self):
-        """Simulated function to get GPS time."""
-        simulated_gps_time = time.time() + 2
-        return simulated_gps_time
+    def request_gps_time(self):
+        """Fetch GPS time from external server."""
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.settimeout(0.2)
+        try:
+            sock.sendto(b"time_request", (self.gps_server_ip, self.gps_server_port))
+            data, _ = sock.recvfrom(1024)
+            gps_time = pickle.loads(data)
+            return gps_time
+        except Exception as e:
+            print(f"[GPS SYNC] Error contacting GPS server: {e}")
+            return time.time() + 2  # Fallback
+        finally:
+            sock.close()
 
     def sync_with_gps(self):
-        """Sync local clock with GPS time."""
-        gps_time = self.get_gps_time()
+        gps_time = self.request_gps_time()
         local_time = time.time()
         self.gps_time_offset = gps_time - local_time
         self.last_sync_time = local_time
         print(f"[GPS SYNC] GPS Time: {gps_time:.3f}, Local Time: {local_time:.3f}, Offset: {self.gps_time_offset:.3f} sec")
 
     def get_synced_time(self):
-        """Returns corrected local time using GPS offset."""
         return time.time() + self.gps_time_offset
+
 
 class Vehicle:
     """Represents a vehicle in a platoon, supporting leader or follower roles."""
@@ -61,6 +72,10 @@ class Vehicle:
 
         self.prev_pos = None
         self.prev_time = None
+        
+        self.last_sync_attempt = time.time()
+        self.sync_interval = 1.0  # seconds
+
 
     def send_state(self):
         """Sends vehicle state at a fixed 100 Hz."""
@@ -248,14 +263,22 @@ class Vehicle:
                 print(f"[V{self.vehicle_id} CONTROL ERROR]: {e}")
 
     def run(self):
+        if self.is_leader and (time.time() - self.last_sync_attempt > self.sync_interval):
+            self.gps_sync.sync_with_gps()
+            self.last_sync_attempt = time.time()
+
         print(f"[V{self.vehicle_id}] Starting run loop, is_leader: {self.is_leader}")
         self.running = True
         self.gps_sync.sync_with_gps()
         target_period = 0.1  # 100 Hz
         while self.running:
             start_time = time.time()
-            if self.is_leader and int(time.time()) % 5 == 0:
+            # Periodic GPS synchronization for leader
+            if self.is_leader and (start_time - self.last_sync_attempt >= self.sync_interval):
                 self.gps_sync.sync_with_gps()
+                self.last_sync_attempt = start_time
+            # if self.is_leader and int(time.time()) % 5 == 0:
+            #     self.gps_sync.sync_with_gps()
             self.update_movement()
             elapsed = time.time() - start_time
             sleep_time = max(0, target_period - elapsed)
