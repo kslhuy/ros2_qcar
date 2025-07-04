@@ -1,6 +1,7 @@
-# syc with GPS Server
-# Fall-safe mechanism
-# ACKS and heartbeat Msgs
+# Sync with GPS Server: Make GPS synchronization between vehicles consistent and more realistic
+# Fall-safe mechanism: Log warnings if no heartbeats are received, with potential to trigger a stop in update_movement
+# ACKs: Implement a mechanism where the receiver sends an acknowledgment for each state packet, and the sender retries if no ACK is received within a timeout.
+# Heartbeats: Send periodic heartbeat messages to detect vehicle disconnections, enabling fail-safe actions if no heartbeats are received.
 import socket
 import pickle
 import threading
@@ -91,6 +92,8 @@ class Vehicle:
         self.prev_time = None
         self.last_sync_attempt = time.time()
         self.sync_interval = 1.0  # seconds
+        
+        self.heartbeat = True
 
     def send_state(self):
         """Sends vehicle state at a fixed 100 Hz with ACKs and heartbeats."""
@@ -192,6 +195,7 @@ class Vehicle:
                             self.logger.info(f"RECEIVED: Heartbeat from V{incoming['id']}")
             except socket.timeout:
                 if time.time() - self.last_heartbeat_time > self.heartbeat_timeout:
+                    self.heartbeat = False
                     self.logger.error("No heartbeat received for over 2 seconds, assuming leader failure")
             except Exception as e:
                 elapsed = time.time() - start_time
@@ -214,7 +218,19 @@ class Vehicle:
             except Exception as e:
                 self.logger.error(f"READ ERROR: {e}")
         else:
-            self.logger.info("Follower update")
+            if self.heartbeat == False:
+                self.logger.error("Leader failure detected, stopping vehicle")
+                try:
+                    self.qcar.set_velocity_and_request_state(
+                        forward=0.0, turn=0.0, headlights=False, leftTurnSignal=False,
+                        rightTurnSignal=False, brakeSignal=False, reverseSignal=False
+                    )
+                except Exception as e:
+                    self.logger.error(f"CONTROL ERROR: {e}")
+                return
+            
+            
+            self.logger.info("--------Follower update---------")
             try:
                 start_time = time.time()
                 _, pos_follower, rot_follower, _ = self.qcar.get_world_transform()
