@@ -12,7 +12,7 @@ from qvl.crosswalk import QLabsCrosswalk
 from Controller.idm_control import IDMControl
 from Controller.CACC import CACC
 import os
-from Vehicle4 import Vehicle
+from Vehicle3 import Vehicle
 
 def main():
     # Initialize QLabs
