@@ -24,7 +24,7 @@
 
 import socket
 import time
-import ujson  # Faster JSON library
+import json as ujson  # Faster JSON library
 import logging
 
 logging.basicConfig(

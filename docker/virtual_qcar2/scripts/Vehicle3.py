@@ -4,7 +4,7 @@
 # ACKs: Implement a mechanism where the receiver sends an acknowledgment for each state packet, and the sender retries if no ACK is received within a timeout.
 # Heartbeats: Send periodic heartbeat messages to detect vehicle disconnections, enabling fail-safe actions if no heartbeats are received.
 import socket
-import ujson  # Faster JSON library
+import json as ujson  # Faster JSON library
 import threading
 import math
 import time
@@ -28,7 +28,7 @@ class GPSSync:
     def request_gps_time(self):
         """Fetch GPS time from external server."""
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.settimeout(0.2)
+        sock.settimeout(0.5)
         try:
             sock.sendto(b"time_request", (self.gps_server_ip, self.gps_server_port))
             data, _ = sock.recvfrom(1024)
@@ -80,7 +80,7 @@ class Vehicle:
         self.target_ip = ip
         self.send_port = send_port
         self.recv_port = recv_port
-        self.ack_port = ack_port + vehicle_id  # Unique ACK port per vehicle
+        self.ack_port = ack_port
         self.ack_sock.bind(('0.0.0.0', self.ack_port))
         self.leader_state = {'pos': [-1.205, -0.83, 0.005], 'rot': [0, 0, -44.7], 'v': 0.3}
         self.last_seq = -1
@@ -92,7 +92,7 @@ class Vehicle:
         # State for sending
         self.current_pos = [0, 0, 0]
         self.current_rot = [0, 0, 0]
-        self.velocity = 0.3  # Initial velocity
+        self.velocity = 0.  # Initial velocity
         self.last_update_time = time.time()
         self.prev_pos = None
         self.prev_time = None
@@ -121,7 +121,8 @@ class Vehicle:
                             'pos': self.current_pos,
                             'rot': self.current_rot,
                             'v': self.velocity,
-                            'timestamp': self.gps_sync.get_synced_time()
+                            'timestamp': self.gps_sync.get_synced_time(),
+                            'ack_port': self.ack_port  # Include ACK port
                         }
                     # network_delay = random.uniform(0.05, 0.15)  # 50-150ms delay
                     # time.sleep(network_delay)
@@ -136,8 +137,7 @@ class Vehicle:
                         ack = ujson.loads(ack_data.decode())
                         print("ack id ",ack.get('ack_id'))
                         print("ack decoded:", ack)
-                        # if ack.get('type') == 'ack' and ack.get('ack_seq') == self.sequence_number and ack.get('ack_id') != self.vehicle_id:
-                        if ack.get('type') == 'ack' and ack.get('ack_seq') == self.sequence_number:
+                        if ack.get('type') == 'ack' and ack.get('ack_seq') == self.sequence_number and ack.get('ack_id') != self.vehicle_id:
                             print("pass2")
                             ack_received = True
                             with self.lock:
@@ -190,7 +190,8 @@ class Vehicle:
 
                 if msg_type == 'state':
                     sender_id = incoming.get('id', -1)
-                    if sender_id != self.vehicle_id and self.is_leader == False:
+                    # if sender_id != self.vehicle_id and self.is_leader == False:
+                    if sender_id != self.vehicle_id:
                         with self.lock:
                             seq = incoming.get('seq', -1)
                             print(f"RECEIVED: Seq: {seq}, Sender ID: {sender_id}, Pos: {incoming['pos']}, V: {incoming['v']:.3f}")
@@ -205,12 +206,12 @@ class Vehicle:
                             self.leader_state = incoming
                             # self.logger.info(f"RECEIVED: Seq: {seq}, Leader state: pos={self.leader_state['pos']}")
 
-                            # Send ACK
+                            # Send ACK to sender's specified ack_port
                             try:
                                 ack = {'type': 'ack', 'ack_seq': seq, 'ack_id': self.vehicle_id}
-                                sender_ack_port = 5051 + sender_id
+                                sender_ack_port = incoming.get('ack_port')  # Fallback to 5051 if not provided
                                 self.send_ack_sock.sendto(ujson.dumps(ack).encode(), (addr[0], sender_ack_port))
-                                self.logger.info(f"SENT: ACK for seq: {seq}")
+                                self.logger.info(f"SENT: ACK for seq: {seq} to port {sender_ack_port}")
                             except Exception as e:
                                 self.logger.error(f"ACK SEND ERROR: {e}")
 
