@@ -23,6 +23,7 @@ class GPSSync:
         self.gps_server_ip = gps_server_ip
         self.gps_server_port = gps_server_port
         self.logger = logging.LoggerAdapter(logger, {'vehicle_id': 'GPS'})
+        self.last_valid_offset = 0  # Store last valid offset
 
     def request_gps_time(self):
         """Fetch GPS time from external server."""
@@ -32,10 +33,12 @@ class GPSSync:
             sock.sendto(b"time_request", (self.gps_server_ip, self.gps_server_port))
             data, _ = sock.recvfrom(1024)
             gps_time = ujson.loads(data.decode())
+            # Simulate GPS jitter (±10ms)
+            gps_time += random.uniform(-0.01, 0.01)
             return gps_time
         except Exception as e:
             self.logger.error(f"Error contacting GPS server: {e}")
-            return time.time() + 2  # Fallback
+            return time.time() + self.last_valid_offset  # Use last valid offset
         finally:
             sock.close()
 
@@ -43,6 +46,7 @@ class GPSSync:
         gps_time = self.request_gps_time()
         local_time = time.time()
         self.gps_time_offset = gps_time - local_time
+        self.last_valid_offset = self.gps_time_offset  # Update last valid offset
         self.last_sync_time = local_time
         self.logger.info(f"GPS Time: {gps_time:.3f}, Local Time: {local_time:.3f}, Offset: {self.gps_time_offset:.3f} sec")
 
@@ -71,12 +75,13 @@ class Vehicle:
         self.recv_sock.settimeout(0.01)  # 10ms timeout
         self.send_ack_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.ack_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.ack_sock.bind(('0.0.0.0', ack_port))
-        self.ack_sock.settimeout(0.05)  # 50ms timeout for ACK
+        
+        self.ack_sock.settimeout(0.2)  # 200ms timeout for ACK
         self.target_ip = ip
         self.send_port = send_port
         self.recv_port = recv_port
-        self.ack_port = ack_port
+        self.ack_port = ack_port + vehicle_id  # Unique ACK port per vehicle
+        self.ack_sock.bind(('0.0.0.0', self.ack_port))
         self.leader_state = {'pos': [-1.205, -0.83, 0.005], 'rot': [0, 0, -44.7], 'v': 0.3}
         self.last_seq = -1
         self.sequence_number = 0
@@ -92,13 +97,13 @@ class Vehicle:
         self.prev_pos = None
         self.prev_time = None
         self.last_sync_attempt = time.time()
-        self.sync_interval = 1.0  # seconds
+        self.sync_interval = 5.0  # seconds
         
         self.heartbeat = True
 
     def send_state(self):
-        """Sends vehicle state at a fixed 100 Hz with ACKs and heartbeats."""
-        target_period = 0.1  # 100 Hz
+        """Sends vehicle state at a fixed 10 Hz with ACKs and heartbeats."""
+        target_period = 0.1  # 10 Hz
         heartbeat_interval = 1.0  # Heartbeat every 1 second
         max_retries = 3
         while self.running:
@@ -118,21 +123,28 @@ class Vehicle:
                             'v': self.velocity,
                             'timestamp': self.gps_sync.get_synced_time()
                         }
-                    network_delay = random.uniform(0.05, 0.15)  # 50-150ms delay
-                    time.sleep(network_delay)
+                    # network_delay = random.uniform(0.05, 0.15)  # 50-150ms delay
+                    # time.sleep(network_delay)
                     self.send_sock.sendto(ujson.dumps(data).encode(), (self.target_ip, self.send_port))
                     self.logger.info(f"SENT: Seq: {self.sequence_number}, Pos: {self.current_pos}, V: {self.velocity:.3f}")
 
                     # Wait for ACK
                     try:
+                        print("pass1")
                         ack_data, _ = self.ack_sock.recvfrom(1024)
+                        print("vehicle_id:", self.vehicle_id)
                         ack = ujson.loads(ack_data.decode())
-                        if ack.get('type') == 'ack' and ack.get('ack_seq') == self.sequence_number and ack.get('ack_id') != self.vehicle_id:
+                        print("ack id ",ack.get('ack_id'))
+                        print("ack decoded:", ack)
+                        # if ack.get('type') == 'ack' and ack.get('ack_seq') == self.sequence_number and ack.get('ack_id') != self.vehicle_id:
+                        if ack.get('type') == 'ack' and ack.get('ack_seq') == self.sequence_number:
+                            print("pass2")
                             ack_received = True
                             with self.lock:
                                 self.sequence_number += 1
                             self.logger.info(f"ACK received for seq: {self.sequence_number - 1}")
                     except socket.timeout:
+                        print("pass3")
                         retries += 1
                         self.logger.warning(f"ACK timeout for seq: {self.sequence_number}, retry {retries}/{max_retries}")
                     except Exception as e:
@@ -164,47 +176,70 @@ class Vehicle:
             elapsed = time.time() - start_time
             sleep_time = max(0, target_period - elapsed)
             time.sleep(sleep_time)
-
+    
     def receive_state(self):
-        """Receives state or heartbeats from other vehicles at a fixed 100 Hz."""
-        target_period = 0.1  # 100 Hz
+        """Receives state, heartbeats, or ACKs from other vehicles at a fixed 10 Hz."""
+        target_period = 0.1  # 10 Hz
         while self.running:
             start_time = time.time()
             try:
                 data, addr = self.recv_sock.recvfrom(1024)
                 incoming = ujson.loads(data.decode())
-                if incoming['id'] != self.vehicle_id and not self.is_leader:
-                    with self.lock:
-                        if incoming['type'] == 'state':
+
+                msg_type = incoming.get('type', '')
+
+                if msg_type == 'state':
+                    sender_id = incoming.get('id', -1)
+                    if sender_id != self.vehicle_id and self.is_leader == False:
+                        with self.lock:
                             seq = incoming.get('seq', -1)
+                            print(f"RECEIVED: Seq: {seq}, Sender ID: {sender_id}, Pos: {incoming['pos']}, V: {incoming['v']:.3f}")
                             if self.last_seq != -1:
                                 missed = seq - self.last_seq - 1
+                                if missed > 0:
+                                    self.logger.warning(f"Missed {missed} state packets (seq {self.last_seq+1} to {seq-1})")
                             else:
                                 self.logger.info(f"RECEIVED: Seq: {seq} (initial packet)")
+
                             self.last_seq = seq
                             self.leader_state = incoming
-                            self.logger.info(f"RECEIVED: Seq: {seq}, Leader state: pos={self.leader_state['pos']}")
+                            # self.logger.info(f"RECEIVED: Seq: {seq}, Leader state: pos={self.leader_state['pos']}")
+
                             # Send ACK
                             try:
                                 ack = {'type': 'ack', 'ack_seq': seq, 'ack_id': self.vehicle_id}
-                                self.send_ack_sock.sendto(ujson.dumps(ack).encode(), (addr[0], self.send_port))
+                                sender_ack_port = 5051 + sender_id
+                                self.send_ack_sock.sendto(ujson.dumps(ack).encode(), (addr[0], sender_ack_port))
                                 self.logger.info(f"SENT: ACK for seq: {seq}")
                             except Exception as e:
                                 self.logger.error(f"ACK SEND ERROR: {e}")
-                        elif incoming['type'] == 'heartbeat':
-                            self.last_heartbeat_time = time.time()
-                            self.heartbeat = True
-                            self.logger.info(f"RECEIVED: Heartbeat from V{incoming['id']}")
+
+                elif msg_type == 'heartbeat':
+                    self.last_heartbeat_time = time.time()
+                    self.heartbeat = True
+                    sender_id = incoming.get('id', '?')
+                    self.logger.info(f"RECEIVED: Heartbeat from V{sender_id}")
+
+                elif msg_type == 'ack':
+                    # ACKs are handled in send_state(), so we just ignore them here
+                    pass
+
+                else:
+                    self.logger.warning(f"Unknown message type received: {msg_type}")
+
             except socket.timeout:
                 if time.time() - self.last_heartbeat_time > self.heartbeat_timeout:
                     self.heartbeat = False
                     self.logger.error("No heartbeat received for over 2 seconds, assuming leader failure")
+
             except Exception as e:
                 elapsed = time.time() - start_time
                 self.logger.error(f"RECEIVE ERROR: {e}, Elapsed: {elapsed:.6f} s")
+
             elapsed = time.time() - start_time
             sleep_time = max(0, target_period - elapsed)
             time.sleep(sleep_time)
+
 
     def wrap_to_pi(self, angle: float) -> float:
         """Wraps angle to [-pi, pi]."""
