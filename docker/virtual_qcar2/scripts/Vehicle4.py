@@ -1,3 +1,4 @@
+# pickle
 # Sync with GPS Server: Make GPS synchronization between vehicles consistent and more realistic
 # Fall-safe mechanism: Log warnings if no heartbeats are received, with potential to trigger a stop in update_movement
 # ACKs: Implement a mechanism where the receiver sends an acknowledgment for each state packet, and the sender retries if no ACK is received within a timeout.
