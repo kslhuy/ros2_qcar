@@ -11,9 +11,41 @@ import time
 import random
 import logging
 from typing import Dict, List, Any
+import os
+from logging.handlers import RotatingFileHandler
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] V%(vehicle_id)s: %(message)s')
+# logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] V%(vehicle_id)s: %(message)s')
+# logger = logging.getLogger(__name__)
+
+# Configure logging with both console and file output
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+# Create formatter with vehicle_id
+formatter = logging.Formatter('%(asctime)s [%(levelname)s] V%(vehicle_id)s: %(message)s')
+
+# Console handler (added conditionally based on show_console)
+show_console = False  # Default to no console output
+if show_console:
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
+
+# Delete or truncate existing platoon.log before each run
+log_file = 'platoon.log'
+if os.path.exists(log_file):
+    try:
+        with open(log_file, 'w') as f:
+            f.truncate(0)  # Clear the file content
+        logger.info(f"Existing {log_file} truncated for new run")
+    except Exception as e:
+        logger.error(f"Failed to truncate {log_file}: {e}")
+        raise
+
+# File handler with rotation (max 5MB per file, keep 3 backups)
+file_handler = RotatingFileHandler(log_file, maxBytes=5*1024*1024, backupCount=3)
+file_handler.setFormatter(formatter)
+logger.addHandler(file_handler)
 
 class GPSSync:
     """GPS-like time sync via centralized time server."""
@@ -131,20 +163,20 @@ class Vehicle:
 
                     # Wait for ACK
                     try:
-                        print("pass1")
+                        # print("pass1")
                         ack_data, _ = self.ack_sock.recvfrom(1024)
-                        print("vehicle_id:", self.vehicle_id)
+                        # print("vehicle_id:", self.vehicle_id)
                         ack = ujson.loads(ack_data.decode())
-                        print("ack id ",ack.get('ack_id'))
-                        print("ack decoded:", ack)
+                        # print("ack id ",ack.get('ack_id'))
+                        # print("ack decoded:", ack)
                         if ack.get('type') == 'ack' and ack.get('ack_seq') == self.sequence_number and ack.get('ack_id') != self.vehicle_id:
-                            print("pass2")
+                            # print("pass2")
                             ack_received = True
                             with self.lock:
                                 self.sequence_number += 1
                             self.logger.info(f"ACK received for seq: {self.sequence_number - 1}")
                     except socket.timeout:
-                        print("pass3")
+                        # print("pass3")
                         retries += 1
                         self.logger.warning(f"ACK timeout for seq: {self.sequence_number}, retry {retries}/{max_retries}")
                     except Exception as e:
@@ -194,7 +226,7 @@ class Vehicle:
                     if sender_id != self.vehicle_id:
                         with self.lock:
                             seq = incoming.get('seq', -1)
-                            print(f"RECEIVED: Seq: {seq}, Sender ID: {sender_id}, Pos: {incoming['pos']}, V: {incoming['v']:.3f}")
+                            # print(f"RECEIVED: Seq: {seq}, Sender ID: {sender_id}, Pos: {incoming['pos']}, V: {incoming['v']:.3f}")
                             if self.last_seq != -1:
                                 missed = seq - self.last_seq - 1
                                 if missed > 0:
