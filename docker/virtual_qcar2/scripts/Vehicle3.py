@@ -217,7 +217,6 @@ class Vehicle:
             try:
                 data, addr = self.recv_sock.recvfrom(1024)
                 incoming = ujson.loads(data.decode())
-
                 msg_type = incoming.get('type', '')
 
                 if msg_type == 'state':
@@ -241,7 +240,7 @@ class Vehicle:
                             # Send ACK to sender's specified ack_port
                             try:
                                 ack = {'type': 'ack', 'ack_seq': seq, 'ack_id': self.vehicle_id}
-                                sender_ack_port = incoming.get('ack_port')  # Fallback to 5051 if not provided
+                                sender_ack_port = incoming.get('ack_port')
                                 self.send_ack_sock.sendto(ujson.dumps(ack).encode(), (addr[0], sender_ack_port))
                                 self.logger.info(f"SENT: ACK for seq: {seq} to port {sender_ack_port}")
                             except Exception as e:
