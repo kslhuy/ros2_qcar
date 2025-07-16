@@ -416,7 +416,7 @@ if __name__ == '__main__':
         )
         steeringScope.axes[1].attachSignal(name='y_meas')
         steeringScope.axes[1].attachSignal(name='y_ref')
-
+        # Heading angle
         steeringScope.addAxis(
             row=2,
             col=0,
