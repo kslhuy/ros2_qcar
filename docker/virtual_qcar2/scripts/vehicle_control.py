@@ -339,6 +339,7 @@ def controlLoop():
                 count = 0
             #endregion
             continue
+        # out of while loop : Stop the car
         qcar.read_write_std(throttle= 0, steering= 0)
 
 # -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
@@ -503,4 +504,5 @@ if __name__ == '__main__':
         KILL_THREAD = True
 
     input('Experiment complete. Press any key to exit...')
+    #endregion
 #endregion
