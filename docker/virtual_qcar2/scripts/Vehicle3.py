@@ -3,6 +3,7 @@
 # Fail-safe mechanism: Log warnings if no heartbeats are received, with potential to trigger a stop in update_movement
 # ACKs: Implement a mechanism where the receiver sends an acknowledgment for each state packet, and the sender retries if no ACK is received within a timeout.
 # Heartbeats: Send periodic heartbeat messages to detect vehicle disconnections, enabling fail-safe actions if no heartbeats are received.
+from collections import deque
 import socket
 import json as ujson  # Faster JSON library
 import threading
@@ -133,6 +134,10 @@ class Vehicle:
         
         self.heartbeat = True
 
+        # Queue for state management
+        self.state_queue = deque(maxlen=5)  # Keep last 5 states
+        self.queue_lock = threading.Lock()
+
     def send_state(self):
         """Sends vehicle state at a fixed 10 Hz with ACKs and heartbeats."""
         target_period = 0.1  # 10 Hz
@@ -235,6 +240,11 @@ class Vehicle:
 
                             self.last_seq = seq
                             self.leader_state = incoming
+
+                            # Add timestamp for received time
+                            incoming['received_time'] = self.gps_sync.get_synced_time()
+                            self.state_queue.append(incoming)
+                            
                             # self.logger.info(f"RECEIVED: Seq: {seq}, Leader state: pos={self.leader_state['pos']}")
 
                             # Send ACK to sender's specified ack_port
@@ -271,7 +281,29 @@ class Vehicle:
             elapsed = time.time() - start_time
             sleep_time = max(0, target_period - elapsed)
             time.sleep(sleep_time)
-
+    
+    
+    def get_latest_valid_state(self):
+        """Get the most recent valid leader state, with staleness checking."""
+        with self.queue_lock:
+            if not self.state_queue:
+                return self.leader_state  # Fallback to last known state
+                
+            current_time = self.gps_sync.get_synced_time()
+            
+            # Find most recent non-stale state
+            for state in reversed(self.state_queue):  # newest first
+                sent_time = state.get('timestamp', 0)
+                data_age = current_time - sent_time
+                
+                if data_age < 0.5:  # Less than 500ms old
+                    return state
+                    
+            # All states are stale, use newest anyway but log warning
+            latest = self.state_queue[-1]
+            sent_time = latest.get('timestamp', 0)
+            self.logger.warning(f"Using stale data: {current_time - sent_time:.3f}s old")
+            return latest
 
     def wrap_to_pi(self, angle: float) -> float:
         """Wraps angle to [-pi, pi]."""
@@ -331,10 +363,33 @@ class Vehicle:
             self.prev_pos = pos_follower
             self.prev_time = current_time
 
-            # Pure pursuit for steering
+            # Check data age
+            current_time = self.gps_sync.get_synced_time()
+            leader_timestamp = self.leader_state.get('timestamp', 0)
+            data_age = current_time - leader_timestamp
+            
+            if data_age > 0.5:  # If data is older than 500ms
+                self.logger.warning(f"Stale leader data: {data_age:.3f}s old")
+                # Maybe stop or use prediction
+                return
+                
+            # Predict leader's current position based on timestamp delay
             pos_leader = self.leader_state['pos']
+            v_leader = self.leader_state['v']
+            predicted_pos = [
+                pos_leader[0] + v_leader * math.cos(rot_leader[2]) * data_age,
+                pos_leader[1] + v_leader * math.sin(rot_leader[2]) * data_age,
+                pos_leader[2]
+            ]
+            # Use predicted_pos instead of raw pos_leader
+            # TODO : Could use that line below to get the latest valid state
+            # leader_data = self.get_latest_valid_state()
+
+            pos_leader = predicted_pos
             rot_leader = self.leader_state['rot']
             self.logger.info(f"Leader pos: {pos_leader}")
+
+            # Pure pursuit for steering
             v_leader = self.leader_state['v']
             lookahead_distance = 0.4
             target_x = pos_leader[0] - lookahead_distance * math.cos(rot_leader[2])
