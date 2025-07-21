@@ -1,4 +1,6 @@
 import numpy as np
+from hal.content.qcar_functions import QCarEKF
+
 
 class Observer:
     def __init__(self, vehicle, veh_param, initial_global_state, initial_local_state):

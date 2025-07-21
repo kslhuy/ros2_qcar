@@ -91,7 +91,7 @@ if enableSteeringControl:
 
     waypointSequence = roadmap.generate_path(nodeSequence)
     initialPose = roadmap.get_node_pose(nodeSequence[0]).squeeze()
-
+    print("Initial Pose:", initialPose)
 
 else:
     initialPose = [0, 0, 0]
@@ -192,7 +192,6 @@ class SteeringController:
             -self.maxSteeringAngle,
             self.maxSteeringAngle)
         
-        return 0
 
 def controlLoop():
     #region controlLoop setup
