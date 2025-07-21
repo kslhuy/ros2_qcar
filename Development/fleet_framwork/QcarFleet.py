@@ -88,16 +88,22 @@ class QcarFleet:
         """
         Generate the Qcar in the Qlab
         """
+
+        # import os
         for i in range(0, self.NumQcar):
             self.Qcars.append(QLabsQCar2(self.qlabs))
 
         match QlabType:
             case "OpenRoad":
-                InitPositionTable = pd.read_csv("Development\\fleet_framwork\\data\\QcarInitSettingOpenRoad.csv")
+                base_dir = os.path.dirname(__file__)
+                csv_path = os.path.join(base_dir, "data", "QcarInitSettingOpenRoad.csv")
+                InitPositionTable = pd.read_csv(csv_path)
 
             case "Studio":
-                InitPositionTable = pd.read_csv("Development\\fleet_framwork\\data\\QcarInitSettingStudio.csv")
-                
+                base_dir = os.path.dirname(__file__)
+                csv_path = os.path.join(base_dir, "data", "QcarInitSettingStudio.csv")
+                InitPositionTable = pd.read_csv(csv_path)
+
             case _:
                 print("Error: QlabType not found")
                 quit()
