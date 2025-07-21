@@ -12,6 +12,7 @@ setup(
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
         (os.path.join('share', package_name, 'launch'), glob('launch/*.py')),
+        (os.path.join('share', package_name, 'config'), glob('config/*.yaml'))
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -30,7 +31,9 @@ setup(
             "waypoints = ros2test.waypoints:main",
             "pure_pursuit = ros2test.pure_pursuit:main",
             "vehicle_control_ros = ros2test.vehicle_control_ros:main",
+            "vehicle_control_ros_bridge = ros2test.vehicle_control_ros_bridge:main",
             "ekf = ros2test.ekf:main",
+            "qcar2_bridge = ros2test.qcar2_bridge:main",
         ],
     },
 )

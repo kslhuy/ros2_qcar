@@ -1,8 +1,12 @@
+import threading
 from follower import Follower
+from qvl.qcar_flooring import QLabsQCarFlooring
 from qvl.qlabs import QuanserInteractiveLabs
 from qvl.qcar2 import QLabsQCar2
+from qcar2_sim import QCar2Sim
 from qvl.real_time import QLabsRealTime
 import os
+from qvl.walls import QLabsWalls
 
 
 # Connect to QLabs
@@ -23,6 +27,8 @@ QLabsRealTime().terminate_all_real_time_models()
 # Create leader and follower QCars
 leader = QLabsQCar2(qlabs)
 follower = QLabsQCar2(qlabs)
+follower2 = QLabsQCar2(qlabs)
+follower3 = QLabsQCar2(qlabs)
 
 leader_id = 0
 follower_id = 1
@@ -54,24 +60,53 @@ hWall.spawn_degrees(location=[-1.575+ x_offset, -2.7+ y_offset, 0.001], rotation
 
 
 # Spawn cars
-leader.spawn_id(
-    actorNumber=leader_id, 
+initialPosition = [-1.205, -0.83, 0.005]
+initialOrientation = [0, 0, -44.7]
+# leader = QLabsQCar2(qlabs)
+# leader.spawn_id(actorNumber=leader_id, 
+#             location=initialPosition, 
+#             rotation=initialOrientation,
+#             scale=[.1, .1, .1], 
+#             configuration=0, 
+#             waitForConfirmation=True)
+
+# rtModel = os.path.normpath(os.path.join(os.environ['RTMODELS_DIR'], 'QCar2/QCar2_Workspace_studio_interleaved'))
+# QLabsRealTime().start_real_time_model(rtModel, leader_id)
+
+lock = threading.Lock()
+
+
+follower.spawn_id(
+    actorNumber=follower_id, 
+    location=initialPosition, 
+    rotation=initialOrientation,
+    scale=[0.1, 0.1, 0.1]
+)
+
+car = QCar2Sim(follower, follower_id, lock=lock)
+threading.Thread(target=car.start).start()
+
+
+follower2.spawn_id(
+    actorNumber=2, 
     location=[0, 0, 0], 
     rotation=[0, 0, 0],
     scale=[0.1, 0.1, 0.1]
 )
-follower.spawn_id(
-    actorNumber=follower_id, 
-    location=[-5.5, -5, 0], 
-    rotation=[0, 0, 0], 
+
+car2 = QCar2Sim(follower2, 2, lock=lock)
+threading.Thread(target=car2.start).start()
+
+
+follower3.spawn_id(
+    actorNumber=3, 
+    location=[1, 0, 0], 
+    rotation=[0, 0, 0],
     scale=[0.1, 0.1, 0.1]
 )
 
-rtModel = os.path.normpath(os.path.join(os.environ['RTMODELS_DIR'], 'QCar2/QCar2_Workspace_studio'))
-QLabsRealTime().start_real_time_model(rtModel, actorNumber=0)  
-
-f = Follower(qcar=follower)
-f.run(leader=leader)
+car3 = QCar2Sim(follower3, 3, lock=lock)
+threading.Thread(target=car3.start).start()
 
 # Cleanup
-qlabs.close()
+# qlabs.close()

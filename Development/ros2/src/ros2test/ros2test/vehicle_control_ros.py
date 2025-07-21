@@ -9,6 +9,8 @@ from geometry_msgs.msg import PoseStamped
 from hal.utilities.control import StanleyController
 from ros2test.controller import SpeedController
 from ros2test.util import quaternion_to_yaw
+import pyqtgraph as pg
+from pyqtgraph.Qt import QtWidgets
 
 class VehicleControl(Node):
     def __init__(self):
@@ -43,6 +45,15 @@ class VehicleControl(Node):
         
         roadmap = SDCSRoadMap(leftHandTraffic=False)
         self.waypointSequence = roadmap.generate_path(self.nodeSequence)
+
+        lidarPlot = pg.plot(title="vehicle_control")
+
+        lidarPlot.setXRange(-4, 4)
+
+        lidarPlot.setYRange(-2, 6)
+        
+        self.plotwaypoints = lidarPlot.plot([], [], pen=None, symbol='o', symbolBrush='r', symbolPen=None, symbolSize=2)
+        self.pos = lidarPlot.plot([], [], pen=None, symbol='o', symbolBrush='g', symbolPen=None, symbolSize=2)
         
         self.sub = self.create_subscription(PoseStamped, '/ekf_pose', self.ekf_callback, 10)
         self.sub2 = self.create_subscription(JointState, '/qcar2_joint', self.joint_callback, 10)
@@ -69,6 +80,12 @@ class VehicleControl(Node):
         self.motorTach = msg.velocity[0] * self.CPS_TO_MPS
         
     def ekf_callback(self, msg: PoseStamped): 
+        x = self.waypointSequence[0]
+        y = self.waypointSequence[1] 
+        self.plotwaypoints.setData(x, y)
+        
+        QtWidgets.QApplication.instance().processEvents()
+        
         pose = msg.pose
         tp = self.t
         self.t = time.time() - self.t0

@@ -38,7 +38,8 @@ class KeyboardTest(Node):
     def __init__(self):
         super().__init__("test_node")
         self.get_logger().info("log in test node")
-        self.pub = self.create_publisher(MotorCommands, "/qcar2_motor_speed_cmd", 10)
+        # self.pub = self.create_publisher(MotorCommands, "/qcar2_motor_speed_cmd", 10)
+        self.pub = self.create_publisher(MotorCommands, "/qcar_1/cmd_vel", 10)
         # self.sub = self.create_subscription(Imu, "/qcar2_imu", self.receive, 10)
 
             # Timing parameters
