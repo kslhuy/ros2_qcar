@@ -16,7 +16,7 @@ if show_console:
     logger.addHandler(console_handler)
 
 # Delete or truncate existing platoon.log before each run
-log_file = 'platoon.log'
+log_file = 'platoon2.log'
 if os.path.exists(log_file):
     try:
         with open(log_file, 'w') as f:
