@@ -21,7 +21,7 @@ class Vehicle:
         self.running = False
         self.thread = None
         self.logger = logging.LoggerAdapter(parent_logger, {'vehicle_id': vehicle_id})
-        self.comm = CommHandler(vehicle_id, ip, send_port, recv_port, ack_port, self.logger)
+        self.comm = CommHandler(vehicle_id, ip, send_port, recv_port, ack_port, self.logger, self.running)
 
         self.leader_state = {'pos': [-1.205, -0.83, 0.005], 'rot': [0, 0, -44.7], 'v': 0.3}
         self.last_seq = -1
@@ -33,6 +33,31 @@ class Vehicle:
         self.velocity = 0.0
         self.prev_pos = None
         self.prev_time = None
+    # def __init__(self, vehicle_id, is_leader, qcar,idm_controller=None, 
+    #              target_ip="127.0.0.1", send_port=5000, recv_port=5001, 
+    #              ack_port=6000):
+    #     self.vehicle_id = vehicle_id
+    #     self.is_leader = is_leader
+    #     self.qcar = qcar
+    #     self.gps_sync = GPSSync()
+    #     self.target_ip = target_ip
+    #     self.send_port = send_port
+    #     self.recv_port = recv_port
+    #     self.ack_port = ack_port
+    #     self.logger = logging.LoggerAdapter(parent_logger, {'vehicle_id': vehicle_id})
+    #     self.running = False
+    #     self.comm = CommHandler(vehicle_id, target_ip, send_port, recv_port, ack_port, self.logger, self.running)
+    #     self.thread = None
+    #     self.current_pos = [0, 0, 0]
+    #     self.current_rot = [0, 0, 0]
+    #     self.velocity = 0.0
+    #     self.leader_state = None
+    #     self.lock = threading.Lock()
+    #     self.last_sync_attempt = 0
+    #     self.sync_interval = 1.0
+    #     self.idm = idm_controller
+    #     self.prev_pos = None
+    #     self.prev_time = None
 
     def wrap_to_pi(self, angle: float) -> float:
         """Wraps angle to [-pi, pi]."""
@@ -139,34 +164,93 @@ class Vehicle:
             except Exception as e:
                 self.logger.error(f"CONTROL ERROR: {e}")
 
+    # def run(self):
+    #     """Runs the vehicle control loop at 10 Hz."""
+    #     self.logger.info(f"Starting run loop, is_leader: {self.is_leader}")
+    #     self.running = True
+    #     self.gps_sync.sync_with_gps()
+    #     while self.running:
+    #         # print("running")
+    #         start_time = time.time()
+    #         if start_time - self.last_sync_attempt >= self.sync_interval:
+    #             self.gps_sync.sync_with_gps()
+    #             self.last_sync_attempt = start_time
+
+    #         self.update_movement()
+    #         sleep_time = self.comm.send_state(self.current_pos, self.current_rot, self.velocity, self.gps_sync.get_synced_time())
+    #         # print(self.comm.receive_messages())
+    #         received_state, recv_sleep = self.comm.receive_messages()
+    #         # print(received_state)
+    #         if received_state and not self.is_leader:
+    #             with self.lock:
+    #                 self.leader_state = received_state
+    #                 self.logger.info(f"Updated leader_state: {self.leader_state}")
+    # #         time.sleep(max(sleep_time, recv_sleep))
+
+    # def run(self):
+    #     """Runs the vehicle control loop at 10 Hz."""
+    #     self.logger.info(f"Starting run loop, is_leader: {self.is_leader}")
+    #     while self.running:
+    #         start_time = time.time()
+    #         self.logger.debug(f"Run loop iteration, running: {self.running}")
+    #         try:
+    #             if start_time - self.last_sync_attempt >= self.sync_interval:
+    #                 self.gps_sync.sync_with_gps()
+    #                 self.last_sync_attempt = start_time
+
+    #             self.update_movement()
+    #             sleep_time = self.comm.send_state(self.current_pos, self.current_rot, self.velocity, self.gps_sync.get_synced_time())
+    #             received_state, recv_sleep = self.comm.receive_messages()
+    #             self.logger.debug(f"Received state: {received_state}")
+    #             if received_state and not self.is_leader:
+    #                 with self.lock:
+    #                     self.leader_state = received_state
+    #                     self.logger.info(f"Updated leader_state: {self.leader_state}")
+    #             time.sleep(max(sleep_time, recv_sleep))
+    #         except Exception as e:
+    #             self.logger.error(f"Run loop error: {e}, continuing")
+
     def run(self):
-        """Runs the vehicle control loop at 10 Hz."""
+        """Runs the vehicle control loop at 10 Hz for coordination."""
         self.logger.info(f"Starting run loop, is_leader: {self.is_leader}")
-        self.running = True
-        self.gps_sync.sync_with_gps()
         while self.running:
             start_time = time.time()
-            if start_time - self.last_sync_attempt >= self.sync_interval:
-                self.gps_sync.sync_with_gps()
-                self.last_sync_attempt = start_time
+            try:
+                if start_time - self.last_sync_attempt >= self.sync_interval:
+                    self.gps_sync.sync_with_gps()
+                    self.last_sync_attempt = start_time
+                self.update_movement()
+                # State and reception handled by separate threads
+                if not self.is_leader and hasattr(self.comm, 'leader_state'):
+                    with self.lock:
+                        self.leader_state = getattr(self.comm, 'leader_state', None)
+                        if self.leader_state:
+                            self.logger.info(f"Updated leader_state: {self.leader_state}")
+                time.sleep(max(0, 0.1 - (time.time() - start_time)))  # Maintain 10 Hz
+            except Exception as e:
+                self.logger.error(f"Run loop error: {e}, continuing")
 
-            self.update_movement()
-            sleep_time = self.comm.send_state(self.current_pos, self.current_rot, self.velocity, self.gps_sync.get_synced_time())
-            print(self.comm.receive_messages())
-            received_state, recv_sleep = self.comm.receive_messages()
-            if received_state and not self.is_leader:
-                with self.lock:
-                    self.leader_state = received_state
-                    self.logger.info(f"Updated leader_state: {self.leader_state}")
-            time.sleep(max(sleep_time, recv_sleep))
+    # def start(self):
+    #     """Starts the vehicle threads."""
+    #     self.logger.info(f"Starting vehicle, is_leader: {self.is_leader}")
+    #     if self.thread is None or not self.thread.is_alive():
+    #         # print("start")
+    #         time.sleep(0.5)
+    #         self.running = True
+    #         self.thread = threading.Thread(target=self.run, daemon=True)
+    #         self.thread.start()
+    #         self.logger.debug(f"Started thread {self.thread.name}, is_alive: {self.thread.is_alive()}")\
 
     def start(self):
         """Starts the vehicle threads."""
         self.logger.info(f"Starting vehicle, is_leader: {self.is_leader}")
         if self.thread is None or not self.thread.is_alive():
             self.running = True
+            threading.Thread(target=self.comm.send_state, daemon=True).start()  # Use CommHandler method
+            threading.Thread(target=self.comm.receive_messages, daemon=True).start()  # Use CommHandler method
             self.thread = threading.Thread(target=self.run, daemon=True)
             self.thread.start()
+            self.logger.debug(f"Started threads: send_state, receive_messages, run, thread alive: {self.thread.is_alive()}")
 
     def stop(self):
         """Stops the vehicle and closes resources."""

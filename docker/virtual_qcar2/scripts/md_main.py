@@ -62,6 +62,8 @@ def main():
     leader_vehicle.start()
     follower_vehicle.start()
 
+    time.sleep(0.5)  
+
     # Run simulation for 50 seconds
     time.sleep(50)
 
