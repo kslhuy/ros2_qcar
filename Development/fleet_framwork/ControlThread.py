@@ -14,6 +14,9 @@ class ControlThread(threading.Thread):
         self._kill_thread.set()
         pass
 
+    def should_stop(self):
+        return self._kill_thread.is_set()
+
     def WriteControlInput(self, ControlInputAPI):
 
         pass

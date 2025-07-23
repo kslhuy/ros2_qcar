@@ -376,6 +376,7 @@ class Vehicle:
             # Predict leader's current position based on timestamp delay
             pos_leader = self.leader_state['pos']
             v_leader = self.leader_state['v']
+            rot_leader = self.leader_state['rot']
             predicted_pos = [
                 pos_leader[0] + v_leader * math.cos(rot_leader[2]) * data_age,
                 pos_leader[1] + v_leader * math.sin(rot_leader[2]) * data_age,
@@ -386,7 +387,6 @@ class Vehicle:
             # leader_data = self.get_latest_valid_state()
 
             pos_leader = predicted_pos
-            rot_leader = self.leader_state['rot']
             self.logger.info(f"Leader pos: {pos_leader}")
 
             # Pure pursuit for steering
