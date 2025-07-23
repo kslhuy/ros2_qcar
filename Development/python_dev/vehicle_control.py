@@ -69,7 +69,7 @@ if enableSteeringControl:
 else:
     initialPose = [0, 0, 0]
 
-calibrate=False
+calibrate=True
 
 # Define the calibration pose
 # Calibration pose is either [0,0,-pi/2] or [0,2,-pi/2]
