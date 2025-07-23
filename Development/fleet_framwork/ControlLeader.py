@@ -8,11 +8,14 @@ from pal.products.qcar import QCar, QCarGPS, IS_PHYSICAL_QCAR
 from pal.utilities.math import wrap_to_pi
 from hal.content.qcar_functions import QCarEKF
 
+
 from src.OpenRoad import OpenRoad
+from hal.products.mats import SDCSRoadMap
+
 from src.Controller.ControllerLeader import SpeedController,SteeringController
 
 class ControlLeader(ControlThread):  
-    def __init__(self,SimulationTime:float = 10, enableSteeringControl:bool = True, NodeSequence:list = [0,1], FlagPathRebuild:bool = False):
+    def __init__(self,SimulationTime:float = 10, enableSteeringControl:bool = True, NodeSequence:list = [0,1], FlagPathRebuild:bool = False , QlabType:str = "OpenRoad"):
         super().__init__()                                  #  Initialize parent Thread class
         self.tf = SimulationTime
         self.startDelay = 1
@@ -23,8 +26,10 @@ class ControlLeader(ControlThread):
         self.K_stanley = 1
         self.calibrationPose = [0,2,-np.pi/2]
         self.calibrate = True
+
+        self.QlabType = QlabType
         print("Basic Setting Finished")
-        self.waypointSequence, self.InitialPose = self.PathGeneration(FlagPathRebuild, NodeSequence)
+        self.waypointSequence, self.InitialPose = self.PathGeneration(QlabType , FlagPathRebuild, NodeSequence)
         print("Map Generation Finished")
 
         self.speedController = SpeedController(
@@ -91,43 +96,71 @@ class ControlLeader(ControlThread):
                     else:
                         delta = 0
                 qcar.write(u, delta)
+
+            # out of while loop : Stop the car
             qcar.read_write_std(throttle=0, steering=0)
             print("Thread Ends: Leader Control")
 
-    def PathGeneration(self, NeedRebuild:bool, NodeSequence:list):
-        waypointSequenceLocation    = "Development\\fleet_framwork\\data\\InitialPose.npy"
-        InitialPoseLocation         = "Development\\fleet_framwork\\data\\WayPintSequence.npy"
-        if not NeedRebuild:
-            if os.path.exists(waypointSequenceLocation):
-                print("Path Exists, no need to rebuild")
-                waypointSequence = np.load(waypointSequenceLocation)
-                InitialPose = np.load(InitialPoseLocation)
-            else:
-                print("Path not Exist, rebuilding and save")
+    def PathGeneration(self,QlabType:str, NeedRebuild:bool, NodeSequence:list):
+
+        match QlabType:
+            case "OpenRoad":
                 roadmap = OpenRoad()
-                waypointSequence = roadmap.generate_path(NodeSequence)
-                InitialPose = roadmap.get_node_pose(NodeSequence[0]).squeeze()
-                np.save(waypointSequenceLocation, waypointSequence)
-                np.save(InitialPoseLocation, InitialPose)
-        else:
-            print("Path Exists, rebuilding")
-            roadmap = OpenRoad()
-            waypointSequence = roadmap.generate_path(NodeSequence)
-            InitialPose = roadmap.get_node_pose(NodeSequence[0]).squeeze()
-            np.save(waypointSequenceLocation, waypointSequence)
-            np.save(InitialPoseLocation, InitialPose)
+            case "Studio":
+                roadmap = SDCSRoadMap()
+            case _:
+                raise ValueError("Unknown QlabType")
+
+        waypointSequence = roadmap.generate_path(NodeSequence)
+        InitialPose = roadmap.get_node_pose(NodeSequence[0]).squeeze()
+
+        # waypointSequenceLocation    = "Development\\fleet_framwork\\data\\InitialPose.npy"
+        # InitialPoseLocation         = "Development\\fleet_framwork\\data\\WayPintSequence.npy"
+
+        # # Ensure the directory exists
+        # os.makedirs(os.path.dirname(waypointSequenceLocation), exist_ok=True)
+        
+        # if not NeedRebuild:
+        #     if os.path.exists(waypointSequenceLocation):
+        #         print("Path Exists, no need to rebuild")
+        #         waypointSequence = np.load(waypointSequenceLocation)
+        #         InitialPose = np.load(InitialPoseLocation)
+        #     else:
+        #         print("Path not Exist, rebuilding and save")
+        #         roadmap = OpenRoad()
+        #         waypointSequence = roadmap.generate_path(NodeSequence)
+        #         InitialPose = roadmap.get_node_pose(NodeSequence[0]).squeeze()
+        #         np.save(waypointSequenceLocation, waypointSequence)
+        #         np.save(InitialPoseLocation, InitialPose)
+        # else:
+        #     print("Path Exists, rebuilding")
+        #     roadmap = OpenRoad()
+        #     waypointSequence = roadmap.generate_path(NodeSequence)
+        #     InitialPose = roadmap.get_node_pose(NodeSequence[0]).squeeze()
+        #     np.save(waypointSequenceLocation, waypointSequence)
+        #     np.save(InitialPoseLocation, InitialPose)
+        
         print("Path Create/Load Complete")
         return waypointSequence, InitialPose
 
     def vref(self,t):
-        if t<5:
-            v_ref = 2
-        elif t<10:
-            v_ref = 0
-        elif t<15:
-            v_ref = -0.5
-        elif t<20:
-            v_ref = 1
+        if self.QlabType == "OpenRoad":
+            if t<5:
+                v_ref = 2
+            elif t<10:
+                v_ref = 0
+            elif t<15:
+                v_ref = -0.5
+            elif t<20:
+                v_ref = 1
+            else:
+                v_ref = 2
+            return v_ref
+        elif self.QlabType == "Studio":
+            return 0.3
         else:
-            v_ref = 2
-        return v_ref
+            return 0.3
+        
+
+    def stop(self):
+        super().stop()
