@@ -34,6 +34,7 @@ setup(
             "vehicle_control_ros_bridge = ros2test.vehicle_control_ros_bridge:main",
             "ekf = ros2test.ekf:main",
             "qcar2_bridge = ros2test.qcar2_bridge:main",
+            "lidar_sub = ros2test.lidar_sub:main",
         ],
     },
 )

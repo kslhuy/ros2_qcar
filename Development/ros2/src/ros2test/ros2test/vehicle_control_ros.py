@@ -11,6 +11,7 @@ from ros2test.controller import SpeedController
 from ros2test.util import quaternion_to_yaw
 import pyqtgraph as pg
 from pyqtgraph.Qt import QtWidgets
+from collections import deque
 
 class VehicleControl(Node):
     def __init__(self):
@@ -53,7 +54,10 @@ class VehicleControl(Node):
         lidarPlot.setYRange(-2, 6)
         
         self.plotwaypoints = lidarPlot.plot([], [], pen=None, symbol='o', symbolBrush='r', symbolPen=None, symbolSize=2)
-        self.pos = lidarPlot.plot([], [], pen=None, symbol='o', symbolBrush='g', symbolPen=None, symbolSize=2)
+        self.plotpos = lidarPlot.plot([], [], pen=None, symbol='o', symbolBrush='g', symbolPen=None, symbolSize=2)
+        
+        self.poslistx = deque(maxlen=300)
+        self.poslisty = deque(maxlen=300)
         
         self.sub = self.create_subscription(PoseStamped, '/ekf_pose', self.ekf_callback, 10)
         self.sub2 = self.create_subscription(JointState, '/qcar2_joint', self.joint_callback, 10)
@@ -85,7 +89,6 @@ class VehicleControl(Node):
         self.plotwaypoints.setData(x, y)
         
         QtWidgets.QApplication.instance().processEvents()
-        
         pose = msg.pose
         tp = self.t
         self.t = time.time() - self.t0
@@ -93,7 +96,11 @@ class VehicleControl(Node):
 
         x = pose.position.x
         y = pose.position.y
-        
+        self.get_logger().info(f"(x, y) ({x}, {y})")
+        self.poslistx.append(x)
+        self.poslisty.append(y)
+        self.plotpos.setData(self.poslistx, self.poslisty)
+
         ox = pose.orientation.x
         oy = pose.orientation.y
         oz = pose.orientation.z

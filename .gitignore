@@ -1,5 +1,6 @@
 Development/build/*
 Development/install/*
+dev/install/*
 Development/log/*
 __pycache__/
 
@@ -8,3 +9,6 @@ docker/libraries/resources/pretrained_models/yolov8s-seg.onnx
 docker/libraries/resources/pretrained_models/yolov8s-seg.pt
 
 .history
+
+**/angles_net.mat
+**/distances_new.mat

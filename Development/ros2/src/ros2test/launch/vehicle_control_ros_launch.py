@@ -18,7 +18,7 @@ def generate_launch_description():
     qcar2_virtual_launch_path = os.path.join(
         get_package_share_directory('qcar2_nodes'),
         'launch',
-        'qcar2_virtual_launch.py'
+        'qcar2_launch.py'
     )
 
     include_qcar2_virtual_launch = IncludeLaunchDescription(

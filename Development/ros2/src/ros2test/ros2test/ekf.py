@@ -36,7 +36,7 @@ class EKF(Node):
         roadmap = SDCSRoadMap(leftHandTraffic=False)
         initialPose = roadmap.get_node_pose(self.nodeSequence[0]).squeeze()
         
-        self.gps = QCarGPS(initialPose=initialPose,calibrate=False)
+        self.gps = QCarGPS(initialPose=initialPose,calibrate=True)
         self.ekf = QCarEKF(x_0=initialPose)
         
         self.sub_imu = self.create_subscription(Imu, '/qcar2_imu', self.imu_callback, 10)
