@@ -20,6 +20,7 @@ class ControlLeader(ControlThread):
         self.tf = SimulationTime
         self.startDelay = 1
         self.controllerUpdateRate = 100
+
         self.K_p = 0.2
         self.K_i = 1
         self.enableSteeringControl = enableSteeringControl
@@ -60,6 +61,7 @@ class ControlLeader(ControlThread):
                 tp = t
                 t = time.time() - t0
                 dt = t - tp
+                # print("Leader Control Loop Time:", dt)
                 qcar.read()
                 vref = self.vref(t)
                 # vref = 120

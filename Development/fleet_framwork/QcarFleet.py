@@ -86,6 +86,7 @@ class QcarFleet:
             quit()
         self.qlabs.destroy_all_spawned_actors()
         QLabsRealTime().terminate_all_real_time_models()
+        #QLabsRealTime().terminate_all_real_time_models(RTModelHostName='host.docker.internal')
 
         if (QlabType == "Studio"):
             # Setup environment
@@ -111,7 +112,6 @@ class QcarFleet:
             mySpline.spawn_degrees(location=[2.05 + x_offset, -1.5 + y_offset, 0.01], rotation=[0, 0, 0], scale=[0.27, 0.02, 0.001], waitForConfirmation=False)
 
 
-        #QLabsRealTime().terminate_all_real_time_models(RTModelHostName='host.docker.internal')
         pass
 
     def InitQcar(self, QlabType:str):

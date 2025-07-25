@@ -42,27 +42,30 @@ class ControlFollower(ControlThread):
                 self.Controller = CACC(DController)
             case "IDM":
                 self.Controller = IDMControl(DController)
+
+        # Instantiate dummy_leader once for efficiency
+        self.dummy_leader = DummyVehicle([0, 0, 0, 0], vehicle_id=self.LeaderID)
         pass
 
     def run(self):
-        print("FollowerControl for Qcar Index ",self.FollowerID," start, Leader Index:", self.LeaderID)
+        print(f"FollowerControl for Qcar Index {self.FollowerID} start, Leader Index: {self.LeaderID}")
         t0 = time.time()
+        prev_time = t0
         twait = 3
         t = 0
+        desired_update_rate = 100  # Hz (adjust as needed)
+        desired_dt = 1.0 / desired_update_rate
         while t < self.tf + twait and not self._kill_thread.is_set():
+            loop_start = time.time()
             with self.FleetLock:
                 _, PosLeader, RotLeader, _     = self.Leader.get_world_transform()
                 _, PosFollower, RotFollower, _ = self.Follower.get_world_transform()
 
-            #region: LookheadDistance not function, need to be revised
-            #TODO : HUY : why lookahead distance too high ? that should only for steering control
-            # If for the RoadMap (longitudinal) Type , need to change the parameter in DummyController s0 , ri = 7
-            # TargetX = PosLeader[0] - self.LookheadDistance * math.cos(RotLeader[2])
-            # TargetY = PosLeader[1] - self.LookheadDistance * math.sin(RotLeader[2])
-            #endregion
+            current_time = time.time()
+            dt = current_time - prev_time  # Actual loop time
+            prev_time = current_time       # Update previous time
 
             FollowerHeading = RotFollower[2]
-
             self._update_velocity(PosFollower)
 
             if self.LeaderID == 0:
@@ -70,53 +73,53 @@ class ControlFollower(ControlThread):
             else:
                 v_Leader = self.Leader.get_velocity()
 
-            vFollower =  self.get_velocity()
-            print("Follower Velocity:", vFollower)
+            vFollower = self.get_velocity()
             FollowerState = [PosFollower[0], PosFollower[1], FollowerHeading, vFollower]
             LeaderState = [PosLeader[0], PosLeader[1], RotLeader[2], v_Leader]
 
-            #region:DummyController Part
-            dummy_leader = DummyVehicle(LeaderState, vehicle_id = self.LeaderID)
-            self.Controller.controller.get_surrounding_vehicles = lambda *args, **kwargs: (None, [dummy_leader], None, None)
+            # Update dummy_leader's state instead of re-instantiating
+            self.dummy_leader.state = LeaderState
+            self.Controller.controller.get_surrounding_vehicles = lambda *args, **kwargs: (None, [self.dummy_leader], None, None)
 
-            # Longtitudinal Control
+            # Longitudinal Control
             _, ControlInput, _ = self.Controller.get_optimal_input(
-                            host_car_id=self.FollowerID,
-                            state=FollowerState,
-                            last_input=None,
-                            lane_id=None,
-                            input_log=None,
-                            initial_lane_id=None,
-                            direction_flag=None,
-                            type_state="true",
-                            acc_flag=0
-                            )
-            # SpeedCMD = max(-1.0, min(1.0, ControlInput[0]))
-            SpeedCMD =  ControlInput[0]
+                host_car_id=self.FollowerID,
+                state=FollowerState,
+                last_input=None,
+                lane_id=None,
+                input_log=None,
+                initial_lane_id=None,
+                direction_flag=None,
+                type_state="true",
+                acc_flag=0
+            )
+            SpeedCMD = ControlInput[0]
 
-
-            # Lateral Control
-            # Project leader forward
-            lookahead_distance = 0.4
+            # Lateral Control (pure pursuit)
+            lookahead_distance = 0.5
             target_x = LeaderState[0] - lookahead_distance * math.cos(RotLeader[2])
             target_y = LeaderState[1] - lookahead_distance * math.sin(RotLeader[2])
 
             dx = target_x - FollowerState[0]
             dy = target_y - FollowerState[1]
-            # distance = math.hypot(dx, dy)
-
-            follower_heading = FollowerState[2]
             target_angle = math.atan2(dy, dx)
-            heading_error = wrap_to_pi(target_angle - follower_heading)
+            heading_error = wrap_to_pi(target_angle - FollowerState[2])
 
-            # Steering
             SteeringCMD = -self.k_steering * heading_error
             SteeringCMD = max(-self.MaxSteering, min(self.MaxSteering, SteeringCMD))
 
-            print("SpeedCMD:", SpeedCMD, "SteeringCMD:", SteeringCMD)
-            #endregion
             self.APIControllerWrite(SpeedCMD, SteeringCMD)
-            t = time.time()-t0
+            t = time.time() - t0
+
+            # Print timing and control info for debugging
+            print(f"Loop dt: {dt:.4f}s | SpeedCMD: {SpeedCMD:.3f} | SteeringCMD: {SteeringCMD:.3f}")
+
+            # Enforce fixed update rate
+            elapsed = time.time() - loop_start
+            sleep_time = max(0, desired_dt - elapsed)
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+
         self.APIControllerWrite(0, 0)
         pass
 

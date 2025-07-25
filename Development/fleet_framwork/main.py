@@ -6,6 +6,7 @@ from FleetConfig import FleetConfig, ConfigPresets, RoadType, ControllerType
 from QcarFleet import QcarFleet
 from ControlLeader import ControlLeader
 from ControlFollower import ControlFollower
+from PlatoonVehicle import PlatoonVehicle
 
 
 # Shared kill signal for all threads
@@ -20,8 +21,8 @@ signal.signal(signal.SIGINT, sig_handler)
 def main():
     # Load configuration - you can easily change this to different presets
     # config = ConfigPresets.get_openroad_cacc()
-    # config = ConfigPresets.get_studio_cacc()
-    config = ConfigPresets.get_openroad_cacc()
+    config = ConfigPresets.get_studio_cacc()
+    # config = ConfigPresets.get_openroad_cacc()
     
     # Or create custom configuration
     # config = FleetConfig(RoadType.OpenRoad, ControllerType.CACC)
@@ -71,7 +72,7 @@ def main():
             all_dead = all(not fc.is_alive() for fc in FollowerControl) and not LeaderControl.is_alive()
             if all_dead:
                 break
-            time.sleep(0.1)
+            time.sleep(0.2)
 
     except KeyboardInterrupt:
         print("KeyboardInterrupt caught. Stopping threads...")
