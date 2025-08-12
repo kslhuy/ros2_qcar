@@ -4,7 +4,6 @@ import matplotlib.image as mpimg
 import numpy as np
 import os, cv2
 # 
-# region : Initial setup
 
 roadmap = SDCSRoadMap(leftHandTraffic=False)
     # print(dir(roadmap))

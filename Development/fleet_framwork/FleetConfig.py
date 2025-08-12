@@ -79,13 +79,13 @@ class FleetConfig:
             's0': 1,    # Smaller spacing for Studio
             'ri': 1,    # Smaller spacing for CACC
             'hi': 0.3,  # Shorter time headway
-            'K': np.array([[1.2, 0.0], [0.0, 1.2]])  # Higher gains
+            'K': np.array([[1.1, 0.0], [0.0, 1.1]])  # Higher gains
         }
         
         # Studio specific parameters
         self.max_velocity = 0.5
-        self.lookahead_distance = 2.0
-        self.max_steering = 0.4
+        self.lookahead_distance = 0.5
+        self.max_steering = 0.6
     
     def _configure_controller_params(self):
         """Configure controller-specific parameters."""

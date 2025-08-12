@@ -18,6 +18,7 @@ from src.Controller.DummyController import DummyVehicle
 from src.Controller.idm_control import IDMControl
 from src.Controller.CACC import CACC
 from src.OpenRoad import OpenRoad
+from Vehicle import Vehicle
 
 import time, io, math, threading, os, multiprocessing
 import numpy as np
@@ -33,26 +34,27 @@ class QcarFleet:
 
     :QcarIndexList: List of Qcar Index, from 0 to (NumQCar-1)
     """
-    Qcars = []
 
-    def __init__(self, NumQcar: int, LeaderIndex: int, Distance: float, Controller: str, Observer:str, QlabType:str = "OpenRoad"):
+    def __init__(self, NumQcar: int, LeaderIndex: int, Distance: float, Controller: str, Observer:str, QlabType:str = "OpenRoad", config=None):
         """
         Controller/Observer     :str        - String The name in the 
         QlanType                :str        - Simulation Map
         Distance                :float      - The distance between the following position and the object car position 
-
+        config                  :object     - Configuration object containing fleet parameters
 
         Function: Initiation and Build the fleet.
         """
 
         self.qlabs = QuanserInteractiveLabs()
-        self.Qcars = []
+        self.Qcars = []  # This will now store Vehicle instances
+        self.qcar_objects = []  # Store raw QLabsQCar2 objects
         self.NumQcar = NumQcar
         self.LeaderIndex = LeaderIndex
         self.QcarIndexList = range(0, self.NumQcar)
         self.Distance = Distance            
         self.Controller = Controller        
-        self.Observer = Observer            
+        self.Observer = Observer
+        self.config = config
         self.rtModel = os.path.normpath(os.path.join(os.environ['RTMODELS_DIR'], 'QCar2/QCar2_Workspace_studio'))
         self.InitEnv(QlabType)
         #Number of the Qcars in the fleet, int
@@ -69,6 +71,7 @@ class QcarFleet:
             QLabsRealTime().start_real_time_model(self.rtModel, actorNumber=self.LeaderIndex)
 
         self.InitThread()
+        self.InitVehicles()  # Initialize Vehicle instances
         pass
 
 
@@ -86,7 +89,6 @@ class QcarFleet:
             quit()
         self.qlabs.destroy_all_spawned_actors()
         QLabsRealTime().terminate_all_real_time_models()
-        #QLabsRealTime().terminate_all_real_time_models(RTModelHostName='host.docker.internal')
 
         if (QlabType == "Studio"):
             # Setup environment
@@ -112,6 +114,7 @@ class QcarFleet:
             mySpline.spawn_degrees(location=[2.05 + x_offset, -1.5 + y_offset, 0.01], rotation=[0, 0, 0], scale=[0.27, 0.02, 0.001], waitForConfirmation=False)
 
 
+        #QLabsRealTime().terminate_all_real_time_models(RTModelHostName='host.docker.internal')
         pass
 
     def InitQcar(self, QlabType:str):
@@ -121,7 +124,7 @@ class QcarFleet:
 
         # import os
         for i in range(0, self.NumQcar):
-            self.Qcars.append(QLabsQCar2(self.qlabs))
+            self.qcar_objects.append(QLabsQCar2(self.qlabs))
 
         match QlabType:
             case "OpenRoad":
@@ -144,11 +147,36 @@ class QcarFleet:
         # QcarScale = [1,1,1] 
         #Real scale for simulation and physical qcar: 
         for i in range(0, self.NumQcar):
-            self.Qcars[i].spawn_id(actorNumber=i, location=InitPositionTable[i, 1:4], rotation=InitPositionTable[i,4:7], scale=QcarScale)
+            self.qcar_objects[i].spawn_id(actorNumber=i, location=InitPositionTable[i, 1:4], rotation=InitPositionTable[i,4:7], scale=QcarScale)
         pass
 
     def InitThread(self):
         self.lock = threading.Lock()
+        pass
+
+    def InitVehicles(self):
+        """
+        Initialize Vehicle instances for each QCar
+        """
+        for i in range(self.NumQcar):
+            is_leader = (i == self.LeaderIndex)
+            vehicle = Vehicle(
+                vehicle_id=i,
+                qcar=self.qcar_objects[i],
+                controller_type=self.Controller,
+                is_leader=is_leader,
+                config=self.config,
+                fleet_lock=self.lock
+            )
+            self.Qcars.append(vehicle)
+        
+        # Set leader-follower relationships
+        leader_vehicle = self.Qcars[self.LeaderIndex]
+        for i, vehicle in enumerate(self.Qcars):
+            if not vehicle.is_leader:
+                vehicle.set_leader(leader_vehicle)
+        
+        print(f"Initialized {self.NumQcar} vehicles with leader at index {self.LeaderIndex}")
         pass
     #endregion
 
@@ -158,16 +186,47 @@ class QcarFleet:
         """
         Start Following for Every Qcar in the Fleet
         """
-        
+        # print("Starting fleet vehicles...")
+        for i, vehicle in enumerate(self.Qcars):
+            vehicle.start()
+            time.sleep(0.1)  # Small delay between starting vehicles
+            # print(f"Started vehicle {i} ({'Leader' if vehicle.is_leader else 'Follower'})")
+        print("All fleet vehicles started")
         pass
 
     def FleetCanceling(self):
         """
         Cancel Following for Every Qcar in the Fleet
         """
-
-
+        print("Stopping fleet vehicles...")
+        for i, vehicle in enumerate(self.Qcars):
+            vehicle.stop()
+            print(f"Stopped vehicle {i}")
+        
+        # Wait for all vehicles to finish
+        for vehicle in self.Qcars:
+            vehicle.join(timeout=2.0)
+        
+        print("All fleet vehicles stopped")
         pass
+
+    def get_fleet_status(self):
+        """
+        Get status of all vehicles in the fleet
+        """
+        status = {}
+        for i, vehicle in enumerate(self.Qcars):
+            status[i] = {
+                'alive': vehicle.is_alive(),
+                'state': vehicle.get_state()
+            }
+        return status
+
+    def is_fleet_alive(self):
+        """
+        Check if any vehicle in the fleet is still running
+        """
+        return any(vehicle.is_alive() for vehicle in self.Qcars)
     #endregion
 
 
@@ -185,13 +244,17 @@ class QcarFleet:
             print("Error: Illegal car index")
             quit()
 
+        vehicle = self.Qcars[CarIndex]
+        
         match InfoType:
             case "all":
-                return self.Qcars[CarIndex].get_world_transform()
+                return vehicle.qcar.get_world_transform()
             case "angle":
-                return self.Qcars[CarIndex].get_world_transform_degrees()
+                return vehicle.qcar.get_world_transform_degrees()
             case "exist":
-                return self.Qcars[CarIndex].ping()
+                return vehicle.qcar.ping()
+            case "state":
+                return vehicle.get_state()
             case _:
                 print("InfoType not in consideration, pls check")
         pass
@@ -203,7 +266,8 @@ class QcarFleet:
             print("Error: illegal car index")
             quit()
 
-        self.Qcars(CarIndex).set_velocity_and_request_state(
+        vehicle = self.Qcars[CarIndex]
+        vehicle.qcar.set_velocity_and_request_state(
                     forward         =SpeedCMD,
                     turn            =SteeringCMD,
                     headlights      =False,
@@ -224,14 +288,20 @@ class QcarFleet:
             print("Error: illegal car index")
             quit()
 
+        vehicle = self.Qcars[CarIndex]
         
         if InfoType == "all":
-            if self.GetQcarInformation(CarIndex, "exist") == False:
+            if not vehicle.qcar.ping():
                 print("Qcar Index: ", CarIndex, "doesn't exist")
             else:
                 print("Qcar Index: ", CarIndex, "exist", "Information:")
-                print("   ","position: ", self.GetQcarInformation(CarIndex, "all")[1])
-                print("   ","Angle: ", self.GetQcarInformation(CarIndex, "all")[2])
+                print("   ","position: ", vehicle.current_pos)
+                print("   ","Angle: ", vehicle.current_rot)
+                print("   ","Velocity: ", vehicle.velocity)
+                print("   ","Running: ", vehicle.is_alive())
+        elif InfoType == "state":
+            state = vehicle.get_state()
+            print(f"Vehicle {CarIndex} State: {state}")
 
     
     #endregion

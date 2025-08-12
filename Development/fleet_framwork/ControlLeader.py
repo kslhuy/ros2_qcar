@@ -19,7 +19,7 @@ class ControlLeader(ControlThread):
         super().__init__()                                  #  Initialize parent Thread class
         self.tf = SimulationTime
         self.startDelay = 1
-        self.controllerUpdateRate = 100
+        self.controllerUpdateRate = 30
 
         self.K_p = 0.2
         self.K_i = 1

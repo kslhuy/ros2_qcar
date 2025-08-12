@@ -6,7 +6,6 @@ from FleetConfig import FleetConfig, ConfigPresets, RoadType, ControllerType
 from QcarFleet import QcarFleet
 from ControlLeader import ControlLeader
 from ControlFollower import ControlFollower
-from PlatoonVehicle import PlatoonVehicle
 
 
 # Shared kill signal for all threads
@@ -45,47 +44,63 @@ def main():
     enableSteeringControl = config.enable_steering_control
     FlagPathRebuild = config.flag_path_rebuild
 
-
-
-    Fleet = QcarFleet(QcarNum, LeaderIndex, DistanceBetweenEachCar, Controller, Observer , QlabType)
-    print("Create Control Threading")
-    LeaderControl = ControlLeader(SimTime, enableSteeringControl, NodeSequence, FlagPathRebuild , QlabType)
+    # Create fleet with new architecture - pass config to fleet
+    Fleet = QcarFleet(QcarNum, LeaderIndex, DistanceBetweenEachCar, Controller, Observer, QlabType, config)
     
-    # Pass configuration to ControlFollower instances
-    FollowerControl = [ControlFollower(SimTime, Fleet, i, i - 1, config.lookahead_distance, config.max_steering, Controller, config) for i in range(1, QcarNum)]
-
-
-    # Start followers
-    for fc in FollowerControl:
-        fc.start()
-        time.sleep(0.1)
-
-    # Start leader
-    print("Leader Control Start")
-    LeaderControl.start()
+    print("Fleet created with Vehicle instances")
+    print(f"Number of vehicles: {QcarNum}")
+    print(f"Leader index: {LeaderIndex}")
+    print(f"Controller type: {Controller}")
     
+    # Start all vehicles using the new fleet method
+    print("Starting fleet vehicles...")
+    Fleet.FleetBuilding()
+    
+    # Optional: Start leader control if you still want separate leader control
+    # This is now redundant since vehicles manage themselves
+    # LeaderControl = ControlLeader(SimTime, enableSteeringControl, NodeSequence, FlagPathRebuild , QlabType)
+    # LeaderControl.start()
 
-    # ------ Main thread to monitor the status of the threads ------
+    # ------ Main thread to monitor the status of the vehicles ------
     try:
-        print("Main Thread running")
+        print("Main Thread running - monitoring fleet status")
+        start_time = time.time()
+        last_status_time = start_time
+
+        
         while not KILL_THREAD.is_set():
-            all_dead = all(not fc.is_alive() for fc in FollowerControl) and not LeaderControl.is_alive()
-            if all_dead:
+            current_time = time.time()
+            
+            # Check if simulation time limit reached
+            if SimTime > 0 and (current_time - start_time) >= SimTime:
+                print(f"Simulation time limit ({SimTime}s) reached")
                 break
-            time.sleep(0.2)
+            
+            # Check if all vehicles are still alive
+            if not Fleet.is_fleet_alive():
+                print("All vehicles have stopped")
+                break
+                
+            # Print fleet status every 5 seconds
+            if current_time - last_status_time >= 5:
+                status = Fleet.get_fleet_status()
+                alive_count = sum(1 for v in status.values() if v['alive'])
+                print(f"Fleet status: {alive_count}/{QcarNum} vehicles alive")
+                last_status_time = current_time
+
+            
+            time.sleep(0.1)
 
     except KeyboardInterrupt:
-        print("KeyboardInterrupt caught. Stopping threads...")
+        print("KeyboardInterrupt caught. Stopping fleet...")
 
     finally:
-        print("Stopping all threads...")
-        LeaderControl.stop()
-        for fc in FollowerControl:
-            fc.stop()
-
-        LeaderControl.join()
-        for fc in FollowerControl:
-            fc.join()
+        print("Stopping all vehicles...")
+        Fleet.FleetCanceling()
+        
+        # if 'LeaderControl' in locals():
+        #     LeaderControl.stop()
+        #     LeaderControl.join()
 
         print("Simulation Ends.")
 
