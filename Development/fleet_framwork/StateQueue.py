@@ -35,6 +35,11 @@ class StateQueue:
         self.state_queue = deque(maxlen=max_queue_size)
         self.lock = threading.Lock()
         
+        # GPS time caching for performance optimization
+        self._cached_gps_time = 0.0
+        self._cache_update_time = 0.0
+        self._cache_validity_period = 0.1  # Cache GPS time for 100ms
+        
         # Statistics for monitoring
         self.stats = {
             'total_received': 0,
@@ -43,11 +48,37 @@ class StateQueue:
             'delayed_states': 0,
             'duplicate_states': 0,
             'queue_size': 0,
-            'last_cleanup': time.time()
+            'last_cleanup': time.time(),
+            'gps_cache_hits': 0,
+            'gps_cache_misses': 0
         }
         
         self.logger.info(f"StateQueue initialized - max_size: {max_queue_size}, "
                         f"max_age: {max_age_seconds}s, max_delay: {max_delay_threshold}s")
+    
+    def _get_cached_gps_time(self, gps_sync) -> float:
+        """
+        Get GPS time with caching for performance optimization.
+        
+        Args:
+            gps_sync: GPS synchronization object
+            
+        Returns:
+            Current GPS time (cached or fresh)
+        """
+        current_time = time.time()
+        
+        # Check if cache is still valid
+        if (current_time - self._cache_update_time) < self._cache_validity_period:
+            self.stats['gps_cache_hits'] += 1
+            return self._cached_gps_time
+        
+        # Cache miss - get fresh GPS time
+        self.stats['gps_cache_misses'] += 1
+        self._cached_gps_time = gps_sync.get_synced_time()
+        self._cache_update_time = current_time
+        
+        return self._cached_gps_time
     
     def add_state(self, state_data: Dict[str, Any], gps_sync) -> bool:
         """
@@ -65,7 +96,8 @@ class StateQueue:
             
             # Extract and validate timestamp
             state_timestamp = state_data.get('timestamp')
-            current_gps_time = gps_sync.get_synced_time()
+            # Use cached GPS time for better performance
+            current_gps_time = self._get_cached_gps_time(gps_sync)
             
             if state_timestamp is None:
                 self.logger.warning("State rejected: Missing timestamp")
@@ -88,7 +120,9 @@ class StateQueue:
             # Check for excessive delay that indicates network problems
             if abs(time_delay) > self.max_delay_threshold:
                 self.stats['delayed_states'] += 1
-                self.logger.warning(f"State rejected: Excessive delay ({time_delay:.3f}s)")
+                self.logger.warning(f"State rejected: Excessive delay ({time_delay:.3f}s) from vehicle {sender_id}, "
+                                  f"threshold: {self.max_delay_threshold}s, current_gps: {current_gps_time:.3f}, "
+                                  f"state_timestamp: {state_timestamp:.3f}")
                 return False
             
             # Check for duplicate sequence numbers (if available)
@@ -96,13 +130,28 @@ class StateQueue:
             sender_id = state_data.get('id')
             
             if seq_num is not None and sender_id is not None:
-                # Check if we already have this sequence number from this sender
+                # More intelligent duplicate detection:
+                # Only reject if we have the EXACT same sequence number from the same sender
+                # AND it was received recently (within last 2 seconds)
+                duplicate_found = False
+                current_time = current_gps_time
+                
                 for existing_state in self.state_queue:
                     if (existing_state.get('seq') == seq_num and 
                         existing_state.get('id') == sender_id):
-                        self.stats['duplicate_states'] += 1
-                        self.logger.debug(f"State rejected: Duplicate seq {seq_num} from vehicle {sender_id}")
-                        return False
+                        # Check if the existing state is recent (within 2 seconds)
+                        existing_received_time = existing_state.get('received_time', 0)
+                        time_since_existing = current_time - existing_received_time
+                        
+                        if time_since_existing <= 2.0:  # Only consider recent duplicates
+                            duplicate_found = True
+                            break
+                
+                if duplicate_found:
+                    self.stats['duplicate_states'] += 1
+                    self.logger.warning(f"State rejected: Recent duplicate seq {seq_num} from vehicle {sender_id} "
+                                      f"(within {time_since_existing:.2f}s)")
+                    return False
             
             # Add metadata for tracking
             enhanced_state = state_data.copy()
@@ -317,6 +366,12 @@ class StateQueue:
                     'expired': stats['expired_states'],
                     'delayed': stats['delayed_states'],
                     'duplicates': stats['duplicate_states']
+                },
+                'performance_metrics': {
+                    'gps_cache_hits': stats.get('gps_cache_hits', 0),
+                    'gps_cache_misses': stats.get('gps_cache_misses', 0),
+                    'cache_hit_rate': (stats.get('gps_cache_hits', 0) / 
+                                     max(1, stats.get('gps_cache_hits', 0) + stats.get('gps_cache_misses', 0))) * 100
                 }
             })
             return stats

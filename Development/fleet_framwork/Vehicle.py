@@ -19,6 +19,14 @@ from StateQueue import StateQueue
 from src.GPS_sim.md_gps_sync import GPSSync
 from md_logging_config import get_individual_vehicle_logger, get_communication_logger, get_gps_logger, get_control_logger
 
+# Import performance monitoring
+try:
+    from performance_monitor import perf_monitor
+    PERFORMANCE_MONITORING = True
+except ImportError:
+    PERFORMANCE_MONITORING = False
+    perf_monitor = None
+
 class Vehicle:
     """
     Vehicle class that represents a single vehicle in the fleet.
@@ -96,10 +104,11 @@ class Vehicle:
         self.last_sync_attempt = time.time()
         
         # State Queue for managing received states with time validation
+        # Increased max_delay_threshold to 1.0s to account for processing delays
         self.state_queue = StateQueue(
             max_queue_size=50,
-            max_age_seconds=1.0,
-            max_delay_threshold=0.5,
+            max_age_seconds=2.0,           # Allow states up to 2 seconds old
+            max_delay_threshold=1.0,       # Allow up to 1 second of processing delay
             logger=self.logger
         )
         
@@ -170,6 +179,10 @@ class Vehicle:
                     distance = math.sqrt(dx**2 + dy**2)
                     dt = current_time - self.prev_time
                     self.velocity = distance / dt if dt > 1e-6 else 0.0
+                    
+                    # # Debug velocity calculation (only log occasionally to avoid spam)
+                    # if abs(self.velocity) > 0.01 or self.vehicle_id == 0:  # Log if moving or if leader
+                    #     self.logger.debug(f"Velocity calc: distance={distance:.4f}m, dt={dt:.4f}s, v={self.velocity:.3f}m/s")
                 else:
                     self.velocity = 0.0
                     
@@ -214,18 +227,37 @@ class Vehicle:
 
     def process_received_state(self, received_state: dict):
         """
-        Process received state data through StateQueue for validation.
+        Optimized state processing for better performance.
         This method should be called by CommHandler when new states are received.
         
         Args:
             received_state: State data received from another vehicle
         """
+        # Start performance timing
+        if PERFORMANCE_MONITORING and perf_monitor:
+            start_time = perf_monitor.start_timing()
+        
         try:
-            # Add state to queue with GPS time validation
-            if self.state_queue.add_state(received_state, self.gps_sync):
-                self.logger.debug(f"Vehicle {self.vehicle_id}: Valid state added to queue from vehicle {received_state.get('id')}")
+            # Fast path: Skip validation for followers receiving leader data if performance critical
+            sender_id = received_state.get('id')
+            
+            # Quick validation for critical path optimization
+            if (not self.is_leader and 
+                self.leader_vehicle and 
+                sender_id == self.leader_vehicle.vehicle_id):
                 
-                # Update leader_state for followers using the latest valid state
+                # Fast path: Direct state update for leader-follower communication
+                # Still validate through StateQueue but optimize for performance
+                if self.state_queue.add_state(received_state, self.gps_sync):
+                    # Directly update leader_state without additional queue lookup
+                    self.leader_state = received_state
+                    if PERFORMANCE_MONITORING and perf_monitor:
+                        perf_monitor.end_timing(start_time, "processing")
+                    return
+            
+            # Standard path: Full validation and processing
+            if self.state_queue.add_state(received_state, self.gps_sync):
+                # Only do expensive operations if state was accepted
                 if not self.is_leader:
                     # Get the most recent valid state from the leader
                     latest_leader_state = self.state_queue.get_latest_valid_state(
@@ -234,12 +266,21 @@ class Vehicle:
                     
                     if latest_leader_state:
                         self.leader_state = latest_leader_state
-                        self.logger.debug(f"Updated leader_state from validated queue: {latest_leader_state}")
             else:
-                self.logger.warning(f"Vehicle {self.vehicle_id}: Invalid state rejected from vehicle {received_state.get('id')}")
+                # Only generate detailed stats if logging level requires it
+                if self.logger.isEnabledFor(logging.WARNING):
+                    stats = self.state_queue.get_queue_stats()
+                    self.logger.warning(f"Vehicle {self.vehicle_id}: Invalid state rejected from vehicle {sender_id} "
+                                      f"(Rejected: {stats['total_received'] - stats['valid_states']}, "
+                                      f"Expired: {stats['expired_states']}, Delayed: {stats['delayed_states']}, "
+                                      f"Duplicates: {stats['duplicate_states']})")
                 
         except Exception as e:
             self.logger.error(f"Error processing received state: {e}")
+        finally:
+            # End performance timing
+            if PERFORMANCE_MONITORING and perf_monitor:
+                perf_monitor.end_timing(start_time, "processing")
     
     def get_interpolated_leader_state(self, target_time: Optional[float] = None) -> Optional[dict]:
         """
@@ -270,7 +311,7 @@ class Vehicle:
         """Simple leader control logic that delegates to VehicleLeaderController."""
         if not self.is_leader or self.leader_controller is None:
             return
-            
+
         try:
             # Compute control commands using the dedicated leader controller
             # Inside leader controller they handle apply the control commands to Qcar
@@ -570,5 +611,15 @@ class Vehicle:
                 }
             else:
                 state['interpolated_leader_state'] = {'available': False}
+        
+        # Add performance monitoring status
+        if PERFORMANCE_MONITORING and perf_monitor:
+            state['performance_monitoring'] = {
+                'enabled': True,
+                'integration_status': perf_monitor.get_integration_status(),
+                'recent_stats': perf_monitor.get_performance_stats()
+            }
+        else:
+            state['performance_monitoring'] = {'enabled': False}
         
         return state

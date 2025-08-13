@@ -5,6 +5,14 @@ import logging
 from typing import Dict, Any, Tuple, Optional
 import threading
 
+# Import performance monitoring
+try:
+    from performance_monitor import perf_monitor
+    PERFORMANCE_MONITORING = True
+except ImportError:
+    PERFORMANCE_MONITORING = False
+    perf_monitor = None
+
 class CommHandler:
     """
     Handles UDP communication for vehicle fleet coordination.
@@ -291,7 +299,7 @@ class CommHandler:
             return
             
         self.logger.info(f"RECEIVED STATE: Seq: {seq}, Sender ID: {sender_id}, "
-                        f"Pos: {message.get('pos')}")
+                        f"Pos: {message.get('pos')}, V: {message.get('v', 0.0):.3f}")
         
         # Send ACK response
         sender_ack_port = message.get('ack_port')
@@ -345,25 +353,84 @@ class CommHandler:
             sender_addr: Address tuple (IP, port) of message sender
         """
         try:
-            # Decode JSON message
+            # Start JSON decode timing
+            if PERFORMANCE_MONITORING:
+                json_start = perf_monitor.start_timing()
+            
+            # Fast JSON decode
             message = ujson.loads(data.decode())
+            
+            # End JSON decode timing
+            if PERFORMANCE_MONITORING:
+                perf_monitor.end_timing(json_start, "json_decode")
+            
             msg_type = message.get('type', '')
             sender_id = message.get('id')
             
-            self.logger.debug(f"Processing message type '{msg_type}' from Vehicle {sender_id}")
+            # Quick type check to avoid unnecessary processing
+            if sender_id == self.vehicle_id:
+                return  # Ignore messages from ourselves
             
-            # Route to appropriate message handler
+            # Route to appropriate message handler (optimized order by frequency)
             if msg_type == 'state':
-                self._handle_state_message(message, sender_addr)
-            elif msg_type == 'heartbeat':
-                self._handle_heartbeat_message(message)
+                self._handle_state_message_optimized(message, sender_addr)
             elif msg_type == 'ack':
                 self._handle_ack_message(message)
+            elif msg_type == 'heartbeat':
+                self._handle_heartbeat_message(message)
             else:
                 self.logger.warning(f"Unknown message type received: {msg_type} from {sender_addr}")
                 
         except Exception as e:
             self.logger.error(f"Failed to process received message: {e}, sender: {sender_addr}")
+    
+    def _handle_state_message_optimized(self, message: Dict[str, Any], sender_addr: Tuple[str, int]):
+        """
+        Optimized version of state message handling.
+        
+        Args:
+            message: Decoded state message data
+            sender_addr: Address tuple (IP, port) of message sender
+        """
+        # Start performance timing
+        if PERFORMANCE_MONITORING:
+            process_start = perf_monitor.start_timing()
+        
+        # Extract essential data quickly
+        sender_id = message.get('id')
+        seq = message.get('seq', -1)
+        
+        # Log with minimal formatting for performance
+        self.logger.info(f"RECEIVED STATE: Seq: {seq}, Sender ID: {sender_id}, "
+                        f"Pos: {message.get('pos')}, V: {message.get('v', 0.0):.3f}")
+        
+        # Send ACK response (non-blocking)
+        sender_ack_port = message.get('ack_port')
+        if sender_ack_port:
+            self._send_ack_response(seq, sender_addr, sender_ack_port)
+        
+        # Process state through Vehicle's enhanced state management
+        # This is the potentially slow part - do it last
+        try:
+            if PERFORMANCE_MONITORING:
+                validation_start = perf_monitor.start_timing()
+            
+            self.vehicle.process_received_state(message)
+            
+            if PERFORMANCE_MONITORING:
+                perf_monitor.end_timing(validation_start, "validation")
+        except Exception as e:
+            self.logger.error(f"Error processing received state through Vehicle: {e}")
+            
+            # Fallback: Update follower's leader state directly (old method)
+            if not self.vehicle.is_leader:
+                with self.lock:
+                    self.vehicle.leader_state = message
+                    self.logger.info(f"Fallback: Updated leader_state from Vehicle {sender_id}")
+        
+        # End performance timing
+        if PERFORMANCE_MONITORING:
+            perf_monitor.end_timing(process_start, "processing")
 
     def receive_messages(self):
         """
