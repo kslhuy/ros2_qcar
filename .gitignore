@@ -3,6 +3,11 @@ Development/install/*
 Development/log/*
 __pycache__/
 
+# Log files
+*.log
+logs/
+Development/fleet_framwork/logs/
+
 docker/libraries/resources/pretrained_models/yolov8s-seg.engine
 docker/libraries/resources/pretrained_models/yolov8s-seg.onnx
 docker/libraries/resources/pretrained_models/yolov8s-seg.pt

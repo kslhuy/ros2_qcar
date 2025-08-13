@@ -43,6 +43,9 @@ class QcarFleet:
         config                  :object     - Configuration object containing fleet parameters
 
         Function: Initiation and Build the fleet.
+        
+        Note: NumQcar supports up to 5 vehicles (modular design), but typically 3 vehicles are used.
+        Each vehicle gets assigned specific ports for socket communication on localhost.
         """
 
         self.qlabs = QuanserInteractiveLabs()
@@ -156,19 +159,48 @@ class QcarFleet:
 
     def InitVehicles(self):
         """
-        Initialize Vehicle instances for each QCar
+        Initialize Vehicle instances for each QCar with specific port assignments
+        Communication chain: Leader sends to followers, followers receive from leader
         """
+        # Port configuration for up to 5 vehicles (modular design)
+        # Format: [send_port, recv_port, ack_port] for each vehicle
+        # Communication design: Leader broadcasts to all followers
+        # Leader sends on 6001 -> All followers receive on 6001
+        port_config = {
+            0: [6001, 6000, 6002],  # Vehicle 0 (Leader): sends on 6001, receives on 6000
+            1: [6000, 6001, 6012],  # Vehicle 1 (Follower): sends on 6000, receives on 6001 (from leader)
+            2: [6021, 6001, 6022],  # Vehicle 2 (Follower): sends on 6021, receives on 6001 (from leader)  
+            3: [6031, 6001, 6032],  # Vehicle 3 (   Follower): sends on 6031, receives on 6001 (from leader) - optional
+            4: [6041, 6001, 6042],  # Vehicle 4 (Follower): sends on 6041, receives on 6001 (from leader) - optional
+        }
+        
+        # Validate NumQcar doesn't exceed our port configuration
+        max_vehicles = len(port_config)
+        if self.NumQcar > max_vehicles:
+            print(f"Error: Number of vehicles ({self.NumQcar}) exceeds maximum supported ({max_vehicles})")
+            print(f"Reducing NumQcar to {max_vehicles}")
+            self.NumQcar = max_vehicles
+            self.QcarIndexList = range(0, self.NumQcar)
+        
         for i in range(self.NumQcar):
             is_leader = (i == self.LeaderIndex)
+            send_port, recv_port, ack_port = port_config[i]
+
             vehicle = Vehicle(
                 vehicle_id=i,
                 qcar=self.qcar_objects[i],
                 controller_type=self.Controller,
                 is_leader=is_leader,
                 config=self.config,
-                fleet_lock=self.lock
+                fleet_lock=self.lock,
+                target_ip="127.0.0.1",  # localhost for local testing
+                base_send_port=send_port,
+                base_recv_port=recv_port,
+                base_ack_port=ack_port
             )
             self.Qcars.append(vehicle)
+            print(f"Vehicle {i} {'(Leader)' if is_leader else '(Follower)'}: "
+                  f"Send={send_port}, Recv={recv_port}, ACK={ack_port}")
         
         # Set leader-follower relationships
         leader_vehicle = self.Qcars[self.LeaderIndex]
@@ -177,6 +209,8 @@ class QcarFleet:
                 vehicle.set_leader(leader_vehicle)
         
         print(f"Initialized {self.NumQcar} vehicles with leader at index {self.LeaderIndex}")
+        print("Communication setup: Leader broadcasts on port 6001, all followers listen on port 6001")
+        print("Port configuration complete for local socket communication")
         pass
     #endregion
 

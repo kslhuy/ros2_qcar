@@ -78,8 +78,8 @@ class VehicleFollowerController:
         """Set the leader vehicle for this follower to track."""
         self.leader_vehicle = leader_vehicle
         self.logger.info(f"Leader vehicle set to {leader_vehicle.vehicle_id if leader_vehicle else 'None'}")
-    
-    def compute_control(self, current_pos: list, current_rot: list, velocity: float, dt: float) -> Tuple[float, float]:
+
+    def compute_control(self, current_pos: list, current_rot: list, velocity: float, dt: float, leader_data: dict) -> Tuple[float, float]:
         """
         Compute control commands for the follower vehicle.
         
@@ -101,10 +101,19 @@ class VehicleFollowerController:
             return 0.0, 0.0
         
         try:
-            # Get leader state
-            leader_pos = self.leader_vehicle.current_pos
-            leader_rot = self.leader_vehicle.current_rot
-            leader_velocity = self.leader_vehicle.velocity
+
+            if leader_data is None:
+                # Get leader state by accessing the leader vehicle's attributes
+                self.logger.warning("Leader data is None, using leader vehicle's attributes")
+                leader_pos = self.leader_vehicle.current_pos
+                leader_rot = self.leader_vehicle.current_rot
+                leader_velocity = self.leader_vehicle.velocity
+            else:
+                # Get leader state from the received data dictionary
+                leader_pos = leader_data['position']
+                leader_rot = leader_data['rotation']
+                leader_velocity = leader_data['velocity']
+
             
             # Compute longitudinal control (speed command)
             speed_cmd = self._compute_longitudinal_control(
