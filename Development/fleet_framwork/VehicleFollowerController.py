@@ -31,13 +31,12 @@ class VehicleFollowerController:
         self.logger = logger or logging.getLogger(f"FollowerController_{vehicle_id}")
         
         # Control parameters - use config if available, otherwise defaults
-        self.lookahead_distance = config.lookahead_distance if config else 0.4
+        self.lookahead_distance = config.get('lookahead_distance', 0.4) if config else 0.4
         # print(f"Vehicle {self.vehicle_id} lookahead distance: {self.lookahead_distance}")
-        self.max_steering = config.max_steering if config else 0.6
+        self.max_steering = config.get('max_steering', 0.6) if config else 0.6
         self.k_steering = 2.0  # Steering gain
         
-        # Leader tracking
-        self.leader_vehicle = None
+        # State tracking for legacy compatibility (if needed)
         self.leader_state = None
         
         self.logger.info(f"Follower controller initialized for vehicle {vehicle_id} with {controller_type}")
@@ -53,9 +52,23 @@ class VehicleFollowerController:
     
     def _init_controller(self):
         """Initialize the appropriate longitudinal controller for this vehicle."""
+        # print(f"Vehicle {self.vehicle_id}:  {self.config}")
         try:
             if self.config is not None:
-                dummy_params = self.config.get_dummy_controller_params(self.vehicle_id)
+                # Handle config as dictionary - check if dummy_controller_params is vehicle-specific or global
+                dummy_controller_params = self.config.get('dummy_controller_params', {})
+                
+                # Check if it's vehicle-specific (nested dict) or global params
+                if str(self.vehicle_id) in dummy_controller_params:
+                    # Vehicle-specific params: config['dummy_controller_params']['1']
+                    dummy_params = dummy_controller_params[str(self.vehicle_id)]
+                elif isinstance(dummy_controller_params, dict) and 'alpha' in dummy_controller_params:
+                    # Global params directly in dummy_controller_params
+                    dummy_params = dummy_controller_params
+                else:
+                    # No params found, use defaults
+                    dummy_params = None
+                    
                 dummy_controller = DummyController(self.vehicle_id, dummy_params)
             else:
                 dummy_controller = DummyController(self.vehicle_id)
@@ -68,56 +81,42 @@ class VehicleFollowerController:
                 raise ValueError(f"Unknown controller type: {self.controller_type}")
                 
             self.initialized = True
-            self.logger.info(f"Controller {self.controller_type} initialized successfully")
+            # self.logger.info(f"Controller {self.controller_type} initialized successfully")
+            print(f"Vehicle {self.vehicle_id}: Controller {self.controller_type} initialized successfully")
             
         except Exception as e:
-            self.logger.error(f"Error initializing controller: {e}")
+            print(f"Vehicle {self.vehicle_id}: Error initializing controller: {e}")
+            # self.logger.error(f"Error initializing controller: {e}")
             self.initialized = False
-    
-    def set_leader(self, leader_vehicle):
-        """Set the leader vehicle for this follower to track."""
-        self.leader_vehicle = leader_vehicle
-        self.logger.info(f"Leader vehicle set to {leader_vehicle.vehicle_id if leader_vehicle else 'None'}")
 
-    def compute_control(self, current_pos: list, current_rot: list, velocity: float, dt: float, leader_data: dict) -> Tuple[float, float]:
+    def compute_control(self, current_pos: list, current_rot: list, current_velocity: float, 
+                       leader_pos: list, leader_rot: list, leader_velocity: float, 
+                       leader_timestamp: float, dt: float) -> Tuple[float, float]:
         """
         Compute control commands for the follower vehicle.
         
         Args:
             current_pos: Current position [x, y, z] of the follower
             current_rot: Current rotation [roll, pitch, yaw] of the follower
-            velocity: Current velocity of the follower
+            current_velocity: Current velocity of the follower
+            leader_pos: Leader position [x, y, z]
+            leader_rot: Leader rotation [roll, pitch, yaw]
+            leader_velocity: Leader velocity
+            leader_timestamp: Timestamp of leader data
             dt: Time step
             
         Returns:
             Tuple of (forward_speed, steering_angle)
         """
         if not self.initialized:
-            self.logger.warning("Controller not initialized, returning zero commands")
-            return 0.0, 0.0
-            
-        if self.leader_vehicle is None:
-            self.logger.warning("No leader vehicle set, returning zero commands")
+            # self.logger.warning("Controller not initialized, returning zero commands")
+            print(f"Vehicle {self.vehicle_id}: Controller not initialized")
             return 0.0, 0.0
         
         try:
-
-            if leader_data is None:
-                # Get leader state by accessing the leader vehicle's attributes
-                self.logger.warning("Leader data is None, using leader vehicle's attributes")
-                leader_pos = self.leader_vehicle.current_pos
-                leader_rot = self.leader_vehicle.current_rot
-                leader_velocity = self.leader_vehicle.velocity
-            else:
-                # Get leader state from the received data dictionary
-                leader_pos = leader_data['position']
-                leader_rot = leader_data['rotation']
-                leader_velocity = leader_data['velocity']
-
-            
             # Compute longitudinal control (speed command)
             speed_cmd = self._compute_longitudinal_control(
-                current_pos, current_rot, velocity,
+                current_pos, current_rot, current_velocity,
                 leader_pos, leader_rot, leader_velocity
             )
             
@@ -251,8 +250,8 @@ class VehicleFollowerController:
             'vehicle_id': self.vehicle_id,
             'controller_type': self.controller_type,
             'initialized': self.initialized,
-            'has_leader': self.leader_vehicle is not None,
-            'leader_id': self.leader_vehicle.vehicle_id if self.leader_vehicle else None,
+            'has_leader': False,  # No longer tracking leader_vehicle object
+            'leader_id': None,
             'lookahead_distance': self.lookahead_distance,
             'max_steering': self.max_steering,
             'k_steering': self.k_steering
@@ -261,5 +260,4 @@ class VehicleFollowerController:
     def stop_control(self):
         """Stop the controller and clean up resources."""
         self.logger.info(f"Stopping follower controller for vehicle {self.vehicle_id}")
-        self.leader_vehicle = None
         self.initialized = False

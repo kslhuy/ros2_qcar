@@ -122,6 +122,25 @@ class FleetConfig:
         """Get the controller type as string."""
         return self.controller_type.value
     
+    def to_dict(self):
+        """Convert config to dictionary for serialization."""
+        return {
+            'road_type': self.road_type.value,
+            'controller_type': self.controller_type.value,
+            'simulation_time': self.simulation_time,
+            'leader_index': self.leader_index,
+            'qcar_num': self.qcar_num,
+            'distance_between_cars': self.distance_between_cars,
+            'enable_steering_control': self.enable_steering_control,
+            'flag_path_rebuild': self.flag_path_rebuild,
+            'node_sequence': self.node_sequence,
+            'dummy_controller_params': self.dummy_controller_params,
+            'max_velocity': self.max_velocity,
+            'lookahead_distance': self.lookahead_distance,
+            'max_steering': self.max_steering,
+            'controller_specific_params': getattr(self, 'controller_specific_params', {})
+        }
+    
     def update_config(self, **kwargs):
         """Update configuration parameters dynamically."""
         for key, value in kwargs.items():

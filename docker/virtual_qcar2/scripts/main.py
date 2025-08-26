@@ -93,14 +93,14 @@ def main():
 
     # Start vehicles
     leader_vehicle.start()
-    follower_vehicle.start()
+    # follower_vehicle.start()
 
     # Run simulation for 50 seconds
     time.sleep(50)
 
     # Stop vehicles
     leader_vehicle.stop()
-    follower_vehicle.stop()
+    # follower_vehicle.stop()
 
     qlabs.close()
     print("Simulation ended.")

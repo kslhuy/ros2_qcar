@@ -117,6 +117,9 @@ class StateQueue:
                 self.logger.debug(f"State rejected: From future (delay: {time_delay:.3f}s)")
                 return False
             
+            # Extract sender_id early for error reporting
+            sender_id = state_data.get('id', 'unknown')
+            
             # Check for excessive delay that indicates network problems
             if abs(time_delay) > self.max_delay_threshold:
                 self.stats['delayed_states'] += 1
@@ -127,7 +130,6 @@ class StateQueue:
             
             # Check for duplicate sequence numbers (if available)
             seq_num = state_data.get('seq')
-            sender_id = state_data.get('id')
             
             if seq_num is not None and sender_id is not None:
                 # More intelligent duplicate detection:

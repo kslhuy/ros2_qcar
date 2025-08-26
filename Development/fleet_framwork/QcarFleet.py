@@ -18,7 +18,7 @@ from src.Controller.DummyController import DummyVehicle
 from src.Controller.idm_control import IDMControl
 from src.Controller.CACC import CACC
 from src.OpenRoad import OpenRoad
-from Vehicle import Vehicle
+from VehicleProcess import vehicle_process_main
 
 import time, io, math, threading, os, multiprocessing
 import numpy as np
@@ -49,8 +49,8 @@ class QcarFleet:
         """
 
         self.qlabs = QuanserInteractiveLabs()
-        self.Qcars = []  # This will now store Vehicle instances
-        self.qcar_objects = []  # Store raw QLabsQCar2 objects
+        self.vehicle_processes = []  # Store process objects instead of Vehicle instances
+        self.vehicle_configs = []   # Store vehicle configurations for processes
         self.NumQcar = NumQcar
         self.LeaderIndex = LeaderIndex
         self.QcarIndexList = range(0, self.NumQcar)
@@ -58,23 +58,27 @@ class QcarFleet:
         self.Controller = Controller        
         self.Observer = Observer
         self.config = config
-        self.rtModel = os.path.normpath(os.path.join(os.environ['RTMODELS_DIR'], 'QCar2/QCar2_Workspace_studio'))
+        
+        # Multiprocessing setup
+        self.stop_event = multiprocessing.Event()
+        self.status_queue = multiprocessing.Queue()
+        
         self.InitEnv(QlabType)
         #Number of the Qcars in the fleet, int
         if self.NumQcar < 2:
             print("Error: Number of cars in the fleet is too small")
             quit()
             #Check the number of cars in the fleet. 
-        self.InitQcar(QlabType)                 #Generate the Qcars.
+        self.InitQcarSpawnData(QlabType)  # Only prepare spawn data, don't spawn here
+        
+        # if not self.LeaderIndex in self.QcarIndexList:
+        #     print("Error: Leader Car Index Illegal")
+        #     quit()
+        # else:
+        #     QLabsRealTime().start_real_time_model(self.rtModel, actorNumber=self.LeaderIndex)
 
-        if not self.LeaderIndex in self.QcarIndexList:
-            print("Error: Leader Car Index Illegal")
-            quit()
-        else:
-            QLabsRealTime().start_real_time_model(self.rtModel, actorNumber=self.LeaderIndex)
-
-        self.InitThread()
-        self.InitVehicles()  # Initialize Vehicle instances
+        self.InitThread()  # Keep for compatibility, but won't use threading locks
+        self.PrepareVehicleConfigs()  # Prepare configurations for vehicle processes
         pass
 
 
@@ -120,47 +124,44 @@ class QcarFleet:
         #QLabsRealTime().terminate_all_real_time_models(RTModelHostName='host.docker.internal')
         pass
 
-    def InitQcar(self, QlabType:str):
+    def InitQcarSpawnData(self, QlabType:str):
         """
-        Generate the Qcar in the Qlab
+        Prepare spawn data for Qcars - actual spawning will happen in each process
         """
-
-        # import os
-        for i in range(0, self.NumQcar):
-            self.qcar_objects.append(QLabsQCar2(self.qlabs))
 
         match QlabType:
             case "OpenRoad":
                 base_dir = os.path.dirname(__file__)
                 csv_path = os.path.join(base_dir, "data", "QcarInitSettingOpenRoad.csv")
                 InitPositionTable = pd.read_csv(csv_path)
-                QcarScale = [1,1,1] 
+                self.QcarScale = [1,1,1] 
 
             case "Studio":
                 base_dir = os.path.dirname(__file__)
                 csv_path = os.path.join(base_dir, "data", "QcarInitSettingStudio.csv")
                 InitPositionTable = pd.read_csv(csv_path)
-                QcarScale =  [0.1,0.1,0.1]
+                self.QcarScale =  [0.1,0.1,0.1]
             case _:
-                QcarScale = [1,1,1]
+                self.QcarScale = [1,1,1]
                 print("Error: QlabType not found")
                 quit()
 
         InitPositionTable = InitPositionTable.to_numpy()
-        # QcarScale = [1,1,1] 
-        #Real scale for simulation and physical qcar: 
-        for i in range(0, self.NumQcar):
-            self.qcar_objects[i].spawn_id(actorNumber=i, location=InitPositionTable[i, 1:4], rotation=InitPositionTable[i,4:7], scale=QcarScale)
+        
+        # Store the position table for use during vehicle process initialization
+        self.InitPositionTable = InitPositionTable
+        
+        print(f"Prepared spawn data for {self.NumQcar} vehicles with scale {self.QcarScale}")
         pass
 
     def InitThread(self):
         self.lock = threading.Lock()
         pass
 
-    def InitVehicles(self):
+    def PrepareVehicleConfigs(self):
         """
-        Initialize Vehicle instances for each QCar with specific port assignments
-        Communication chain: Leader sends to followers, followers receive from leader
+        Prepare configuration dictionaries for each vehicle process.
+        Each process will create its own QLabs connection and spawn its vehicle.
         """
         # Port configuration for up to 5 vehicles (modular design)
         # Format: [send_port, recv_port, ack_port] for each vehicle
@@ -170,7 +171,7 @@ class QcarFleet:
             0: [6001, 6000, 6002],  # Vehicle 0 (Leader): sends on 6001, receives on 6000
             1: [6000, 6001, 6012],  # Vehicle 1 (Follower): sends on 6000, receives on 6001 (from leader)
             2: [6021, 6001, 6022],  # Vehicle 2 (Follower): sends on 6021, receives on 6001 (from leader)  
-            3: [6031, 6001, 6032],  # Vehicle 3 (   Follower): sends on 6031, receives on 6001 (from leader) - optional
+            3: [6031, 6001, 6032],  # Vehicle 3 (Follower): sends on 6031, receives on 6001 (from leader) - optional
             4: [6041, 6001, 6042],  # Vehicle 4 (Follower): sends on 6041, receives on 6001 (from leader) - optional
         }
         
@@ -185,30 +186,79 @@ class QcarFleet:
         for i in range(self.NumQcar):
             is_leader = (i == self.LeaderIndex)
             send_port, recv_port, ack_port = port_config[i]
+            
+            # Extract initial pose for this vehicle from InitPositionTable
+            # InitPositionTable format: [QcarIndex, PositionX, PositionY, PositionZ, RotationX, RotationY, RotationZ]
+            vehicle_initial_pose = None
+            spawn_location = [0, 0, 0]
+            spawn_rotation = [0, 0, 0]
+            
+            if hasattr(self, 'InitPositionTable') and i < len(self.InitPositionTable):
+                # Convert from CSV format to [x, y, z, roll, pitch, yaw]
+                pos_row = self.InitPositionTable[i]
+                vehicle_initial_pose = [
+                    pos_row[1],  # PositionX
+                    pos_row[2],  # PositionY
+                    pos_row[3],  # PositionZ
+                    pos_row[4],  # RotationX
+                    pos_row[5],  # RotationY
+                    pos_row[6]   # RotationZ
+                ]
+                spawn_location = [pos_row[1], pos_row[2], pos_row[3]]
+                spawn_rotation = [pos_row[4], pos_row[5], pos_row[6]]
+                print(f"Vehicle {i}: Initial pose set to x={vehicle_initial_pose[0]:.3f}, "
+                      f"y={vehicle_initial_pose[1]:.3f}, yaw={vehicle_initial_pose[5]:.3f}")
+            else:
+                print(f"Vehicle {i}: No initial pose data available, using default")
 
-            vehicle = Vehicle(
-                vehicle_id=i,
-                qcar=self.qcar_objects[i],
-                controller_type=self.Controller,
-                is_leader=is_leader,
-                config=self.config,
-                fleet_lock=self.lock,
-                target_ip="127.0.0.1",  # localhost for local testing
-                base_send_port=send_port,
-                base_recv_port=recv_port,
-                base_ack_port=ack_port
-            )
-            self.Qcars.append(vehicle)
+            # Create configuration dictionary for this vehicle process
+            vehicle_config = {
+                'vehicle_id': i,
+                'controller_type': self.Controller,
+                'is_leader': is_leader,
+                'fleet_size': self.NumQcar,
+                'initial_pose': vehicle_initial_pose,
+                
+                # Communication settings
+                'target_ip': "127.0.0.1",  # localhost for local testing
+                'send_port': send_port,
+                'recv_port': recv_port,
+                'ack_port': ack_port,
+                
+                # GPS settings
+                'gps_server_ip': "127.0.0.1",
+                'gps_server_port': 8001,
+                
+                # Control parameters (extract from config object)
+                'max_steering': getattr(self.config, 'max_steering', 0.6),
+                'lookahead_distance': getattr(self.config, 'lookahead_distance', 7.0),
+                'update_rate': 100,  # Hz
+                'observer_rate': 100,  # Hz
+                'gps_update_rate': 50,  # Hz
+                
+                # Vehicle spawn information
+                'vehicle_scale': self.QcarScale,
+                'spawn_location': spawn_location,
+                'spawn_rotation': spawn_rotation,
+                
+                # Fleet information
+                'leader_index': self.LeaderIndex,
+                'distance_between_cars': self.Distance,
+                
+                # Additional config parameters (convert config object to dict)
+                'simulation_time': getattr(self.config, 'simulation_time', 0),
+                'enable_steering_control': getattr(self.config, 'enable_steering_control', True),
+                'road_type': self.config.get_road_type_name() if self.config else 'OpenRoad',
+                'controller_type': self.config.get_controller_type_name() if self.config else 'CACC',
+                'node_sequence': getattr(self.config, 'node_sequence', [0, 1]),
+                'dummy_controller_params': getattr(self.config, 'dummy_controller_params', {}),
+            }
+            
+            self.vehicle_configs.append(vehicle_config)
             print(f"Vehicle {i} {'(Leader)' if is_leader else '(Follower)'}: "
                   f"Send={send_port}, Recv={recv_port}, ACK={ack_port}")
         
-        # Set leader-follower relationships
-        leader_vehicle = self.Qcars[self.LeaderIndex]
-        for i, vehicle in enumerate(self.Qcars):
-            if not vehicle.is_leader:
-                vehicle.set_leader(leader_vehicle)
-        
-        print(f"Initialized {self.NumQcar} vehicles with leader at index {self.LeaderIndex}")
+        print(f"Prepared configurations for {self.NumQcar} vehicles with leader at index {self.LeaderIndex}")
         print("Communication setup: Leader broadcasts on port 6001, all followers listen on port 6001")
         print("Port configuration complete for local socket communication")
         pass
@@ -218,49 +268,163 @@ class QcarFleet:
     #region: Main Program for the Fleet
     def FleetBuilding(self):
         """
-        Start Following for Every Qcar in the Fleet
+        Start processes for every vehicle in the fleet
         """
-        # print("Starting fleet vehicles...")
-        for i, vehicle in enumerate(self.Qcars):
-            vehicle.start()
-            time.sleep(0.1)  # Small delay between starting vehicles
-            # print(f"Started vehicle {i} ({'Leader' if vehicle.is_leader else 'Follower'})")
-        print("All fleet vehicles started")
+        print("Starting fleet vehicle processes...")
+        
+        for i, vehicle_config in enumerate(self.vehicle_configs):
+            # Create a new process for each vehicle
+            process = multiprocessing.Process(
+                target=vehicle_process_main,
+                args=(vehicle_config, self.stop_event, self.status_queue),
+                name=f"Vehicle-{i}"
+            )
+            process.start()
+            self.vehicle_processes.append(process)
+            time.sleep(0.2)  # Small delay between starting processes
+            print(f"Started process for vehicle {i} ({'Leader' if vehicle_config['is_leader'] else 'Follower'})")
+        
+        # Wait for all vehicles to initialize
+        print("Waiting for vehicle processes to initialize...")
+        initialized_count = 0
+        timeout = 30.0  # 30 second timeout
+        start_time = time.time()
+        
+        while initialized_count < self.NumQcar and (time.time() - start_time) < timeout:
+            try:
+                status = self.status_queue.get(timeout=1.0)
+                if status['status'] == 'initialized':
+                    initialized_count += 1
+                    print(f"Vehicle {status['vehicle_id']} initialized ({initialized_count}/{self.NumQcar})")
+                elif status['status'] == 'failed':
+                    print(f"Vehicle {status['vehicle_id']} failed to initialize: {status.get('error', 'Unknown error')}")
+            except:
+                pass  # Timeout on queue get
+        
+        if initialized_count == self.NumQcar:
+            print(f"All {self.NumQcar} fleet vehicle processes started and initialized successfully")
+        else:
+            print(f"Warning: Only {initialized_count}/{self.NumQcar} vehicles initialized within timeout")
         pass
 
     def FleetCanceling(self):
         """
-        Cancel Following for Every Qcar in the Fleet
+        Stop all vehicle processes in the fleet
         """
-        print("Stopping fleet vehicles...")
-        for i, vehicle in enumerate(self.Qcars):
-            vehicle.stop()
-            print(f"Stopped vehicle {i}")
+        print("Stopping fleet vehicle processes...")
         
-        # Wait for all vehicles to finish
-        for vehicle in self.Qcars:
-            vehicle.join(timeout=2.0)
+        # Signal all processes to stop gracefully
+        self.stop_event.set()
         
-        print("All fleet vehicles stopped")
+        # Give processes time to stop gracefully
+        print("Waiting for vehicle processes to stop gracefully...")
+        time.sleep(2.0)  # Allow 2 seconds for graceful shutdown
+        
+        # Wait for processes to finish gracefully
+        timeout = 3.0  # 3 second timeout per process
+        for i, process in enumerate(self.vehicle_processes):
+            if process.is_alive():
+                print(f"Waiting for vehicle {i} process to stop...")
+                process.join(timeout)
+                
+                if process.is_alive():
+                    print(f"Vehicle {i} process did not stop gracefully, terminating...")
+                    process.terminate()
+                    process.join(timeout=2.0)
+                    
+                    if process.is_alive():
+                        print(f"Vehicle {i} process did not terminate, killing...")
+                        process.kill()
+                        process.join()
+                
+                print(f"Vehicle {i} process stopped")
+        
+        # Clear the process list
+        self.vehicle_processes.clear()
+        
+        # Close QLabs connection in main process
+        try:
+            if hasattr(self, 'qlabs') and self.qlabs is not None:
+                print("Closing main QLabs connection...")
+                self.qlabs.close()
+                print("Main QLabs connection closed")
+        except Exception as e:
+            print(f"Error closing QLabs connection: {e}")
+        
+        # Terminate any remaining real-time models
+        try:
+            from qvl.real_time import QLabsRealTime
+            print("Terminating all real-time models...")
+            QLabsRealTime().terminate_all_real_time_models()
+            print("All real-time models terminated")
+        except Exception as e:
+            print(f"Error terminating real-time models: {e}")
+        
+        print("All fleet vehicle processes stopped")
         pass
 
     def get_fleet_status(self):
         """
-        Get status of all vehicles in the fleet
+        Get status of all vehicles in the fleet by checking their processes
+        and querying the status queue
         """
         status = {}
-        for i, vehicle in enumerate(self.Qcars):
+        
+        # Check process status
+        for i, process in enumerate(self.vehicle_processes):
             status[i] = {
-                'alive': vehicle.is_alive(),
-                'state': vehicle.get_state()
+                'alive': process.is_alive(),
+                'pid': process.pid if process.is_alive() else None,
+                'state': 'running' if process.is_alive() else 'stopped'
             }
+        
+        # Get any recent status updates from the queue
+        recent_updates = {}
+        try:
+            while True:
+                update = self.status_queue.get_nowait()
+                vehicle_id = update['vehicle_id']
+                recent_updates[vehicle_id] = update
+        except:
+            pass  # Queue is empty
+        
+        # Merge recent updates into status
+        for vehicle_id, update in recent_updates.items():
+            if vehicle_id in status:
+                status[vehicle_id].update(update)
+        
         return status
 
     def is_fleet_alive(self):
         """
-        Check if any vehicle in the fleet is still running
+        Check if any vehicle process in the fleet is still running
         """
-        return any(vehicle.is_alive() for vehicle in self.Qcars)
+        return any(process.is_alive() for process in self.vehicle_processes)
+
+    def monitor_fleet_status(self, interval=5.0):
+        """
+        Monitor and print fleet status periodically
+        """
+        try:
+            while not self.stop_event.is_set() and self.is_fleet_alive():
+                status = self.get_fleet_status()
+                alive_count = sum(1 for v in status.values() if v['alive'])
+                print(f"Fleet status: {alive_count}/{self.NumQcar} vehicles alive")
+                
+                # Print any status updates from queue
+                try:
+                    while True:
+                        update = self.status_queue.get_nowait()
+                        if update['status'] == 'running':
+                            pos = update.get('position', [0, 0, 0])
+                            vel = update.get('velocity', 0)
+                            print(f"Vehicle {update['vehicle_id']}: pos=({pos[0]:.2f}, {pos[1]:.2f}), vel={vel:.2f}")
+                except:
+                    pass  # Queue is empty
+                
+                time.sleep(interval)
+        except KeyboardInterrupt:
+            print("Fleet monitoring interrupted")
     #endregion
 
 
@@ -269,73 +433,112 @@ class QcarFleet:
         """
         Obtain the Data in current time for whole fleet or some qcar InformationType: all, position, rotation.
         
-        CarIndex            :str                The index of the object Qcar
-        InfoType            :position           The requirement information ("all", "position", "rotation")
-        """
-        if CarIndex in self.QcarIndexList:
-            pass
-        else:
-            print("Error: Illegal car index")
-            quit()
-
-        vehicle = self.Qcars[CarIndex]
+        CarIndex            :int                The index of the object Qcar
+        InfoType            :str                The requirement information ("all", "position", "rotation", "state", "exist")
         
-        match InfoType:
-            case "all":
-                return vehicle.qcar.get_world_transform()
-            case "angle":
-                return vehicle.qcar.get_world_transform_degrees()
-            case "exist":
-                return vehicle.qcar.ping()
-            case "state":
-                return vehicle.get_state()
-            case _:
-                print("InfoType not in consideration, pls check")
-        pass
+        Note: In process-based architecture, this method has limited functionality.
+        Vehicle data is primarily accessible through the status queue.
+        """
+        if CarIndex not in self.QcarIndexList:
+            print("Error: Illegal car index")
+            return None
 
-    def APIQcarWrite(self, CarIndex:int, SpeedCMD:float = 0, SteeringCMD:float = 0 ):
-        if CarIndex in self.QcarIndexList:
-            pass
+        # Check if process exists and is alive
+        if CarIndex < len(self.vehicle_processes):
+            process = self.vehicle_processes[CarIndex]
+            
+            match InfoType:
+                case "exist":
+                    return process.is_alive()
+                case "state":
+                    # Try to get recent state from status queue
+                    try:
+                        recent_states = {}
+                        while True:
+                            status = self.status_queue.get_nowait()
+                            recent_states[status['vehicle_id']] = status
+                    except:
+                        pass
+                    
+                    return recent_states.get(CarIndex, {'status': 'unknown'})
+                case "all" | "position" | "rotation":
+                    print(f"Warning: {InfoType} data not directly available in process-based architecture")
+                    print("Use get_fleet_status() or monitor status queue for vehicle data")
+                    return None
+                case _:
+                    print("InfoType not supported in process-based architecture")
+                    return None
         else:
-            print("Error: illegal car index")
-            quit()
+            print(f"Error: Vehicle {CarIndex} process not found")
+            return None
 
-        vehicle = self.Qcars[CarIndex]
-        vehicle.qcar.set_velocity_and_request_state(
-                    forward         =SpeedCMD,
-                    turn            =SteeringCMD,
-                    headlights      =False,
-                    leftTurnSignal  =False,
-                    rightTurnSignal =False,
-                    brakeSignal     =False,
-                    reverseSignal   =False
-                )
-        pass
+    def APIQcarWrite(self, CarIndex:int, SpeedCMD:float = 0, SteeringCMD:float = 0):
+        """
+        Write commands to a vehicle.
+        
+        Note: Direct vehicle control is not available in process-based architecture.
+        Each vehicle process manages its own control loop independently.
+        """
+        print("Warning: Direct vehicle control not available in process-based architecture")
+        print("Vehicle processes manage their own control loops based on their configuration")
+        print(f"Requested: Vehicle {CarIndex}, Speed={SpeedCMD}, Steering={SteeringCMD}")
+        return False
 
     def QcarInfoPrint(self, CarIndex:int, InfoType:str = "all"):
         """
-        Qcar Data API
-        """
-        if CarIndex in self.QcarIndexList:
-            pass
-        else:
-            print("Error: illegal car index")
-            quit()
-
-        vehicle = self.Qcars[CarIndex]
+        Print Qcar Data
         
-        if InfoType == "all":
-            if not vehicle.qcar.ping():
-                print("Qcar Index: ", CarIndex, "doesn't exist")
-            else:
-                print("Qcar Index: ", CarIndex, "exist", "Information:")
-                print("   ","position: ", vehicle.current_pos)
-                print("   ","Angle: ", vehicle.current_rot)
-                print("   ","Velocity: ", vehicle.velocity)
-                print("   ","Running: ", vehicle.is_alive())
-        elif InfoType == "state":
-            state = vehicle.get_state()
-            print(f"Vehicle {CarIndex} State: {state}")
+        Note: In process-based architecture, this prints process status and recent queue data.
+        """
+        if CarIndex not in self.QcarIndexList:
+            print("Error: illegal car index")
+            return
 
+        if CarIndex < len(self.vehicle_processes):
+            process = self.vehicle_processes[CarIndex]
+            
+            if InfoType == "all":
+                if not process.is_alive():
+                    print(f"Vehicle {CarIndex}: Process not running (PID: {process.pid})")
+                else:
+                    print(f"Vehicle {CarIndex}: Process running (PID: {process.pid})")
+                    
+                    # Try to get recent data from status queue
+                    try:
+                        recent_data = None
+                        temp_data = []
+                        while True:
+                            status = self.status_queue.get_nowait()
+                            temp_data.append(status)
+                            if status['vehicle_id'] == CarIndex:
+                                recent_data = status
+                        
+                        # Put back all the data we took out
+                        for data in temp_data:
+                            self.status_queue.put(data)
+                        
+                        if recent_data:
+                            pos = recent_data.get('position', [0, 0, 0])
+                            vel = recent_data.get('velocity', 0)
+                            timestamp = recent_data.get('timestamp', 0)
+                            print(f"   Recent data: position: {pos}")
+                            print(f"   Velocity: {vel}")
+                            print(f"   Timestamp: {timestamp}")
+                            print(f"   Status: {recent_data.get('status', 'unknown')}")
+                        else:
+                            print(f"   No recent data available from status queue")
+                    except:
+                        print(f"   No data available in status queue")
+                        
+            elif InfoType == "state":
+                # Get process state
+                state = {
+                    'process_alive': process.is_alive(),
+                    'process_pid': process.pid if process.is_alive() else None,
+                    'vehicle_id': CarIndex
+                }
+                print(f"Vehicle {CarIndex} Process State: {state}")
+        else:
+            print(f"Error: Vehicle {CarIndex} process not found")
     
     #endregion

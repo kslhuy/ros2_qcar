@@ -1,0 +1,55 @@
+# Fleet Configuration File
+# Easy to modify configuration for QCar fleet simulation
+# Format: key = value
+# Sections: [section_name]
+
+[simulation]
+time = 60
+road_type = "Studio"
+controller_type = "CACC"
+
+[fleet]
+num_vehicles = 3
+leader_index = 0
+distance_between_cars = 0.2
+
+[control]
+max_velocity = 0.5
+max_steering = 0.6
+lookahead_distance = 0.5
+enable_steering_control = True
+update_rate = 100
+observer_rate = 100
+gps_update_rate = 50
+
+[path]
+rebuild_path = True
+node_sequence = [10, 4, 20, 13, 10]
+
+[controller_params]
+alpha = 1.2
+beta = 2.0
+v0 = 0.5
+delta = 3
+T = 0.3
+s0 = 2.0
+ri = 2.0
+hi = 0.3
+K_gains = [1.1, 0.0, 0.0, 1.1]
+K = [[1.1 0. ]
+ [0.  1.1]]
+
+[communication]
+use_communication = True
+communication_delay = 0.01
+gps_server_ip = "127.0.0.1"
+gps_server_port = 8001
+
+[physical_qcar]
+use_physical_qcar = False
+calibrate = False
+
+[logging]
+enable_performance_monitoring = False
+log_level = "INFO"
+

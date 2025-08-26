@@ -22,11 +22,16 @@ class CommHandler:
     - Receiving messages from other vehicles (state updates, heartbeats)
     - ACK processing for reliable message delivery
     - Thread-safe operations for concurrent communication
+    - Non-blocking operations for process-based vehicles
     
     Communication Protocol:
     - State messages: Vehicle position, rotation, velocity data
     - ACK messages: Acknowledgment of received state messages
     - Heartbeat messages: Keep-alive signals between vehicles
+    
+    Modes:
+    - Threaded mode: Uses background threads for send/receive operations
+    - Non-blocking mode: Uses polling-based operations for process-based vehicles
     """
     
     # Communication timing constants
@@ -38,7 +43,7 @@ class CommHandler:
     HEARTBEAT_TIMEOUT = 2.0         # Heartbeat timeout threshold
     
     def __init__(self, vehicle_id: int, target_ip: str, send_port: int, recv_port: int, 
-                 ack_port: int, logger: logging.LoggerAdapter, running_flag, vehicle):
+                 ack_port: int, logger, running_flag=None, vehicle=None, mode='threaded'):
         """
         Initialize communication handler for a vehicle.
         
@@ -49,8 +54,9 @@ class CommHandler:
             recv_port: Port for receiving messages from other vehicles
             ack_port: Port for receiving ACK confirmations
             logger: Logger instance for debugging and monitoring
-            running_flag: Shared threading event to control operation
-            vehicle: Reference to the Vehicle instance for state access
+            running_flag: Shared threading event to control operation (optional for non-blocking mode)
+            vehicle: Reference to the Vehicle instance for state access (optional for non-blocking mode)
+            mode: Communication mode - 'threaded' for background threads, 'non_blocking' for polling
         """
         # Vehicle identification and network configuration
         self.vehicle_id = vehicle_id
@@ -59,9 +65,22 @@ class CommHandler:
         self.recv_port = recv_port
         self.ack_port = ack_port
         self.logger = logger
+        self.mode = mode
+        
+        # Initialize communication state
+        self.initialized = False
+        self.last_send_time = 0
+        self.send_interval = 0.05  # 20Hz for non-blocking mode
         
         # Initialize UDP sockets for different communication purposes
-        self._setup_sockets()
+        if mode == 'threaded':
+            self._setup_sockets_threaded()
+            # Thread synchronization
+            self.lock = threading.Lock()
+            self.running = running_flag  # Reference to Vehicle's running flag
+            self.vehicle = vehicle       # Reference to Vehicle instance
+        else:  # non_blocking mode
+            self._setup_sockets_non_blocking()
         
         # Message sequencing and synchronization
         self.sequence_number = 0
@@ -69,16 +88,11 @@ class CommHandler:
         self.heartbeat_timeout = self.HEARTBEAT_TIMEOUT
         self.heartbeat = True
         
-        # Thread synchronization
-        self.lock = threading.Lock()
-        self.running = running_flag  # Reference to Vehicle's running flag
-        self.vehicle = vehicle       # Reference to Vehicle instance
+        self.logger.info(f"CommHandler initialized for Vehicle {self.vehicle_id} in {mode} mode")
         
-        self.logger.info(f"CommHandler initialized for Vehicle {self.vehicle_id}")
-        
-    def _setup_sockets(self):
+    def _setup_sockets_threaded(self):
         """
-        Initialize and configure all UDP sockets for communication.
+        Initialize and configure all UDP sockets for threaded communication.
         
         Creates four sockets:
         - send_sock: For sending state messages to other vehicles
@@ -103,11 +117,46 @@ class CommHandler:
             self.ack_sock.settimeout(self.ACK_TIMEOUT)
             self.ack_sock.bind(('0.0.0.0', self.ack_port))
             
-            self.logger.info(f"Sockets configured - recv_port: {self.recv_port}, ack_port: {self.ack_port}")
+            self.logger.info(f"Threaded sockets configured - recv_port: {self.recv_port}, ack_port: {self.ack_port}")
             
         except Exception as e:
-            self.logger.error(f"Failed to setup sockets: {e}")
+            self.logger.error(f"Failed to setup threaded sockets: {e}")
             raise
+    
+    def _setup_sockets_non_blocking(self):
+        """
+        Initialize and configure UDP sockets for non-blocking communication.
+        """
+        try:
+            # Create send socket
+            self.send_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self.send_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            
+            # Create receive socket
+            self.recv_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self.recv_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self.recv_socket.bind(('', self.recv_port))
+            self.recv_socket.settimeout(0.001)  # 1ms timeout for non-blocking
+            
+            # Create ACK socket
+            self.ack_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self.ack_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self.ack_socket.bind(('', self.ack_port))
+            self.ack_socket.settimeout(0.001)  # 1ms timeout for non-blocking
+            
+            self.initialized = True
+            self.logger.info(f"Non-blocking sockets configured - recv_port: {self.recv_port}, ack_port: {self.ack_port}")
+            
+        except Exception as e:
+            self.logger.error(f"Socket initialization error: {e}")
+            self.initialized = False
+            raise
+        
+    def _setup_sockets(self):
+        """
+        Legacy method for backward compatibility - calls threaded setup.
+        """
+        return self._setup_sockets_threaded()
 
     def _create_state_message(self) -> Dict[str, Any]:
         """
@@ -137,7 +186,8 @@ class CommHandler:
                 'rot': current_rot,
                 'v': velocity,
                 'timestamp': synced_time,
-                'ack_port': self.ack_port
+                'ack_port': self.ack_port,
+                'control': self.vehicle.current_control_input.tolist() if hasattr(self.vehicle, 'current_control_input') else [0.0, 0.0]
             }
             
         return state_data
@@ -155,6 +205,11 @@ class CommHandler:
         try:
             message_json = ujson.dumps(data).encode()
             self.send_sock.sendto(message_json, (self.target_ip, self.send_port))
+            
+            # Log detailed send data for vehicle 0 (save all data sent by vehicle 0)
+            if self.vehicle_id == 0:
+                current_time = time.time()
+                self.logger.info(f"SEND_DATA: {{\"timestamp\": {current_time:.6f}, \"seq\": {data['seq']}, \"vehicle_id\": {self.vehicle_id}, \"target_ip\": \"{self.target_ip}\", \"send_port\": {self.send_port}, \"position\": {data['pos']}, \"rotation\": {data['rot']}, \"velocity\": {data['v']:.6f}, \"message_size\": {len(message_json)}}}")
             
             self.logger.info(f"SENT: Seq: {self.sequence_number}, "
                            f"Pos: {data['pos']}, V: {data['v']:.3f}")
@@ -297,6 +352,17 @@ class CommHandler:
         # Ignore messages from ourselves
         if sender_id == self.vehicle_id:
             return
+        
+        # Log detailed receive data for vehicle 1 (save all data received by vehicle 1)
+        if self.vehicle_id == 1:
+            receive_time = time.time()
+            pos = message.get('pos', [0, 0, 0])
+            rot = message.get('rot', [0, 0, 0])
+            vel = message.get('v', 0.0)
+            msg_timestamp = message.get('timestamp', 0.0)
+            delay = receive_time - msg_timestamp if msg_timestamp > 0 else 0.0
+            
+            self.logger.info(f"RECEIVE_DATA: {{\"receive_timestamp\": {receive_time:.6f}, \"message_timestamp\": {msg_timestamp:.6f}, \"delay\": {delay:.6f}, \"seq\": {seq}, \"sender_id\": {sender_id}, \"sender_ip\": \"{sender_addr[0]}\", \"sender_port\": {sender_addr[1]}, \"position\": {pos}, \"rotation\": {rot}, \"velocity\": {vel:.6f}}}")
             
         self.logger.info(f"RECEIVED STATE: Seq: {seq}, Sender ID: {sender_id}, "
                         f"Pos: {message.get('pos')}, V: {message.get('v', 0.0):.3f}")
@@ -399,6 +465,17 @@ class CommHandler:
         # Extract essential data quickly
         sender_id = message.get('id')
         seq = message.get('seq', -1)
+        
+        # Log detailed receive data for vehicle 1 (save all data received by vehicle 1)
+        if self.vehicle_id == 1:
+            receive_time = time.time()
+            pos = message.get('pos', [0, 0, 0])
+            rot = message.get('rot', [0, 0, 0])
+            vel = message.get('v', 0.0)
+            msg_timestamp = message.get('timestamp', 0.0)
+            delay = receive_time - msg_timestamp if msg_timestamp > 0 else 0.0
+            
+            self.logger.info(f"RECEIVE_DATA: {{\"receive_timestamp\": {receive_time:.6f}, \"message_timestamp\": {msg_timestamp:.6f}, \"delay\": {delay:.6f}, \"seq\": {seq}, \"sender_id\": {sender_id}, \"sender_ip\": \"{sender_addr[0]}\", \"sender_port\": {sender_addr[1]}, \"position\": {pos}, \"rotation\": {rot}, \"velocity\": {vel:.6f}}}")
         
         # Log with minimal formatting for performance
         self.logger.info(f"RECEIVED STATE: Seq: {seq}, Sender ID: {sender_id}, "
@@ -514,6 +591,170 @@ class CommHandler:
             }
         }
 
+    # Non-blocking communication methods for process-based vehicles
+    def send_state_broadcast(self, state_data: dict):
+        """Send state data to other vehicles using non-blocking method with optimizations."""
+        if self.mode != 'non_blocking':
+            self.logger.warning("send_state_broadcast called in threaded mode - use send_state instead")
+            return
+            
+        current_time = time.time()
+        if not self.initialized or current_time - self.last_send_time < self.send_interval:
+            return
+            
+        try:
+            # Start performance timing if available
+            if PERFORMANCE_MONITORING:
+                send_start = perf_monitor.start_timing()
+            
+            # Create optimized message structure
+            message = {
+                'type': 'state',
+                'vehicle_id': self.vehicle_id,
+                'timestamp': current_time,
+                'id': self.vehicle_id,  # For compatibility with existing message handlers
+                'pos': state_data.get('position', [0, 0, 0]),
+                'rot': state_data.get('rotation', [0, 0, 0]),
+                'v': state_data.get('velocity', 0.0),
+                'seq': self.sequence_number,
+                'ack_port': self.ack_port
+            }
+            
+            # # Log detailed send data for vehicle 0 (save all data sent by vehicle 0)
+            # if self.vehicle_id == 0:
+            #     self.logger.info(f"SEND_DATA: {{\"timestamp\": {current_time:.6f}, \"seq\": {message['seq']}, \"position\": {message['pos']}, \"rotation\": {message['rot']}, \"velocity\": {message['v']:.2f}, \"message_size\": {len(ujson.dumps(message))}}}")
+            
+            # Fast JSON encode and send
+            message_bytes = ujson.dumps(message).encode('utf-8')
+            self.send_socket.sendto(message_bytes, (self.target_ip, self.send_port))
+            
+            # Update state
+            self.last_send_time = current_time
+            self.sequence_number += 1
+            
+            # End performance timing
+            if PERFORMANCE_MONITORING:
+                perf_monitor.end_timing(send_start, "non_blocking_send")
+            
+            # Debug logging (only if enabled to avoid overhead)
+            if self.logger.isEnabledFor(logging.DEBUG):
+                self.logger.debug(f"Vehicle {self.vehicle_id}: Broadcasted seq={message['seq']} - "
+                                f"pos={message['pos']}, v={message['v']:.3f}")
+            
+        except Exception as e:
+            self.logger.error(f"Vehicle {self.vehicle_id}: Send error: {e}")
+            # Reset sequence number on error to avoid getting stuck
+            if "Address already in use" in str(e):
+                self.logger.warning(f"Vehicle {self.vehicle_id}: Address in use, reinitializing sockets")
+                try:
+                    self._setup_sockets_non_blocking()
+                except Exception as reinit_error:
+                    self.logger.error(f"Vehicle {self.vehicle_id}: Socket reinit failed: {reinit_error}")
+    
+    def receive_state_non_blocking(self) -> Optional[dict]:
+        """
+        Receive state data from other vehicles (non-blocking) with improved performance.
+        
+        Returns:
+            Dictionary containing received state data or None if no data available
+        """
+        if self.mode != 'non_blocking':
+            self.logger.warning("receive_state_non_blocking called in threaded mode")
+            return None
+            
+        if not self.initialized:
+            return None
+            
+        try:
+            # Start performance timing if available
+            if PERFORMANCE_MONITORING:
+                receive_start = perf_monitor.start_timing()
+            
+            # Try to receive data with minimal timeout
+            data, addr = self.recv_socket.recvfrom(1024)
+            
+            # Fast JSON decode
+            message = ujson.loads(data.decode('utf-8'))
+            
+            # Quick validity checks
+            sender_id = message.get('vehicle_id') or message.get('id')
+            if sender_id == self.vehicle_id:
+                return None  # Don't process our own messages
+            
+            # Log detailed receive data for vehicle 1 (save all data received by vehicle 1)
+            if self.vehicle_id == 1:
+                receive_time = time.time()
+                pos = message.get('pos', message.get('position', [0, 0, 0]))
+                rot = message.get('rot', message.get('rotation', [0, 0, 0]))
+                vel = message.get('v', message.get('velocity', 0.0))
+                msg_timestamp = message.get('timestamp', 0.0)
+                seq = message.get('seq', -1)
+                delay = receive_time - msg_timestamp if msg_timestamp > 0 else 0.0
+                
+                # self.logger.info(f"RECEIVE_DATA: {{\"receive_timestamp\": {receive_time:.6f}, \"message_timestamp\": {msg_timestamp:.6f}, \"delay\": {delay:.6f}, \"seq\": {seq}, \"sender_id\": {sender_id}, \"position\": {pos}, \"rotation\": {rot}, \"velocity\": {vel:.2f}, \"message_size\": {len(data)}}}")
+                
+            # Send ACK if this is a state message (non-blocking)
+            msg_type = message.get('type', 'state')  # Default to state for backward compatibility
+            if msg_type == 'state':
+                seq = message.get('seq', -1)
+                sender_ack_port = message.get('ack_port')
+                if sender_ack_port and seq >= 0:
+                    # Send ACK asynchronously without blocking
+                    try:
+                        self._send_ack_non_blocking(seq, addr[0], sender_ack_port)
+                    except Exception as ack_error:
+                        self.logger.debug(f"ACK send failed (non-critical): {ack_error}")
+            
+            # Log received message for debugging
+            if self.logger.isEnabledFor(logging.DEBUG):
+                pos = message.get('pos', message.get('position', [0, 0, 0]))
+                vel = message.get('v', message.get('velocity', 0.0))
+                self.logger.debug(f"Vehicle {self.vehicle_id}: Received from {sender_id} - "
+                                f"pos={pos}, v={vel:.3f}")
+            
+            # End performance timing
+            if PERFORMANCE_MONITORING:
+                perf_monitor.end_timing(receive_start, "non_blocking_receive")
+                
+            return message
+            
+        except socket.timeout:
+            return None  # No data available
+        except (ValueError, KeyError) as parse_error:
+            self.logger.warning(f"Vehicle {self.vehicle_id}: Message parse error: {parse_error}")
+            return None
+        except Exception as e:
+            self.logger.error(f"Vehicle {self.vehicle_id}: Receive error: {e}")
+            return None
+    
+    def _send_ack_non_blocking(self, seq: int, sender_ip: str, sender_ack_port: int):
+        """Send ACK response in non-blocking mode."""
+        try:
+            ack_message = {
+                'type': 'ack',
+                'ack_seq': seq,
+                'ack_id': self.vehicle_id
+            }
+            
+            ack_json = ujson.dumps(ack_message).encode('utf-8')
+            
+            # Use a temporary socket for ACK sending to avoid port conflicts
+            ack_send_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            ack_send_socket.sendto(ack_json, (sender_ip, sender_ack_port))
+            ack_send_socket.close()
+            
+            self.logger.debug(f"Vehicle {self.vehicle_id}: Sent ACK for seq={seq} to {sender_ip}:{sender_ack_port}")
+            
+        except Exception as e:
+            self.logger.error(f"Vehicle {self.vehicle_id}: Failed to send ACK: {e}")
+    
+    def initialize_sockets(self):
+        """Initialize sockets for non-blocking mode (compatibility method)."""
+        if self.mode == 'non_blocking':
+            self._setup_sockets_non_blocking()
+        else:
+            self._setup_sockets_threaded()
+
     def cleanup(self):
         """
         Clean shutdown of communication handler.
@@ -523,12 +764,21 @@ class CommHandler:
         """
         self.logger.info(f"Starting cleanup for Vehicle {self.vehicle_id} CommHandler")
         
-        sockets = [
-            ('send_sock', self.send_sock),
-            ('recv_sock', self.recv_sock), 
-            ('send_ack_sock', self.send_ack_sock),
-            ('ack_sock', self.ack_sock)
-        ]
+        if self.mode == 'threaded':
+            # Cleanup threaded mode sockets
+            sockets = [
+                ('send_sock', getattr(self, 'send_sock', None)),
+                ('recv_sock', getattr(self, 'recv_sock', None)), 
+                ('send_ack_sock', getattr(self, 'send_ack_sock', None)),
+                ('ack_sock', getattr(self, 'ack_sock', None))
+            ]
+        else:
+            # Cleanup non-blocking mode sockets
+            sockets = [
+                ('send_socket', getattr(self, 'send_socket', None)),
+                ('recv_socket', getattr(self, 'recv_socket', None)),
+                ('ack_socket', getattr(self, 'ack_socket', None))
+            ]
         
         for socket_name, sock in sockets:
             try:
@@ -537,5 +787,8 @@ class CommHandler:
                     self.logger.debug(f"Closed {socket_name}")
             except Exception as e:
                 self.logger.error(f"Error closing {socket_name}: {e}")
+        
+        if self.mode == 'non_blocking':
+            self.initialized = False
         
         self.logger.info(f"CommHandler cleanup completed for Vehicle {self.vehicle_id}")
