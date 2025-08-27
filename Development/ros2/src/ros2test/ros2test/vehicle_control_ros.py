@@ -12,6 +12,7 @@ from ros2test.util import quaternion_to_yaw
 import pyqtgraph as pg
 from pyqtgraph.Qt import QtWidgets
 from collections import deque
+from sensor_msgs.msg import LaserScan
 
 class VehicleControl(Node):
     def __init__(self):
@@ -46,23 +47,26 @@ class VehicleControl(Node):
         
         roadmap = SDCSRoadMap(leftHandTraffic=False)
         self.waypointSequence = roadmap.generate_path(self.nodeSequence)
-
-        lidarPlot = pg.plot(title="vehicle_control")
-
-        lidarPlot.setXRange(-4, 4)
-
-        lidarPlot.setYRange(-2, 6)
+        self.waypointSequence = self.waypointSequence[:, :self.waypointSequence.shape[1] // 3]
         
-        self.plotwaypoints = lidarPlot.plot([], [], pen=None, symbol='o', symbolBrush='r', symbolPen=None, symbolSize=2)
-        self.plotpos = lidarPlot.plot([], [], pen=None, symbol='o', symbolBrush='g', symbolPen=None, symbolSize=2)
+        self.utils = Utils()
+
+        vehicle_control_plot = pg.plot(title="vehicle_control")
+
+        vehicle_control_plot.setXRange(-4, 4)
+
+        vehicle_control_plot.setYRange(-2, 6)
+        
+        self.plotwaypoints = vehicle_control_plot.plot([], [], pen=None, symbol='o', symbolBrush='r', symbolPen=None, symbolSize=2)
+        self.plotpos = vehicle_control_plot.plot([], [], pen=None, symbol='o', symbolBrush='g', symbolPen=None, symbolSize=2)
         
         self.poslistx = deque(maxlen=300)
         self.poslisty = deque(maxlen=300)
         
-        self.sub = self.create_subscription(PoseStamped, '/ekf_pose', self.ekf_callback, 10)
-        self.sub2 = self.create_subscription(JointState, '/qcar2_joint', self.joint_callback, 10)
+        self.ekf_sub = self.create_subscription(PoseStamped, '/ekf_pose', self.ekf_callback, 10)
+        self.joint_sub = self.create_subscription(JointState, '/qcar2_joint', self.joint_callback, 10)
 
-        self.pub = self.create_publisher(MotorCommands, "/qcar2_motor_speed_cmd", 10)
+        self.motor_pub = self.create_publisher(MotorCommands, "/qcar2_motor_speed_cmd", 10)
         
         self.speedController = SpeedController(
             kp=self.K_p,
@@ -70,25 +74,56 @@ class VehicleControl(Node):
         )
         self.stanleyController = StanleyController(
             waypoints=self.waypointSequence,
-            k=self.K_stanley
+            k=self.K_stanley,
+            cyclic=False
         )
         
         self.t0 = time.time()
         self.t = 0
         self.motorTach = 0
         self.delta = 0 
-        
+
+        # Occupancy grid with LIDAR
+        self.subscription = self.create_subscription(
+            LaserScan,
+            '/scan', 
+            self.scan_callback,
+            10
+        )
+
+        squareSize = 10
+
+        vehicle_control_plot.setXRange(-squareSize, squareSize)
+
+        vehicle_control_plot.setYRange(-squareSize, squareSize)
+
+        self.lidarData = vehicle_control_plot.plot([], [], pen=None, symbol='o', symbolBrush='b', symbolPen=None, symbolSize=2)
+        self.detected = vehicle_control_plot.plot([], [], pen=None, symbol='o', symbolBrush='g', symbolPen=None, symbolSize=2)
+        self.target = vehicle_control_plot.plot([], [], pen=None, symbol='o', symbolBrush='b', symbolPen=None, symbolSize=10)
+        self.target2 = vehicle_control_plot.plot([], [], pen=None, symbol='o', symbolBrush='y', symbolPen=None, symbolSize=10)
+        # Occupancy grid (added as image item)
+        self.occupancy_img = pg.ImageItem()
+        self.occupancy_img.setZValue(-10)  # Draw under LiDAR points
+        vehicle_control_plot.addItem(self.occupancy_img)
+
+                
+        self.L = 3
+        self.CELLS_PER_METER = 20
+        self.grid_width_meters = 6
+        self.grid_height = int(self.L * self.CELLS_PER_METER)
+        self.grid_width = int(self.grid_width_meters * self.CELLS_PER_METER)
+        self.CELL_Y_OFFSET = (self.grid_width // 2) - 1
+       
+        self.IS_OCCUPIED = 100
+        self.IS_FREE = 50
         
     def joint_callback(self, msg: JointState): 
         # self.get_logger().info("joint " + str(msg.velocity[0] * self.CPS_TO_MPS))
         self.motorTach = msg.velocity[0] * self.CPS_TO_MPS
         
     def ekf_callback(self, msg: PoseStamped): 
-        x = self.waypointSequence[0]
-        y = self.waypointSequence[1] 
-        self.plotwaypoints.setData(x, y)
-        
-        QtWidgets.QApplication.instance().processEvents()
+        xs = self.waypointSequence[0]
+        ys = self.waypointSequence[1] 
         pose = msg.pose
         tp = self.t
         self.t = time.time() - self.t0
@@ -96,7 +131,6 @@ class VehicleControl(Node):
 
         x = pose.position.x
         y = pose.position.y
-        self.get_logger().info(f"(x, y) ({x}, {y})")
         self.poslistx.append(x)
         self.poslisty.append(y)
         self.plotpos.setData(self.poslistx, self.poslisty)
@@ -107,6 +141,14 @@ class VehicleControl(Node):
         ow = pose.orientation.w
         
         th = quaternion_to_yaw(ox, oy, oz, ow)
+        th2 = (np.pi/2) - th
+        xs = xs - x
+        ys = ys - y
+        x2 = xs * np.cos(th2) - ys * np.sin(th2)
+        y2 = xs * np.sin(th2) + ys * np.cos(th2)
+        self.plotwaypoints.setData(x2, y2)
+        
+        QtWidgets.QApplication.instance().processEvents()
         
         p = ( np.array([x, y])
             + np.array([np.cos(th), np.sin(th)]) * 0.2)
@@ -114,8 +156,166 @@ class VehicleControl(Node):
 
         u = self.speedController.update(v, self.v_ref, dt)
         self.delta = self.stanleyController.update(p, th, v)
-
+        dx = np.cos(self.delta)
+        dy = np.sin(self.delta)
+        if self.avoid_obstacle_occupancy_grid(u, dx, dy):
+            return  # Skip sending control if obstacle detected
+        
+        self.get_logger().info(f"delta = {self.delta}")
         self.send_control(u, self.delta)
+        # self.send_control(0, self.delta)
+
+
+    def local_to_grid(self, x, y):
+        i = int(y * -self.CELLS_PER_METER + (self.grid_height - 1))
+        j = int(x * self.CELLS_PER_METER + self.CELL_Y_OFFSET)
+        return (i, j)
+
+    def local_to_grid_parallel(self, x, y):
+        i = np.round(y * -self.CELLS_PER_METER + (self.grid_height - 1)).astype(int)
+        j = np.round(x * self.CELLS_PER_METER + self.CELL_Y_OFFSET).astype(int)
+        return i, j
+
+    def grid_to_local(self, point):
+        i, j = point[0], point[1]
+        y = (i - (self.grid_height - 1)) / -self.CELLS_PER_METER
+        x = (j - self.CELL_Y_OFFSET) / self.CELLS_PER_METER
+        return (x, y)
+    
+    def check_collision(self, cell_a, cell_b, margin=0):
+        """
+        Checks whether the path between two cells
+        in the occupancy grid is collision free.
+
+        The margin is done by checking if adjacent cells are also free.
+
+        One of the issues is that if the starting cell is next to a wall, then it already considers there to be a collision.
+        See check_collision_loose
+
+
+        Args:
+            cell_a (i, j): index of cell a in occupancy grid
+            cell_b (i, j): index of cell b in occupancy grid
+            margin (int): margin of safety around the path
+        Returns:
+            collision (bool): whether path between two cells would cause collision
+        """
+        for i in range(-margin, margin + 1):  # for the margin, check
+            cell_a_margin = (cell_a[0], cell_a[1] + i)
+            cell_b_margin = (cell_b[0], cell_b[1] + i)
+            for cell in self.utils.traverse_grid(cell_a_margin, cell_b_margin):
+                if (cell[0] * cell[1] < 0) or (cell[0] >= self.grid_height) or (cell[1] >= self.grid_width):
+                    continue
+                try:
+                    if self.occupancy_grid[cell] == self.IS_OCCUPIED:
+                        return True
+                except:
+                    #print(f"Sampled point is out of bounds: {cell}")
+                    return True
+        return False
+
+    def check_collision_loose(self, cell_a, cell_b, margin=0):
+        """
+        Checks whether the path between two cells
+        in the occupancy grid is collision free.
+
+        The margin is done by checking if adjacent cells are also free.
+
+        This looser implementation only checks half way for meeting the margin requirement.
+
+
+        Args:
+            cell_a (i, j): index of cell a in occupancy grid
+            cell_b (i, j): index of cell b in occupancy grid
+            margin (int): margin of safety around the path
+        Returns:
+            collision (bool): whether path between two cells would cause collision
+        """
+        for i in range(-margin, margin + 1):  # for the margin, check
+            cell_a_margin = (int((cell_a[0] + cell_b[0]) / 2), int((cell_a[1] + cell_b[1]) / 2) + i)
+            cell_b_margin = (cell_b[0], cell_b[1] + i)
+            for cell in self.utils.traverse_grid(cell_a_margin, cell_b_margin):
+                if (cell[0] * cell[1] < 0) or (cell[0] >= self.grid_height) or (cell[1] >= self.grid_width):
+                    continue
+                try:
+                    if self.occupancy_grid[cell] == self.IS_OCCUPIED:
+                        return True
+                except:
+                    #print(f"Sampled point is out of bounds: {cell}")
+                    return True
+        return False
+       
+    def avoid_obstacle_occupancy_grid(self, u, dx, dy):
+        
+        current_pos = np.array(self.local_to_grid(0, 0))
+        
+        dx_rot = -dy
+        dy_rot = dx
+        self.target.setData([dx_rot], [dy_rot])
+        self.target2.setData([], [])
+
+        goal_pos = np.array(self.local_to_grid(dx_rot, dy_rot))
+        target = None
+        MARGIN = 5
+
+        if self.check_collision(current_pos, goal_pos, margin=MARGIN):
+            self.obstacle_detected = True
+
+            shifts = [i * (-1 if i % 2 else 1) for i in range(1, 21)]
+
+            found = False
+            for shift in shifts:
+                # We consider various points to the left and right of the goal position
+                new_goal = goal_pos + np.array([0, shift])
+
+                # If we are currently super close to the wall, this logic doesn't work
+                if not self.check_collision(current_pos, new_goal, margin=int(1.5 * MARGIN)):
+                    target = self.grid_to_local(new_goal)
+                    found = True
+                    print("Found condition 1")
+                    break
+
+            if not found:
+                # This means that the obstacle is very close to us, we need even steeper turns
+                middle_grid_point = np.array(current_pos + (goal_pos - current_pos) / 2).astype(int)
+
+                for shift in shifts:
+                    new_goal = middle_grid_point + np.array([0, shift])
+                    if not self.check_collision(current_pos, new_goal, margin=int(1.5 * MARGIN)):
+                        target = self.grid_to_local(new_goal)
+                        found = True
+                        print("Found condition 2")
+                        break
+
+            if not found:
+                # Try again with a looser collision checker, we are probably very close to the obstacle, so check only collision free in the second half
+                middle_grid_point = np.array(current_pos + (goal_pos - current_pos) / 2).astype(int)
+
+                for shift in shifts:
+                    new_goal = middle_grid_point + np.array([0, shift])
+                    if not self.check_collision_loose(current_pos, new_goal, margin=MARGIN):
+                        target = self.grid_to_local(new_goal)
+                        found = True
+                        print("Found condition 3")
+                        break
+
+        else:
+            self.obstacle_detected = False
+            target = self.grid_to_local(goal_pos)
+            
+        if target:
+            if self.obstacle_detected:
+                target_x_rot = target[1]
+                target_y_rot = -target[0]
+                delta = np.arctan2(target_y_rot, target_x_rot)
+                self.send_control(0.6*u, delta)
+                self.target2.setData([target[0]], [target[1]])
+                return True
+            else:
+                return False
+        else:
+            self.send_control(0, 0)
+            return True
 
     def send_control(self, motor, steer):
         msg = MotorCommands()
@@ -123,7 +323,74 @@ class VehicleControl(Node):
         msg.motor_names.append("motor_throttle")
         msg.values.append(steer)
         msg.values.append(motor)
-        self.pub.publish(msg)
+        self.motor_pub.publish(msg)
+
+    def local_to_grid_parallel(self, x, y):
+        i = np.round(y * -self.CELLS_PER_METER + (self.grid_height - 1)).astype(int)
+        j = np.round(x * self.CELLS_PER_METER + self.CELL_Y_OFFSET).astype(int)
+        return i, j
+
+    def populate_occupancy_grid(self, ranges, thetas):
+        """
+        Populate occupancy grid using lidar scans and save
+        the data in class member variable self.occupancy_grid.
+
+        Optimization performed to improve the speed at which we generate the occupancy grid.
+
+        Args:
+            scan_msg (LaserScan): message from lidar scan topic
+        """
+        # reset empty occupacny grid (-1 = unknown)
+
+        self.occupancy_grid = np.full(shape=(self.grid_height, self.grid_width), fill_value=self.IS_FREE, dtype=int)
+
+        ranges = np.array(ranges)
+        valid = ranges > 0
+        ranges = ranges[valid]
+        thetas = thetas[valid]
+        xs = ranges * np.sin(thetas)
+        ys = ranges * np.cos(thetas)
+
+        i, j = self.local_to_grid_parallel(xs, ys)
+
+        occupied_indices = np.where((i > 0) & (i < self.grid_height) & (j > 0) & (j < self.grid_width))
+        self.occupancy_grid[i[occupied_indices], j[occupied_indices]] = self.IS_OCCUPIED
+        
+        
+    # === Occupancy Grid Plot Update Function ===
+    def update_occupancy_image(self, cell_size=1/20):
+        """
+        Update the PyQtGraph image layer with new occupancy grid data.
+        """
+        # Flip vertically so image matches LiDAR frame orientation
+        image = np.flipud(self.occupancy_grid).T  # transpose for (x,y) alignment
+        self.occupancy_img.setImage(image, levels=(0, 100))
+
+        # Scale image so each cell matches real-world meters
+        shape = self.occupancy_grid.shape
+        self.occupancy_img.setRect(
+            pg.QtCore.QRectF(
+                -shape[1] / 2.0 * cell_size,
+                0,
+                shape[1] * cell_size,
+                shape[0] * cell_size
+            )
+        )    
+
+    def scan_callback(self, msg: LaserScan):
+
+        ranges = np.array(list(msg.ranges))[::-1] 
+        angles = np.linspace(msg.angle_min, msg.angle_max, len(ranges))
+        angles = (angles + np.pi) % (2 * np.pi)
+        self.populate_occupancy_grid(ranges, angles)
+        self.update_occupancy_image()
+
+        x = np.sin(angles)*ranges
+
+        y = np.cos(angles)*ranges
+
+        self.lidarData.setData(x,y)
+        QtWidgets.QApplication.instance().processEvents()
 
 
 def main(args=None):
@@ -135,3 +402,81 @@ def main(args=None):
 
 if __name__ == '__main__':
     main()
+
+
+
+class Utils:
+    def __init__(self):
+        pass
+
+    def traverse_grid(self, start, end):
+        """
+        Bresenham's line algorithm for fast voxel traversal
+
+        CREDIT TO: Rogue Basin
+        CODE TAKEN FROM: http://www.roguebasin.com/index.php/Bresenham%27s_Line_Algorithm
+        """
+        # Setup initial conditions
+        x1, y1 = start
+        x2, y2 = end
+        dx = x2 - x1
+        dy = y2 - y1
+
+        # Determine how steep the line is
+        is_steep = abs(dy) > abs(dx)
+
+        # Rotate line
+        if is_steep:
+            x1, y1 = y1, x1
+            x2, y2 = y2, x2
+
+        # Swap start and end points if necessary and store swap state
+        if x1 > x2:
+            x1, x2 = x2, x1
+            y1, y2 = y2, y1
+
+        # Recalculate differentials
+        dx = x2 - x1
+        dy = y2 - y1
+
+        # Calculate error
+        error = int(dx / 2.0)
+        ystep = 1 if y1 < y2 else -1
+
+        # Iterate over bounding box generating points between start and end
+        y = y1
+        points = []
+        for x in range(x1, x2 + 1):
+            coord = (y, x) if is_steep else (x, y)
+            points.append(coord)
+            error -= abs(dy)
+            if error < 0:
+                y += ystep
+                error += dx
+        return points
+    
+    def polar_to_cartesian(r, angle_deg, origin=(0, 0)):
+        """
+        Convert polar coordinates (r, angle) to Cartesian (x, y).
+        Angle is in degrees. Supports scalars or NumPy arrays.
+        """
+        x0 = 0
+        y0 = 0
+        angle_rad = np.deg2rad(angle_deg)
+        x = x0 + r * np.cos(angle_rad)
+        y = y0 + r * np.sin(angle_rad)
+        return np.array([x, y])
+
+    def cartesian_to_polar(x, y, origin=(0, 0)):
+        """
+        Convert Cartesian coordinates (x, y) to polar (r, angle).
+        Returns (r, angle_rad, angle_deg).
+        Supports scalars or NumPy arrays.
+        """
+        x0, y0 = origin
+        dx = x - x0
+        dy = y - y0
+        r = np.hypot(dx, dy)
+        angle_rad = np.arctan2(dy, dx)
+        angle_deg = np.rad2deg(angle_rad)
+        return np.array([r, angle_rad, angle_deg])
