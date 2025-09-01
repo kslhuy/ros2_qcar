@@ -5,6 +5,9 @@ import logging
 from typing import Dict, Any, Tuple, Optional
 import threading
 
+# Import logging configuration
+from md_logging_config import get_fleet_observer_logger
+
 # Import performance monitoring
 try:
     from performance_monitor import perf_monitor
@@ -43,7 +46,8 @@ class CommHandler:
     HEARTBEAT_TIMEOUT = 2.0         # Heartbeat timeout threshold
     
     def __init__(self, vehicle_id: int, target_ip: str, send_port: int, recv_port: int, 
-                 ack_port: int, logger, running_flag=None, vehicle=None, mode='threaded'):
+                 ack_port: int, logger, running_flag=None, vehicle=None, mode='threaded',
+                 peer_ports=None, communication_mode='unidirectional'):
         """
         Initialize communication handler for a vehicle.
         
@@ -57,6 +61,8 @@ class CommHandler:
             running_flag: Shared threading event to control operation (optional for non-blocking mode)
             vehicle: Reference to the Vehicle instance for state access (optional for non-blocking mode)
             mode: Communication mode - 'threaded' for background threads, 'non_blocking' for polling
+            peer_ports: Dictionary mapping peer vehicle IDs to their port configurations for bidirectional communication
+            communication_mode: 'unidirectional' (leader->followers) or 'bidirectional' (peer-to-peer)
         """
         # Vehicle identification and network configuration
         self.vehicle_id = vehicle_id
@@ -65,7 +71,16 @@ class CommHandler:
         self.recv_port = recv_port
         self.ack_port = ack_port
         self.logger = logger
+        
+        # Add fleet observer logger for separate fleet estimation logging
+        self.fleet_comm_logger = get_fleet_observer_logger(vehicle_id)
+        
         self.mode = mode
+        
+        # NEW: Bidirectional communication support
+        self.peer_ports = peer_ports or {}
+        self.communication_mode = communication_mode
+        self.is_bidirectional = (communication_mode == 'bidirectional')
         
         # Initialize communication state
         self.initialized = False
@@ -362,10 +377,11 @@ class CommHandler:
             msg_timestamp = message.get('timestamp', 0.0)
             delay = receive_time - msg_timestamp if msg_timestamp > 0 else 0.0
             
-            self.logger.info(f"RECEIVE_DATA: {{\"receive_timestamp\": {receive_time:.6f}, \"message_timestamp\": {msg_timestamp:.6f}, \"delay\": {delay:.6f}, \"seq\": {seq}, \"sender_id\": {sender_id}, \"sender_ip\": \"{sender_addr[0]}\", \"sender_port\": {sender_addr[1]}, \"position\": {pos}, \"rotation\": {rot}, \"velocity\": {vel:.6f}}}")
+            self.logger.info(f"STATE_RECV_DATA: {{\"receive_timestamp\": {receive_time:.6f}, \"message_timestamp\": {msg_timestamp:.6f}, \"delay\": {delay:.6f}, \"seq\": {seq}, \"sender_id\": {sender_id}, \"sender_ip\": \"{sender_addr[0]}\", \"sender_port\": {sender_addr[1]}, \"position\": {pos}, \"rotation\": {rot}, \"velocity\": {vel:.6f}}}")
             
-        self.logger.info(f"RECEIVED STATE: Seq: {seq}, Sender ID: {sender_id}, "
-                        f"Pos: {message.get('pos')}, V: {message.get('v', 0.0):.3f}")
+        self.logger.info(f"STATE_RECV: Seq={seq}, Sender={sender_id}, "
+                        f"Pos=({message.get('pos', [0,0,0])[0]:.3f},{message.get('pos', [0,0,0])[1]:.3f}), "
+                        f"Vel={message.get('v', 0.0):.3f}")
         
         # Send ACK response
         sender_ack_port = message.get('ack_port')
@@ -410,6 +426,54 @@ class CommHandler:
         # ACK messages are handled in the send_state method's _wait_for_ack call
         self.logger.debug(f"ACK message received: {message}")
     
+    def _handle_fleet_estimates_message(self, message: Dict[str, Any], sender_addr: Tuple[str, int]):
+        """
+        Process received fleet estimates message from distributed observer.
+        
+        Args:
+            message: Decoded fleet estimates message data
+            sender_addr: Address tuple (IP, port) of message sender
+        """
+        sender_id = message.get('sender_id') or message.get('vehicle_id')
+        seq = message.get('seq', -1)
+        timestamp = message.get('timestamp', time.time())
+        
+        # Ignore messages from ourselves
+        if sender_id == self.vehicle_id:
+            return
+        
+        # Log fleet estimates reception with complete format
+        estimates = message.get('estimates', {})
+        sender_id = message.get('sender_id', message.get('vehicle_id', 'unknown'))
+        seq = message.get('seq', -1)
+        timestamp = message.get('timestamp', 0.0)
+        
+        # Extract complete estimate data (pos, rot, vel)
+        est_data = {}
+        for vid, est in estimates.items():
+            pos = est.get('pos', [0, 0])
+            rot = est.get('rot', [0, 0, 0])
+            vel = est.get('vel', 0.0)
+            est_data[f'V{vid}'] = f'Pos=({pos[0]:.2f},{pos[1]:.2f}) Rot={rot[2]:.2f} Vel={vel:.2f}'
+        
+        self.fleet_comm_logger.info(f"RECV From=V{sender_id} Seq={seq} T={timestamp:.3f} {est_data}")
+        
+        # Send ACK response if required
+        sender_ack_port = message.get('ack_port')
+        if sender_ack_port:
+            self._send_ack_response(seq, sender_addr, sender_ack_port)
+        
+        # Process fleet estimates through Vehicle's observer system
+        try:
+            if hasattr(self.vehicle, 'process_received_fleet_estimates'):
+                self.vehicle.process_received_fleet_estimates(message)
+            else:
+                # Fallback: Log warning for missing processor
+                self.fleet_comm_logger.warning(f"No fleet estimates processor available for Vehicle {self.vehicle_id}")
+                    
+        except Exception as e:
+            self.logger.error(f"Error processing received fleet estimates: {e}")
+    
     def _process_received_message(self, data: bytes, sender_addr: Tuple[str, int]):
         """
         Decode and route received message to appropriate handler.
@@ -440,6 +504,8 @@ class CommHandler:
             # Route to appropriate message handler (optimized order by frequency)
             if msg_type == 'state':
                 self._handle_state_message_optimized(message, sender_addr)
+            elif msg_type == 'fleet_estimates':
+                self._handle_fleet_estimates_message(message, sender_addr)
             elif msg_type == 'ack':
                 self._handle_ack_message(message)
             elif msg_type == 'heartbeat':
@@ -593,7 +659,10 @@ class CommHandler:
 
     # Non-blocking communication methods for process-based vehicles
     def send_state_broadcast(self, state_data: dict):
-        """Send state data to other vehicles using non-blocking method with optimizations."""
+        """Send state data to other vehicles using non-blocking method with optimizations.
+        
+        NEW: Supports both unidirectional (leader->followers) and bidirectional (peer-to-peer) communication.
+        """
         if self.mode != 'non_blocking':
             self.logger.warning("send_state_broadcast called in threaded mode - use send_state instead")
             return
@@ -616,17 +685,31 @@ class CommHandler:
                 'pos': state_data.get('position', [0, 0, 0]),
                 'rot': state_data.get('rotation', [0, 0, 0]),
                 'v': state_data.get('velocity', 0.0),
+                'ctrl_u': state_data.get('control_input', [0.0, 0.0]),
                 'seq': self.sequence_number,
                 'ack_port': self.ack_port
             }
             
-            # # Log detailed send data for vehicle 0 (save all data sent by vehicle 0)
-            # if self.vehicle_id == 0:
-            #     self.logger.info(f"SEND_DATA: {{\"timestamp\": {current_time:.6f}, \"seq\": {message['seq']}, \"position\": {message['pos']}, \"rotation\": {message['rot']}, \"velocity\": {message['v']:.2f}, \"message_size\": {len(ujson.dumps(message))}}}")
-            
-            # Fast JSON encode and send
+            # Fast JSON encode
             message_bytes = ujson.dumps(message).encode('utf-8')
-            self.send_socket.sendto(message_bytes, (self.target_ip, self.send_port))
+            
+            # Choose sending strategy based on communication mode
+            if self.is_bidirectional and self.peer_ports:
+                # BIDIRECTIONAL: Send to all peer vehicles individually
+                sent_count = 0
+                for peer_id, peer_config in self.peer_ports.items():
+                    try:
+                        peer_recv_port = peer_config.get('send_to_peer', self.send_port)
+                        self.send_socket.sendto(message_bytes, (self.target_ip, peer_recv_port))
+                        sent_count += 1
+                    except Exception as peer_error:
+                        self.logger.warning(f"Vehicle {self.vehicle_id}: Failed to send to peer {peer_id}: {peer_error}")
+                
+                self.logger.debug(f"Vehicle {self.vehicle_id}: Bidirectional broadcast to {sent_count} peers")
+            else:
+                # UNIDIRECTIONAL: Original leader->followers broadcast
+                self.send_socket.sendto(message_bytes, (self.target_ip, self.send_port))
+                self.logger.debug(f"Vehicle {self.vehicle_id}: Unidirectional broadcast to port {self.send_port}")
             
             # Update state
             self.last_send_time = current_time
@@ -639,7 +722,7 @@ class CommHandler:
             # Debug logging (only if enabled to avoid overhead)
             if self.logger.isEnabledFor(logging.DEBUG):
                 self.logger.debug(f"Vehicle {self.vehicle_id}: Broadcasted seq={message['seq']} - "
-                                f"pos={message['pos']}, v={message['v']:.3f}")
+                                f"pos={message['pos']}, v={message['v']:.3f}, mode={self.communication_mode}")
             
         except Exception as e:
             self.logger.error(f"Vehicle {self.vehicle_id}: Send error: {e}")
@@ -650,6 +733,9 @@ class CommHandler:
                     self._setup_sockets_non_blocking()
                 except Exception as reinit_error:
                     self.logger.error(f"Vehicle {self.vehicle_id}: Socket reinit failed: {reinit_error}")
+            return False
+        
+        return True
     
     def receive_state_non_blocking(self) -> Optional[dict]:
         """
@@ -687,11 +773,12 @@ class CommHandler:
                 pos = message.get('pos', message.get('position', [0, 0, 0]))
                 rot = message.get('rot', message.get('rotation', [0, 0, 0]))
                 vel = message.get('v', message.get('velocity', 0.0))
+                control = message.get('ctrl_u', [0.0, 0.0])
                 msg_timestamp = message.get('timestamp', 0.0)
                 seq = message.get('seq', -1)
                 delay = receive_time - msg_timestamp if msg_timestamp > 0 else 0.0
                 
-                # self.logger.info(f"RECEIVE_DATA: {{\"receive_timestamp\": {receive_time:.6f}, \"message_timestamp\": {msg_timestamp:.6f}, \"delay\": {delay:.6f}, \"seq\": {seq}, \"sender_id\": {sender_id}, \"position\": {pos}, \"rotation\": {rot}, \"velocity\": {vel:.2f}, \"message_size\": {len(data)}}}")
+                # self.logger.info(f"RECEIVE_DATA: {{\"receive_timestamp\": {receive_time:.6f}, \"message_timestamp\": {msg_timestamp:.6f}, \"delay\": {delay:.6f}, \"seq\": {seq}, \"sender_id\": {sender_id}, \"position\": {pos}, \"rotation\": {rot}, \"velocity\": {vel:.2f}, \"control_input\": {control}, \"message_size\": {len(data)}}}")
                 
             # Send ACK if this is a state message (non-blocking)
             msg_type = message.get('type', 'state')  # Default to state for backward compatibility
@@ -709,8 +796,9 @@ class CommHandler:
             if self.logger.isEnabledFor(logging.DEBUG):
                 pos = message.get('pos', message.get('position', [0, 0, 0]))
                 vel = message.get('v', message.get('velocity', 0.0))
+                control = message.get('ctrl_u', [0.0, 0.0])
                 self.logger.debug(f"Vehicle {self.vehicle_id}: Received from {sender_id} - "
-                                f"pos={pos}, v={vel:.3f}")
+                                f"pos={pos}, v={vel:.3f}, control={control}")
             
             # End performance timing
             if PERFORMANCE_MONITORING:
@@ -726,6 +814,154 @@ class CommHandler:
         except Exception as e:
             self.logger.error(f"Vehicle {self.vehicle_id}: Receive error: {e}")
             return None
+    
+    def send_fleet_estimates_broadcast(self, fleet_message: dict) -> bool:
+        """
+        Send fleet estimation data to other vehicles using non-blocking method.
+        
+        This method is specifically designed for broadcasting distributed observer
+        fleet estimates, which have a different message structure than regular state messages.
+        
+        Args:
+            fleet_message: Dictionary containing fleet estimates with structure:
+                          {'msg_type': 'fleet_estimates', 'estimates': {...}, ...}
+        
+        Returns:
+            True if broadcast successful, False otherwise
+        """
+        if self.mode == 'threaded':
+            # For threaded mode, use the existing socket infrastructure
+            return self._send_fleet_estimates_threaded(fleet_message)
+        elif self.mode == 'non_blocking':
+            return self._send_fleet_estimates_non_blocking(fleet_message)
+        else:
+            self.logger.warning(f"Unknown mode '{self.mode}' for fleet estimates broadcast")
+            return False
+    
+    def _send_fleet_estimates_threaded(self, fleet_message: dict) -> bool:
+        """Send fleet estimates in threaded mode."""
+        try:
+            # Prepare fleet estimates message with minimal fields
+            message = {
+                'type': 'fleet_estimates',
+                'vehicle_id': self.vehicle_id,
+                'timestamp': time.time(),
+                'seq': self.sequence_number,
+                'fleet_size': fleet_message.get('fleet_size', 0),
+                'estimates': fleet_message.get('estimates', {})
+            }
+            
+            # JSON encode and send
+            message_json = ujson.dumps(message).encode()
+            self.send_sock.sendto(message_json, (self.target_ip, self.send_port))
+            
+            # Update sequence number
+            with self.lock:
+                self.sequence_number += 1
+            
+            # Log to fleet logger with complete format
+            estimates = message.get('estimates', {})
+            seq = message['seq']
+            timestamp = message.get('timestamp', 0.0)
+            
+            # Extract complete estimate data (pos, rot, vel)
+            est_data = {}
+            for vid, est in estimates.items():
+                pos = est.get('pos', [0, 0])
+                rot = est.get('rot', [0, 0, 0])
+                vel = est.get('vel', 0.0)
+                est_data[f'V{vid}'] = f'Pos=({pos[0]:.2f},{pos[1]:.2f}) Rot={rot[2]:.2f} Vel={vel:.2f}'
+            
+            # self.fleet_comm_logger.info(f"SEND From=V{self.vehicle_id} Seq={seq} T={timestamp:.3f} {est_data}")
+            return True
+            
+        except Exception as e:
+            self.fleet_comm_logger.error(f"Vehicle {self.vehicle_id}: Threaded fleet estimates broadcast error: {e}")
+            return False
+    
+    def _send_fleet_estimates_non_blocking(self, fleet_message: dict) -> bool:
+        """Send fleet estimates in non-blocking mode."""        
+        if not self.initialized:
+            self.logger.warning(f"Vehicle {self.vehicle_id}: Sockets not initialized for fleet broadcast")
+            return False
+            
+        try:
+            # Start performance timing if available
+            if PERFORMANCE_MONITORING:
+                send_start = perf_monitor.start_timing()
+            
+            # Prepare fleet estimates message with minimal fields
+            message = {
+                'type': 'fleet_estimates',  # Different type for fleet estimates
+                'vehicle_id': self.vehicle_id,
+                'timestamp': time.time(),
+                'seq': self.sequence_number,
+                'fleet_size': fleet_message.get('fleet_size', 0),
+                'estimates': fleet_message.get('estimates', {})
+            }
+            
+            # Fast JSON encode
+            message_bytes = ujson.dumps(message).encode('utf-8')
+            
+            # Choose sending strategy based on communication mode
+            if self.is_bidirectional and self.peer_ports:
+                # BIDIRECTIONAL: Send to all peer vehicles individually
+                sent_count = 0
+                for peer_id, peer_config in self.peer_ports.items():
+                    try:
+                        peer_recv_port = peer_config.get('send_to_peer', self.send_port)
+                        self.send_socket.sendto(message_bytes, (self.target_ip, peer_recv_port))
+                        sent_count += 1
+                    except Exception as peer_error:
+                        self.fleet_comm_logger.warning(f"Failed to send to peer V{peer_id}: {peer_error}")
+                
+                # Log with complete format
+                estimates = fleet_message.get('estimates', {})
+                seq = self.sequence_number
+                timestamp = message.get('timestamp', 0.0)
+                
+                # Extract complete estimate data (pos, rot, vel)
+                est_data = {}
+                for vid, est in estimates.items():
+                    pos = est.get('pos', [0, 0])
+                    rot = est.get('rot', [0, 0, 0])
+                    vel = est.get('vel', 0.0)
+                    est_data[f'V{vid}'] = f'Pos=({pos[0]:.2f},{pos[1]:.2f}) Rot={rot[2]:.2f} Vel={vel:.2f}'
+                
+                # self.fleet_comm_logger.info(f"SEND From=V{self.vehicle_id} Seq={seq} T={timestamp:.3f} {est_data}")
+            else:
+                # UNIDIRECTIONAL: Broadcast to all vehicles on standard port
+                self.send_socket.sendto(message_bytes, (self.target_ip, self.send_port))
+                
+                # Log with complete format
+                estimates = fleet_message.get('estimates', {})
+                seq = self.sequence_number
+                timestamp = message.get('timestamp', 0.0)
+                
+                # Extract complete estimate data (pos, rot, vel)
+                est_data = {}
+                for vid, est in estimates.items():
+                    pos = est.get('pos', [0, 0])
+                    rot = est.get('rot', [0, 0, 0])
+                    vel = est.get('vel', 0.0)
+                    est_data[f'V{vid}'] = f'Pos=({pos[0]:.2f},{pos[1]:.2f}) Rot={rot[2]:.2f} Vel={vel:.2f}'
+                
+                # self.fleet_comm_logger.info(f"SEND From=V{self.vehicle_id} Seq={seq} T={timestamp:.3f} {est_data}")
+            
+            # Update state
+            self.sequence_number += 1
+            
+            # End performance timing
+            if PERFORMANCE_MONITORING:
+                perf_monitor.end_timing(send_start, "fleet_estimates_send")
+            
+            return True
+            
+        except Exception as e:
+            self.fleet_comm_logger.error(f"Vehicle {self.vehicle_id}: Fleet estimates broadcast error: {e}")
+            return False
+    
+    
     
     def _send_ack_non_blocking(self, seq: int, sender_ip: str, sender_ack_port: int):
         """Send ACK response in non-blocking mode."""

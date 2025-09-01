@@ -14,7 +14,7 @@ simulation:
 # FLEET SETTINGS
 # =============================================================================
 fleet:
-  num_vehicles: 2                 # Number of vehicles in fleet (2-5)
+  num_vehicles: 3                 # Number of vehicles in fleet (2-5) - Testing chain following
   leader_index: 0                 # Which vehicle is the leader (0-based)
   distance_between_cars: 0.2      # Distance between vehicles (meters)
 
@@ -57,6 +57,15 @@ controller_params:
   
   # Control gains (2x2 matrix as [K11, K12, K21, K22])
   K_gains: [1.1, 0.0, 0.0, 1.1]  # Control gain matrix
+
+# =============================================================================
+# OBSERVER SETTINGS
+# =============================================================================
+observer:
+  enable_distributed: true        # Enable distributed state estimation
+  local_observer_type: "kalman"   # "kalman", "luenberger", or "direct"
+  distributed_observer_type: "consensus"  # Type of distributed observer
+  consensus_gain: 0.1             # Consensus gain for distributed observer
 
 # =============================================================================
 # COMMUNICATION SETTINGS

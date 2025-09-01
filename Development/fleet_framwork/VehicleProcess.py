@@ -43,7 +43,8 @@ from VehicleObserver import VehicleObserver
 from src.GPS_sim.md_gps_sync import GPSSync
 from md_logging_config import (
     get_individual_vehicle_logger, get_communication_logger, get_gps_logger, 
-    get_control_logger, get_observer_logger, disable_all_logging, set_module_logging
+    get_control_logger, get_observer_logger, get_fleet_observer_logger, 
+    disable_all_logging, set_module_logging
 )
 
 # Import performance monitoring
@@ -119,11 +120,11 @@ def vehicle_process_main(vehicle_config: Dict, stop_event: multiprocessing.Event
             )
             time.sleep(0.2)  # Allow some time for the vehicle to spawn
 
-            print(f"Vehicle {vehicle_id}: Spawn success: {success}")
+            # print(f"Vehicle {vehicle_id}: Spawn success: {success}")
             print(f"Vehicle {vehicle_id}: Spawn parameters - location: {spawn_location}, rotation: {spawn_rotation}, scale: {vehicle_scale}")
             
-            if not success:
-                print(f"Vehicle {vehicle_id}: Failed to spawn vehicle - spawn_id returned False")
+            # if not success:
+            #     print(f"Vehicle {vehicle_id}: Failed to spawn vehicle - spawn_id returned False")
                 # Don't return here, continue with the process as the vehicle might still be usable
             
         except Exception as spawn_error:
@@ -158,7 +159,12 @@ def vehicle_process_main(vehicle_config: Dict, stop_event: multiprocessing.Event
             # EMERGENCY STOP: Ensure vehicle is stopped before process exits
             try:
                 if hasattr(vehicle, 'qcar') and vehicle.qcar is not None:
-                    vehicle.qcar.set_velocity_and_request_state(forward=0.0, turn=0.0)
+                    vehicle.qcar.set_velocity_and_request_state(forward=0.0, turn=0.0 ,headlights=False,
+                            leftTurnSignal=False,
+                            rightTurnSignal=False,
+                            brakeSignal=False,
+                            reverseSignal=False
+                    )
                     print(f"Vehicle {vehicle_id}: Emergency stop - Virtual QCar stopped")
                 if hasattr(vehicle, 'physical_qcar') and vehicle.physical_qcar is not None:
                     vehicle.physical_qcar.write(0, 0)
@@ -218,43 +224,57 @@ class VehicleProcess:
         self.gps_update_rate = vehicle_config.get('gps_update_rate', 10)
         
         # QCar mode configuration - check if we should use physical QCar API for leader
-        self.use_physical_qcar = is_leader and PHYSICAL_QCAR_AVAILABLE
+        # TODO : instead of use is_leader , depend on config file if we need to use that 
+        self.use_control_observer_mode = vehicle_config.get('use_control_observer_mode', False) 
+
+        self.use_physical_qcar = vehicle_config.get('use_physical_qcar', False) and is_leader and PHYSICAL_QCAR_AVAILABLE
         print(f"Vehicle {vehicle_id}: use_physical_qcar={self.use_physical_qcar}, PHYSICAL_QCAR_AVAILABLE={PHYSICAL_QCAR_AVAILABLE}, is_leader={is_leader}")
         self.enable_steering_control = vehicle_config.get('enable_steering_control', True)
         self.calibrate = vehicle_config.get('calibrate', False)
         
         # Initialize QCar interfaces based on mode
         self.physical_qcar = None
-        self.ekf = None
-        self.gps = None
         
-        # if self.use_physical_qcar:
-        #     try:
-        #         self.rtModel = os.path.normpath(os.path.join(os.environ['RTMODELS_DIR'], 'QCar2/QCar2_Workspace_studio'))
-        #         QLabsRealTime().start_real_time_model(self.rtModel, actorNumber=vehicle_id)
+        if self.use_physical_qcar:
+            try:
+                self.rtModel = os.path.normpath(os.path.join(os.environ['RTMODELS_DIR'], 'QCar2/QCar2_Workspace_studio'))
+                QLabsRealTime().start_real_time_model(self.rtModel, actorNumber=vehicle_id)
 
-        #         # Initialize physical QCar interface for leader
-        #         self.physical_qcar = QCar(readMode=1, frequency=self.update_rate)
+                # Initialize physical QCar interface for leader
+                self.physical_qcar = QCar(readMode=1, frequency=self.update_rate)
                 
-        #         # Initialize EKF and GPS if steering control is enabled
-        #         if self.enable_steering_control or self.calibrate:
-        #             # Get initial pose from config
-        #             initial_pose = vehicle_config.get('initial_pose', [0, 0, 0])
-        #             calibration_pose = vehicle_config.get('calibration_pose', [0, 2, -np.pi/2])
+                # Initialize GPS for EKF if steering control is enabled
+                if self.enable_steering_control:
+                    try:
+                        self.gps = QCarGPS(readMode=1, frequency=self.gps_update_rate)
+                        # Initialize EKF for state estimation
+                        self.ekf = QCarEKF(
+                            xhat_0=np.array([0, 0, 0, 0]),  # Initial state [x, y, yaw, v]
+                            P_0=0.01*np.eye(4),             # Initial covariance
+                            Q=np.diag([0.1, 0.1, 0.1, 0.1]), # Process noise
+                            R=np.diag([0.5, 0.5, 0.1])       # Measurement noise [x, y, yaw]
+                        )
+                        self.ekf_initialized = False
+                        print(f"Vehicle {self.vehicle_id}: Physical QCar with GPS and EKF initialized")
+                    except Exception as gps_error:
+                        print(f"Vehicle {self.vehicle_id}: GPS initialization failed: {gps_error}")
+                        self.gps = None
+                        self.ekf = None
+                        self.ekf_initialized = False
+                else:
+                    self.gps = None
+                    self.ekf = None
+                    self.ekf_initialized = False
+                    print(f"Vehicle {self.vehicle_id}: Physical QCar initialized without GPS/EKF")
                     
-        #             self.ekf = QCarEKF(x_0=initial_pose)
-        #             self.gps = QCarGPS(initialPose=calibration_pose, calibrate=self.calibrate)
-        #             print(f"Vehicle {self.vehicle_id}: Initialized physical QCar with EKF and GPS")
-        #         else:
-        #             self.gps = memoryview(b'')
-        #             print(f"Vehicle {self.vehicle_id}: Initialized physical QCar without GPS")
-                    
-        #     except Exception as e:
-        #         print(f"Vehicle {self.vehicle_id}: Failed to initialize physical QCar: {e}")
-        #         self.use_physical_qcar = False
-        #         self.physical_qcar = None
-        #         self.ekf = None
-        #         self.gps = None
+            except Exception as e:
+                print(f"Vehicle {self.vehicle_id}: Failed to initialize physical QCar: {e}")
+                self.use_physical_qcar = False
+                self.physical_qcar = None
+                self.gps = None
+                self.ekf = None
+                self.ekf_initialized = False
+
 
         self.stop_event = stop_event
         self.status_queue = status_queue
@@ -269,6 +289,13 @@ class VehicleProcess:
         self.send_port = vehicle_config['send_port']
         self.recv_port = vehicle_config['recv_port']
         self.ack_port = vehicle_config['ack_port']
+        
+        # NEW: Chain-following configuration
+        self.following_target = vehicle_config.get('following_target', None)
+        if self.following_target is not None:
+            print(f"Vehicle {self.vehicle_id}: Configured to follow vehicle {self.following_target}")
+        else:
+            print(f"Vehicle {self.vehicle_id}: Leader vehicle (no following target)")
         
         # Vehicle state - initialize with spawn location and rotation
         spawn_location = vehicle_config.get('spawn_location', [0, 0, 0])
@@ -285,6 +312,7 @@ class VehicleProcess:
         self.gps_logger = get_gps_logger(vehicle_id)
         self.control_logger = get_control_logger(vehicle_id)
         self.observer_logger = get_observer_logger(vehicle_id)
+        self.fleet_observer_logger = get_fleet_observer_logger(vehicle_id)
         
         # Configure logging for performance
         self.configure_logging_for_performance()
@@ -305,8 +333,12 @@ class VehicleProcess:
         )
         
         # Initialize communication handler
-        # Use non-blocking mode for process-based vehicles
+        # Use non-blocking mode for process-based vehicles with bidirectional support
         try:
+            # Get peer communication configuration for bidirectional communication
+            peer_ports = vehicle_config.get('peer_ports', {})
+            communication_mode = vehicle_config.get('communication_mode', 'unidirectional')
+            
             self.comm = CommHandler(
                 vehicle_id=self.vehicle_id,
                 target_ip=self.target_ip,
@@ -314,13 +346,21 @@ class VehicleProcess:
                 recv_port=self.recv_port,
                 ack_port=self.ack_port,
                 logger=self.comm_logger,
-            mode='non_blocking'
-        )
+                mode='non_blocking',
+                peer_ports=peer_ports,
+                communication_mode=communication_mode
+            )
+            print(f"Vehicle {self.vehicle_id}: Communication initialized in {communication_mode} mode")
         except Exception as e:
             self.logger.error(f"Vehicle {self.vehicle_id}: Communication initialization failed: {e}")
+            self.comm = None
 
         # Initialize communication in non-blocking mode
-        self.comm.initialize_sockets()
+        if self.comm is not None:
+            self.comm.initialize_sockets()
+            print(f"Vehicle {self.vehicle_id}: Communication sockets initialized")
+        else:
+            print(f"Vehicle {self.vehicle_id}: Warning - Communication not available")
         
 
         
@@ -333,6 +373,7 @@ class VehicleProcess:
                     logger=self.control_logger
                 )
                 self.follower_controller = None
+                print(f"Vehicle {self.vehicle_id}: Leader controller initialized")
             else:
                 self.follower_controller = VehicleFollowerController(
                     vehicle_id=self.vehicle_id,
@@ -341,52 +382,37 @@ class VehicleProcess:
                     logger=self.control_logger
                 )
                 self.leader_controller = None
+                print(f"Vehicle {self.vehicle_id}: Follower controller ({self.controller_type}) initialized")
         except Exception as e:
             print(f"Vehicle {self.vehicle_id}: Controller initialization failed: {e}")
-            # self.logger.warning(f"Vehicle {vehicle_id}: Controller initialization failed: {e}")
+            self.logger.error(f"Vehicle {self.vehicle_id}: Controller initialization failed: {e}")
             self.leader_controller = None
             self.follower_controller = None
             # Don't stop the event here, let the vehicle continue with basic operation
-            # stop_event.set()
 
         # Initialize Vehicle Observer
+        spawn_location = vehicle_config.get('spawn_location', [0, 0, 0])
+        spawn_rotation = vehicle_config.get('spawn_rotation', [0, 0, 0])
+        initial_pose = np.array([spawn_location[0], spawn_location[1], spawn_rotation[2]])
         try:
-            # Configure observer to use EKF (like vehicle_control2.py)
-            observer_config = {
-                "local_observer_type": "kalman",  # Use EKF instead of direct
-                "enable_distributed": True,
-                "dt": 1.0 / self.observer_rate
-            }
-            
             self.observer = VehicleObserver(
                 vehicle_id=self.vehicle_id,
                 fleet_size=self.fleet_size,
-                config=observer_config,  # Pass proper config
-                logger=self.logger
+                config=self.config,  # Pass proper config
+                logger=self.logger,
+                initial_pose=initial_pose
             )
         except Exception as e:
             print(f"Vehicle {self.vehicle_id}: Observer initialization failed: {e}")
             self.observer = None
         
-        # Initialize EKF in observer with correct 3D pose
-        initial_pose = vehicle_config.get('initial_pose')
-        if initial_pose is not None and len(initial_pose) >= 3:
-            initial_ekf_pose = np.array(initial_pose[:3])  # Only [x, y, theta]
-        else:
-            # Use spawn location and rotation for initial pose
-            spawn_location = vehicle_config.get('spawn_location', [0, 0, 0])
-            spawn_rotation = vehicle_config.get('spawn_rotation', [0, 0, 0])
-            initial_ekf_pose = np.array([spawn_location[0], spawn_location[1], spawn_rotation[2]])
-        
-        if self.observer is not None:
-            try:
-                self.observer.initialize_ekf(initial_ekf_pose)
-                print(f"Vehicle {self.vehicle_id}: EKF initialized with pose {initial_ekf_pose}")
-            except Exception as e:
-                print(f"Vehicle {self.vehicle_id}: EKF initialization failed: {e}")
 
         # Initialize control input tracking
         self.current_control_input = np.array([0.0, 0.0])
+        
+        # Sensor data tracking
+        self.last_gyroscope_z = 0.0
+        self.last_motor_tach = 0.0
         
         # State caches
         self.observer_state_cache = {
@@ -420,12 +446,13 @@ class VehicleProcess:
         disable_all_logging()
         set_module_logging('observer', True)
         set_module_logging('communication', True)
-        # set_module_logging('timing', True)
+        set_module_logging('fleet_observer', True)  # Enable fleet observer logging
         
-        # Set communication logger to INFO level to see the debug messages
+        # Set fleet observer logger to INFO level to see the velocity debug messages
+        self.fleet_observer_logger.setLevel(logging.INFO)
         self.comm_logger.setLevel(logging.INFO)
-        self.observer_logger.setLevel(logging.WARNING)
-        
+        self.observer_logger.setLevel(logging.INFO)
+
     def update_gps_data(self):
         """Update GPS data from QCar sensors (supports both virtual and physical QCar modes)."""
         try:
@@ -441,7 +468,7 @@ class VehicleProcess:
                 
             gps_duration = (time.perf_counter() - gps_start_time) * 1000
             if gps_duration > 5.0:  # Log if GPS update takes >5ms
-                self.gps_logger.warning(f"Vehicle {self.vehicle_id}: GPS update took {gps_duration:.2f}ms")
+                self.gps_logger.warning(f"Vehicle {self.vehicle_id}: GPS update took {gps_duration:.4f}ms")
                 
         except Exception as e:
             self.logger.error(f"Vehicle {self.vehicle_id}: GPS update error: {e}")
@@ -700,6 +727,7 @@ class VehicleProcess:
             # Clamp dt to reasonable bounds to avoid instability
             dt = max(0.001, min(dt, 0.1))  # Between 1ms and 100ms
         
+        # print("dt" , dt )
         self._last_control_time = current_time
         
         # Compute control commands using the dedicated leader controller
@@ -722,14 +750,18 @@ class VehicleProcess:
         self._last_steering_angle = steering_angle
         
         # Apply control commands to vehicle based on mode
-        if self.use_physical_qcar and self.physical_qcar is not None:
+        # NOTE: Previously, when use_control_observer_mode was True we skipped sending any commands.
+        # This caused the leader to remain at its spawn position for virtual (non-physical) runs.
+        # We now only suppress direct virtual commands if BOTH observer mode is enabled AND a physical QCar is active.
+        
+        if  self.use_physical_qcar and self.physical_qcar is not None:
             # Physical QCar mode - use write method like in vehicle_control.py
             self.physical_qcar.write(forward_speed, steering_angle)
             
-            # Debug: Print physical control commands
-            if self.is_leader and self.vehicle_id == 0:
-                print(f"Vehicle {self.vehicle_id}: Physical control: u={forward_speed:.3f}, delta={steering_angle:.3f}")
-        else:
+            # # Debug: Print physical control commands
+            # if self.is_leader and self.vehicle_id == 0:
+            #     print(f"Vehicle {self.vehicle_id}: Physical control: u={forward_speed:.3f}, delta={steering_angle:.3f}")
+        elif not self.use_control_observer_mode:
             # Virtual QCar mode - use QLabs API
             self.qcar.set_velocity_and_request_state(
                 forward=forward_speed,
@@ -741,13 +773,22 @@ class VehicleProcess:
                 reverseSignal=False
             )
             
-            # Debug: Print virtual control commands  
-            if self.is_leader and self.vehicle_id == 0:
-                print(f"Vehicle {self.vehicle_id}: Virtual control: forward={forward_speed:.3f}, turn={steering_angle:.3f}")
+            # # Debug: Print virtual control commands  
+            # if self.is_leader and self.vehicle_id == 0:
+            #     print(f"Vehicle {self.vehicle_id}: Virtual control: forward={forward_speed:.3f}, turn={steering_angle:.3f}")
         
-        # Send state to followers (broadcast)
-        self.comm_logger.info(f"Vehicle {self.vehicle_id}: Broadcasting state - pos={control_state['position']}, vel={control_state['velocity']:.3f}")
-        self.comm.send_state_broadcast(control_state)
+        # Normalize numeric types (convert numpy types to plain Python floats) before broadcasting
+        control_state['position'] = [float(x) for x in control_state['position']]
+        control_state['rotation'] = [float(r) for r in control_state['rotation']]
+        control_state['velocity'] = float(control_state['velocity'])
+
+        # # Extra debug for movement diagnosis
+        # self.control_logger.debug(
+        #     f"Vehicle {self.vehicle_id}: Cmd fwd={forward_speed:.3f}, steer={steering_angle:.3f}, src={control_state['source']}"
+        # )
+
+        # NOTE: State broadcasting is now handled in the observer_update() method
+        # This is cleaner since observer maintains the most accurate state estimate
         
         # Log control timing for debugging
         if self.logger.isEnabledFor(logging.DEBUG):
@@ -756,15 +797,13 @@ class VehicleProcess:
             self.logger.debug(f"Leader control using {control_state['source']} - "
                             f"GPS available: {control_state['gps_available']}, "
                             f"dt={dt:.4f}s (target={target_dt:.4f}s, error={timing_error:.1f}%)")
-        # except Exception as e:
-        #     self.logger.error(f"Leader control error: {e}")
-        #     # Reset control input on error
-        #     self.current_control_input = np.array([0.0, 0.0])
 
     def follower_control_logic(self):
         """Follower control logic that delegates to VehicleFollowerController."""
         if self.is_leader or self.follower_controller is None:
-            print(f"Vehicle {self.vehicle_id}: Skipping follower control - is_leader={self.is_leader}, controller_exists={self.follower_controller is not None}")
+            if not hasattr(self, '_follower_skip_logged'):
+                print(f"Vehicle {self.vehicle_id}: Skipping follower control - is_leader={self.is_leader}, controller_exists={self.follower_controller is not None}")
+                self._follower_skip_logged = True
             return
         
         # print(f"Vehicle {self.vehicle_id}: Executing follower control logic")
@@ -773,14 +812,14 @@ class VehicleProcess:
             current_gps_time = self.gps_sync.get_synced_time()
             self.comm_logger.debug(f"Vehicle {self.vehicle_id}: Follower control - GPS time: {current_gps_time}")
             
-            # Get the best available leader state data from validated queue
-            leader_data = None
+            # NEW: Get the state data from the target vehicle (chain-following)
+            target_data = None
             
             # Try to get interpolated state for current time (most accurate)
-            interpolated_state = self.get_interpolated_leader_state(current_gps_time)
-            self.comm_logger.debug(f"Vehicle {self.vehicle_id}: Interpolated state: {interpolated_state}")
+            interpolated_state = self.get_interpolated_target_state(current_gps_time)
+            self.comm_logger.debug(f"Vehicle {self.vehicle_id}: Interpolated state from target vehicle {self.following_target}: {interpolated_state}")
             if interpolated_state:
-                leader_data = {
+                target_data = {
                     'position': interpolated_state.get('pos', [0, 0, 0]),
                     'rotation': interpolated_state.get('rot', [0, 0, 0]),
                     'velocity': interpolated_state.get('v', 0.0),
@@ -788,16 +827,16 @@ class VehicleProcess:
                     'interpolated': interpolated_state.get('interpolated', False),
                     'processing_delay': interpolated_state.get('processing_delay', 0.0)
                 }
-                self.logger.debug(f"Using interpolated leader data: pos={leader_data['position']}, "
-                                f"v={leader_data['velocity']:.3f}, interpolated={leader_data['interpolated']}")
+                self.logger.debug(f"Using interpolated target data from vehicle {self.following_target}: pos={target_data['position']}, "
+                                f"v={target_data['velocity']:.3f}, interpolated={target_data['interpolated']}")
             
             # Fallback: use latest valid state if interpolation not available
             elif self.leader_state is not None:
-                self.comm_logger.info(f"Vehicle {self.vehicle_id}: Using fallback leader state: {self.leader_state}")
+                self.comm_logger.info(f"Vehicle {self.vehicle_id}: Using fallback leader state (backward compatibility): {self.leader_state}")
                 # Validate that the leader_state is recent enough
                 state_age = current_gps_time - self.leader_state.get('timestamp', 0)
                 if state_age <= 1.0:  # Use state if less than 1 second old
-                    leader_data = {
+                    target_data = {
                         'position': self.leader_state.get('pos', [0, 0, 0]),
                         'rotation': self.leader_state.get('rot', [0, 0, 0]),
                         'velocity': self.leader_state.get('v', 0.0),
@@ -807,8 +846,8 @@ class VehicleProcess:
                     }
                     self.logger.debug(f"Using fallback leader data: age={state_age:.3f}s")
                 else:
-                    self.comm_logger.warning(f"Leader state too old ({state_age:.3f}s), stopping vehicle")
-                    # Stop vehicle if leader data is too old
+                    self.comm_logger.warning(f"Target state too old ({state_age:.3f}s), stopping vehicle")
+                    # Stop vehicle if target data is too old
                     self.qcar.set_velocity_and_request_state(forward=0.0, turn=0.0, headlights=False,
                                                         leftTurnSignal=False,
                                                         rightTurnSignal=False,
@@ -817,10 +856,9 @@ class VehicleProcess:
                     self.current_control_input = np.array([0.0, 0.0])
                     return
             
-            # No leader data available at all
-            if leader_data is None:
-                self.comm_logger.error(f"Vehicle {self.vehicle_id}: No leader data available, stopping vehicle")
-                # self.logger.warning("No leader data available, stopping vehicle")
+            # No target data available at all
+            if target_data is None:
+                self.comm_logger.error(f"Vehicle {self.vehicle_id}: No target data available from vehicle {self.following_target}, stopping vehicle")
                 self.qcar.set_velocity_and_request_state(forward=0.0, turn=0.0, headlights=False,
                                                         leftTurnSignal=False,
                                                         rightTurnSignal=False,
@@ -833,19 +871,21 @@ class VehicleProcess:
             current_state = self.get_state_for_control()
             
             # Compute control using the follower controller
-            # controller expects specific format for leader_data
+            # NEW: Use target_data (from the vehicle this one should follow) instead of leader_data
             forward_speed, steering_angle = self.follower_controller.compute_control(
                 current_pos=current_state['position'],
                 current_rot=current_state['rotation'],
                 current_velocity=current_state['velocity'],
-                leader_pos=leader_data['position'],
-                leader_rot=leader_data['rotation'],
-                leader_velocity=leader_data['velocity'],
-                leader_timestamp=leader_data['timestamp'],
+                leader_pos=target_data['position'],  # Position of the target vehicle to follow
+                leader_rot=target_data['rotation'],  # Rotation of the target vehicle to follow
+                leader_velocity=target_data['velocity'],  # Velocity of the target vehicle to follow
+                leader_timestamp=target_data['timestamp'],
                 dt=1.0 / self.update_rate
             )
-            # print(f"Vehicle {self.vehicle_id}: Applied control - forward: {forward_speed}, steering: {steering_angle}")
-
+            
+            # print(f"Vehicle {self.vehicle_id}: Following vehicle {self.following_target} - "
+            #       f"Target pos: {target_data['position']}, My pos: {current_state['position']}")
+            
             # Update control input for observer
             self.current_control_input = np.array([steering_angle, forward_speed])
             
@@ -860,16 +900,23 @@ class VehicleProcess:
                 reverseSignal=False
             )
 
-            # if self.logger.isEnabledFor(logging.DEBUG):
-            #     self.logger.debug(f"Follower control: forward={forward_speed:.3f}, steering={steering_angle:.3f}, "
-            #                     f"leader_pos={leader_data['position']}, current_pos={current_state['position']}")
+            # NOTE: State broadcasting is now handled in the observer_update() method
+            # This is cleaner since observer maintains the most accurate state estimate
+
+            # Debug logging (updated to show chain-following)
+            if self.logger.isEnabledFor(logging.DEBUG):
+                self.logger.debug(f"Follower control: forward={forward_speed:.3f}, steering={steering_angle:.3f}, "
+                                f"target_vehicle={self.following_target}, target_pos={target_data['position']}, current_pos={current_state['position']}")
                 
         except Exception as e:
             self.comm_logger.error(f"Vehicle {self.vehicle_id}: Follower control error: {e}")
             # Reset control input on error
             self.current_control_input = np.array([0.0, 0.0])
-            self.qcar.set_velocity_and_request_state(forward=0.0, turn=0.0)
-
+            self.qcar.set_velocity_and_request_state(forward=0.0, turn=0.0, headlights=False,
+                leftTurnSignal=False,
+                rightTurnSignal=False,
+                brakeSignal=False,
+                reverseSignal=False)
 
     def get_interpolated_leader_state(self, target_time: Optional[float] = None) -> Optional[dict]:
         """Get interpolated leader state from state queue."""
@@ -889,21 +936,33 @@ class VehicleProcess:
         self.comm_logger.debug(f"Vehicle {self.vehicle_id}: Interpolated result: {result}")
         return result
 
-    def process_received_state(self, received_state: dict):
-        """Process a received state from leader."""
-        self.comm_logger.info(f"Vehicle {self.vehicle_id}: Processing received state: {received_state}")
-        success = self.state_queue.add_state(received_state, self.gps_sync)
-        self.comm_logger.info(f"Vehicle {self.vehicle_id}: State added to queue: {success}")
-        if not success:
-            self.comm_logger.warning(f"Vehicle {self.vehicle_id}: State rejected by queue!")
-        else:
-            queue_stats = self.state_queue.get_queue_stats()
-            self.comm_logger.debug(f"Vehicle {self.vehicle_id}: Queue size: {queue_stats['current_queue_size']}")
-            
-        # Also update leader_state for fallback
-        if success and 'pos' in received_state:
-            self.leader_state = received_state
-            self.comm_logger.debug(f"Vehicle {self.vehicle_id}: Updated leader_state fallback")
+    def get_interpolated_target_state(self, target_time: Optional[float] = None) -> Optional[dict]:
+        """
+        NEW: Get interpolated state from the target vehicle this one should follow.
+        For chain-following: Vehicle 1 follows 0, Vehicle 2 follows 1, Vehicle 3 follows 2, etc.
+        """
+        if target_time is None:
+            target_time = time.time()
+        
+        # Determine which vehicle to get state from
+        if self.following_target is None:
+            # This is a leader, no target to follow
+            return None
+        
+        target_vehicle_id = self.following_target
+        
+        # Add debug info about queue state for the target vehicle
+        queue_stats = self.state_queue.get_queue_stats()
+        self.comm_logger.debug(f"Vehicle {self.vehicle_id}: Looking for target vehicle {target_vehicle_id} - Queue stats - size: {queue_stats['current_queue_size']}")
+        
+        # Get all states from the target vehicle
+        all_states = self.state_queue.get_all_states(sender_id=target_vehicle_id)
+        self.comm_logger.debug(f"Vehicle {self.vehicle_id}: States from target vehicle {target_vehicle_id} in queue: {len(all_states)}")
+        
+        # Get interpolated state from the target vehicle
+        result = self.state_queue.get_interpolated_state(target_time, sender_id=target_vehicle_id)
+        self.comm_logger.debug(f"Vehicle {self.vehicle_id}: Interpolated result from vehicle {target_vehicle_id}: {result}")
+        return result
 
     def run(self):
         """Main run loop for the vehicle process."""
@@ -977,7 +1036,15 @@ class VehicleProcess:
                 print(f"Vehicle {self.vehicle_id}: Physical QCar stopped with zero commands")
             else:
                 # Stop virtual QCar
-                self.qcar.set_velocity_and_request_state(forward=0.0, turn=0.0)
+                self.qcar.set_velocity_and_request_state(
+                        forward=0.0, 
+                        turn=0.0,
+                        headlights=False,
+                        leftTurnSignal=False,
+                        rightTurnSignal=False,
+                        brakeSignal=False,
+                        reverseSignal=False
+                    )
                 print(f"Vehicle {self.vehicle_id}: Virtual QCar stopped with zero commands")
         except Exception as e:
             print(f"Vehicle {self.vehicle_id}: Error stopping vehicle: {e}")
@@ -1015,22 +1082,12 @@ class VehicleProcess:
                     gps_data['rotation'][2],  # theta (yaw angle)
                     gps_data['velocity']      # velocity
                 ])
+            # TODO : Should use gyroscope data if we use physic RT model 
+            motor_tach = self.velocity  # Fallback to velocity estimate
+            gyroscope_z = 0  # Always numeric to satisfy logging formatting
+
             
-            # Get sensor data (try to get from QCar like vehicle_control2.py)
-            try:
-                # Try to get motor tachometer from QCar (more accurate than velocity estimate)
-                motor_tach = self.velocity  # Fallback to velocity estimate
-                gyroscope_z = 0.0  # Could get from QCar if available
-                
-                # If QCar has sensor data available, use it
-                # Note: This would require accessing QCar sensor data which might not be readily available in this context
-                
-            except Exception as sensor_error:
-                # Fallback to estimated values
-                motor_tach = self.velocity
-                gyroscope_z = 0.0
-            
-            # Update observer local state
+            # -------- Update observer local state
             estimated_state = self.observer.update_local_state(
                 measured_state=measured_state,
                 control_input=self.current_control_input,
@@ -1038,6 +1095,41 @@ class VehicleProcess:
                 motor_tach=motor_tach,
                 gyroscope_z=gyroscope_z
             )
+
+            # -------- Update distributed observer with received states from other vehicles
+            try:
+                # Get distributed fleet state estimates
+                fleet_states = self.observer.update_distributed_estimates(self.current_control_input ,estimated_state, current_time )
+                
+                # Log distributed observer status
+                if fleet_states is not None:
+                    self.observer_logger.debug(f"Vehicle {self.vehicle_id}: Distributed observer updated - "
+                                             f"Fleet size: {fleet_states.shape[1]}, "
+                                             f"State dim: {fleet_states.shape[0]}")
+                    
+                    # Store fleet estimates for potential use by controllers
+                    if not hasattr(self, 'fleet_state_estimates'):
+                        self.fleet_state_estimates = {}
+                    
+                    # Update fleet state estimates cache
+                    for vehicle_idx in range(fleet_states.shape[1]):
+                        vehicle_state = fleet_states[:, vehicle_idx]
+                        self.fleet_state_estimates[vehicle_idx] = {
+                            'position': [float(vehicle_state[0]), float(vehicle_state[1]), 0.0],
+                            'rotation': [0.0, 0.0, float(vehicle_state[2])],
+                            'velocity': float(vehicle_state[3]),
+                            'timestamp': current_time,
+                            'source': 'distributed_observer'
+                        }
+                        
+                        # Log individual vehicle estimates
+                        if vehicle_idx != self.vehicle_id:  # Don't log own state repeatedly
+                            self.observer_logger.debug(f"Vehicle {self.vehicle_id}: Estimated vehicle {vehicle_idx} - "
+                                                     f"pos=({vehicle_state[0]:.3f}, {vehicle_state[1]:.3f}), "
+                                                     f"vel={vehicle_state[3]:.3f}")
+                
+            except Exception as dist_error:
+                self.observer_logger.warning(f"Vehicle {self.vehicle_id}: Distributed observer error: {dist_error}")
             
             # Use the returned estimated_state directly instead of making redundant call
             if estimated_state is not None and len(estimated_state) >= 4:
@@ -1056,29 +1148,305 @@ class VehicleProcess:
                 self.observer_logger.debug(f"Observer cache updated from local state: pos=({estimated_state[0]:.3f}, {estimated_state[1]:.3f}), "
                                          f"vel={estimated_state[3]:.3f}, "
                                          f"ekf_init={self.observer_state_cache['ekf_initialized']}")
+                
+                # NEW: Broadcast this vehicle's updated state to all other vehicles
+                # This is the logical place since observer maintains the most accurate state estimate
+                self.broadcast_own_state()
+                
+                # NEW: Broadcast fleet estimates if distributed observer is working
+                if hasattr(self, 'fleet_state_estimates') and len(self.fleet_state_estimates) > 1:
+                    self.broadcast_fleet_estimates()
+                
             else:
                 self.observer_logger.warning(f"Vehicle {self.vehicle_id}: Invalid estimated state from observer: {estimated_state}")
                 
         except Exception as e:
             self.observer_logger.error(f"Vehicle {self.vehicle_id}: Observer update error: {e}")
 
+    def broadcast_fleet_estimates(self):
+        """
+        Broadcast fleet state estimates from distributed observer.
+        This sends the global view of all vehicle states.
+        """
+        if self.comm is None or not hasattr(self, 'fleet_state_estimates'):
+            return
+            
+        try:
+            current_time = self.gps_sync.get_synced_time()
+            
+            # Create fleet estimates message
+            fleet_message = {
+                'msg_type': 'fleet_estimates',
+                'sender_id': self.vehicle_id,
+                'timestamp': current_time,
+                'fleet_size': len(self.fleet_state_estimates),
+                'estimates': {}
+            }
+            
+            # Add each vehicle's estimated state
+            for vehicle_id, state in self.fleet_state_estimates.items():
+                fleet_message['estimates'][vehicle_id] = {
+                    'pos': state['position'][:2],  # [x, y] only for compatibility
+                    'rot': state['rotation'],
+                    'vel': state['velocity'],
+                    'timestamp': state['timestamp'],
+                    'source': state['source']
+                }
+            
+            # Broadcast fleet estimates to all vehicles
+            success = self.comm.send_fleet_estimates_broadcast(fleet_message)
+            
+            if success:
+                self.observer_logger.debug(f"Vehicle {self.vehicle_id}: Broadcasted fleet estimates for {len(self.fleet_state_estimates)} vehicles")
+            else:
+                self.observer_logger.warning(f"Vehicle {self.vehicle_id}: Failed to broadcast fleet estimates")
+                
+        except Exception as e:
+            self.observer_logger.error(f"Vehicle {self.vehicle_id}: Fleet broadcast error: {e}")
+
+    def process_received_fleet_estimates(self, fleet_message: dict):
+        """
+        Process received fleet estimates from another vehicle's distributed observer.
+        
+        Args:
+            fleet_message: Dictionary containing fleet estimates from another vehicle
+        """
+        try:
+            sender_id = fleet_message.get('sender_id')
+            fleet_size = fleet_message.get('fleet_size', 0)
+            estimates = fleet_message.get('estimates', {})
+            
+            if sender_id == self.vehicle_id:
+                return  # Ignore our own messages
+            
+            # Log the received fleet estimates using fleet logger
+            if hasattr(self, 'fleet_logger'):
+                self.fleet_logger.info(f"RECEIVED_FLEET_ESTIMATES: From Vehicle {sender_id}, "
+                                     f"Fleet size: {fleet_size}, Estimates count: {len(estimates)}")
+                
+                # Log detailed estimates for debugging
+                for vehicle_id, state in estimates.items():
+                    pos = state.get('pos', [0, 0])
+                    vel = state.get('vel', 0.0)
+                    source = state.get('source', 'unknown')
+                    self.fleet_logger.debug(f"FLEET_EST_V{vehicle_id}: pos=({pos[0]:.3f},{pos[1]:.3f}), "
+                                          f"vel={vel:.3f}, source={source}")
+            else:
+                self.observer_logger.info(f"RECEIVED_FLEET_ESTIMATES: From Vehicle {sender_id}, "
+                                        f"Fleet size: {fleet_size}, Estimates count: {len(estimates)}")
+            
+            # Optional: Update our own distributed observer with received estimates
+            # This could be used for consensus or validation
+            if hasattr(self, 'observer') and hasattr(self.observer, 'update_from_peer_estimates'):
+                self.observer.update_from_peer_estimates(sender_id, estimates)
+                
+        except Exception as e:
+            self.observer_logger.error(f"Vehicle {self.vehicle_id}: Error processing received fleet estimates: {e}")
+
+    def broadcast_own_state(self):
+        """
+        Broadcast this vehicle's current state to all other vehicles in the fleet.
+        This method provides bidirectional communication where every vehicle shares its state.
+        """
+        if self.comm is None:
+            return
+            
+        try:
+            # Get the current best available state
+            current_state = self.get_best_available_state()
+            
+            # Normalize numeric types (convert numpy types to plain Python floats)
+            current_state['position'] = [float(x) for x in current_state['position']]
+            current_state['rotation'] = [float(r) for r in current_state['rotation']]
+            current_state['velocity'] = float(current_state['velocity'])
+            
+            # Add control input to the broadcast message
+            current_state['control_input'] = [float(x) for x in self.current_control_input]
+            
+            # Broadcast state to all other vehicles
+            self.comm.send_state_broadcast(current_state)
+            
+            # Enhanced debug logging with control input
+            self.comm_logger.debug(
+                f"Vehicle {self.vehicle_id}: Broadcasted own state - pos={current_state['position']}, "
+                f"vel={current_state['velocity']:.3f}, control={current_state['control_input']}, "
+                f"source={current_state['source']}"
+            )
+            
+        except Exception as e:
+            self.comm_logger.error(f"Vehicle {self.vehicle_id}: Failed to broadcast own state: {e}")
+
     def handle_communication(self):
-        """Handle non-blocking communication."""
+        """
+        Handle non-blocking communication with direct processing.
+        
+        FIXED: Removed the intermediate process_received_state() method that was causing
+        data loss and unnecessary complexity. Now all communication data is processed
+        directly without additional conversions or method calls that could lose data.
+        
+        This ensures that the exact data received in handle_communication() is preserved
+        and processed correctly for both vehicle states and fleet estimates.
+        """
         try:
             # Check for incoming messages
-            received_data = self.comm.receive_state_non_blocking()
-            if received_data:
-                self.comm_logger.info(f"Vehicle {self.vehicle_id}: Received data from leader: {received_data}")
-                self.process_received_state(received_data)
+            if self.comm is not None:
+                received_data = self.comm.receive_state_non_blocking()
+                if received_data:
+                    # Process data directly without unnecessary intermediate method
+                    self._process_communication_data_direct(received_data)
+                else:
+                    # Only log this occasionally to avoid spam
+                    if not hasattr(self, '_last_no_data_log') or time.time() - self._last_no_data_log > 5.0:
+                        self.comm_logger.debug(f"Vehicle {self.vehicle_id}: No data received from peers")
+                        self._last_no_data_log = time.time()
             else:
-                # Only log this occasionally to avoid spam
-                if not hasattr(self, '_last_no_data_log') or time.time() - self._last_no_data_log > 5.0:
-                    self.comm_logger.debug(f"Vehicle {self.vehicle_id}: No data received from leader")
-                    self._last_no_data_log = time.time()
+                # Log communication handler not available
+                if not hasattr(self, '_last_comm_error_log') or time.time() - self._last_comm_error_log > 10.0:
+                    self.comm_logger.error(f"Vehicle {self.vehicle_id}: Communication handler not available")
+                    self._last_comm_error_log = time.time()
                 
         except Exception as e:
             self.comm_logger.error(f"Vehicle {self.vehicle_id}: Communication error: {e}")
             print(f"Vehicle {self.vehicle_id}: Communication error: {e}")  # Keep print for critical errors
+
+    def _process_communication_data_direct(self, received_data: dict):
+        """Process received communication data directly without data loss."""
+        try:
+            # Handle different message types based on 'type' or 'msg_type' field
+            msg_type = received_data.get('type', received_data.get('msg_type', 'vehicle_state'))
+            
+            if msg_type == 'fleet_estimates':
+                # Process fleet estimates from distributed observer
+                self._handle_fleet_estimates_direct(received_data)
+            else:
+                # Process individual vehicle state directly
+                self._handle_vehicle_state_direct(received_data)
+                
+        except Exception as e:
+            self.comm_logger.error(f"Vehicle {self.vehicle_id}: Error processing communication data: {e}")
+
+    def _handle_fleet_estimates_direct(self, fleet_message: dict):
+        """Handle fleet estimates directly without data conversion loss."""
+        try:
+            sender_id = fleet_message.get('sender_id', fleet_message.get('vehicle_id', -1))
+            estimates = fleet_message.get('estimates', {})
+            message_timestamp = fleet_message.get('timestamp', time.time())
+            seq = fleet_message.get('seq', -1)
+            
+            # Log fleet estimates with complete info but concise format
+            est_data = {}
+            for veh_id, est in estimates.items():
+                pos = est.get('pos', [0, 0])
+                rot = est.get('rot', [0, 0, 0])
+                vel = est.get('vel', 0.0)
+                est_data[f"V{veh_id}"] = f"Pos=({pos[0]:.4f},{pos[1]:.4f}) Rot={rot[2]:.4f} Vel={vel:.4f}"
+            
+            self.fleet_observer_logger.info(f"RECV_FLEET From=V{sender_id} Seq={seq} T={message_timestamp:.3f} {est_data}")
+            
+            # Update our own fleet estimates with external observations
+            if not hasattr(self, 'external_fleet_estimates'):
+                self.external_fleet_estimates = {}
+            
+            self.external_fleet_estimates[sender_id] = {
+                'timestamp': message_timestamp,
+                'estimates': estimates
+            }
+            
+            # Add fleet estimates to observer if available
+            if self.observer is not None:
+                success = self.observer.add_received_state_fleet(
+                    sender_id=sender_id,
+                    fleet_estimates=estimates,
+                    timestamp=message_timestamp
+                )
+                if success:
+                    self.observer_logger.info(f"Vehicle {self.vehicle_id}: Added fleet estimates to observer - "
+                                             f"sender={sender_id}, vehicles={len(estimates)}")
+            else:
+                self.observer_logger.warning(f"Vehicle {self.vehicle_id}: Observer not initialized for fleet estimates")
+
+        except Exception as e:
+            self.observer_logger.error(f"Vehicle {self.vehicle_id}: Error processing fleet estimates: {e}")
+
+    def _handle_vehicle_state_direct(self, received_state: dict):
+        """Handle individual vehicle state directly without data conversion loss."""
+        try:
+            # Extract sender information
+            sender_id = received_state.get('vehicle_id', received_state.get('id', received_state.get('sender_id', -1)))
+            seq = received_state.get('seq', -1)
+            timestamp = received_state.get('timestamp', time.time())
+            
+            # Extract state data directly without conversion
+            pos = received_state.get('pos', received_state.get('position', [0, 0, 0]))
+            rot = received_state.get('rot', received_state.get('rotation', [0, 0, 0]))
+            vel = received_state.get('v', received_state.get('vel', received_state.get('velocity', 0.0)))
+            control = received_state.get('ctrl_u', received_state.get('control_input', [0.0, 0.0]))
+            
+            # Debug log: Print original received data to verify no data loss
+            self.comm_logger.debug(f"Vehicle {self.vehicle_id}: ORIGINAL_DATA_RECEIVED: {received_state}")
+            
+            # Log with all the original data preserved
+            self.comm_logger.info(f"STATE_RECV From=V{sender_id} Seq={seq} T={timestamp:.3f} "
+                                f"Pos=({pos[0]:.4f},{pos[1]:.4f}) Rot={rot[2]:.4f} Vel={vel:.4f} "
+                                f"Control=({control[0]:.3f},{control[1]:.3f})")
+            
+            # Add to state queue with original data structure preserved
+            success = self.state_queue.add_state(received_state, self.gps_sync)
+            
+            if not success:
+                self.comm_logger.warning(f"Vehicle {self.vehicle_id}: State rejected by queue! "
+                                       f"Data: sender={sender_id}, seq={seq}, timestamp={timestamp}")
+                # Log the exact data that was rejected
+                self.comm_logger.warning(f"Vehicle {self.vehicle_id}: REJECTED_DATA_DETAILS: {received_state}")
+            else:
+                queue_stats = self.state_queue.get_queue_stats()
+                self.comm_logger.debug(f"Vehicle {self.vehicle_id}: State added to queue successfully. "
+                                     f"Queue size: {queue_stats['current_queue_size']}")
+                
+                # Update leader_state for fallback (preserve original structure)
+                if 'pos' in received_state:
+                    self.leader_state = received_state.copy()  # Make a copy to preserve original
+                    self.comm_logger.debug(f"Vehicle {self.vehicle_id}: Updated leader_state fallback")
+                
+                # Feed received state to distributed observer if available
+                if self.observer is not None and sender_id >= 0:
+                    try:
+                        # Convert to observer format but preserve all original data
+                        if len(pos) >= 2:
+                            state_array = np.array([
+                                float(pos[0]),  # x
+                                float(pos[1]),  # y  
+                                float(rot[2]) if len(rot) > 2 else 0.0,  # theta (yaw)
+                                float(vel)      # velocity
+                            ])
+                            
+                            # Control input (ensure exactly 2 elements)
+                            control_array = np.array([float(control[0]), float(control[1])]) if len(control) >= 2 else np.array([0.0, 0.0])
+                            
+                            # Add to observer with original timestamp
+                            self.observer.add_received_state(
+                                sender_id=sender_id,
+                                state=state_array,
+                                control=control_array,
+                                timestamp=timestamp
+                            )
+                            
+                            self.observer_logger.info(f"Vehicle {self.vehicle_id}: Added state from vehicle {sender_id} to observer - "
+                                                     f"pos=({pos[0]:.3f}, {pos[1]:.3f}), vel={vel:.3f}, control={control}")
+                            
+                            # Debug log: Confirm observer received the correct data
+                            self.observer_logger.debug(f"Vehicle {self.vehicle_id}: OBSERVER_DATA_CONFIRMED: "
+                                                      f"sender={sender_id}, state_array={state_array}, control_array={control_array}")
+                        else:
+                            self.observer_logger.warning(f"Vehicle {self.vehicle_id}: Invalid position data from vehicle {sender_id}: {pos}")
+                        
+                    except Exception as obs_error:
+                        self.observer_logger.warning(f"Vehicle {self.vehicle_id}: Error feeding state to observer: {obs_error}")
+                
+        except Exception as e:
+            self.comm_logger.error(f"Vehicle {self.vehicle_id}: Error handling vehicle state: {e}")
+            # Log the full received_state for debugging
+            self.comm_logger.error(f"Vehicle {self.vehicle_id}: ERROR_DATA_DUMP: {received_state}")
 
     def send_status_update(self):
         """Send status update to main process."""
@@ -1101,7 +1469,9 @@ class VehicleProcess:
             
             # CRITICAL: Stop the vehicle immediately with zero commands
             try:
-                if self.use_physical_qcar and self.physical_qcar is not None:
+                if self.use_control_observer_mode and self.vehicle_id == 0 :
+                    print(f"Vehicle {self.vehicle_id}: Emergency stop - Physical QCar zero commands sent (control observer mode)")
+                elif self.use_physical_qcar and self.physical_qcar is not None:
                     # Stop physical QCar immediately
                     self.physical_qcar.write(0, 0)
                     print(f"Vehicle {self.vehicle_id}: Emergency stop - Physical QCar zero commands sent")

@@ -132,7 +132,7 @@ class SpeedController:
     def update(self, v, v_ref, dt):
         
         e = v_ref - v
-        # self.ei += dt*e
+        self.ei += dt*e
 
         return np.clip(
             self.kp*e + self.ki*self.ei,

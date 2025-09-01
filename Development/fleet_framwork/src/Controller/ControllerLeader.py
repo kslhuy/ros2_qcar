@@ -11,7 +11,7 @@ class SpeedController:
     # ==============  SECTION A -  Speed Control  ====================
     def update(self, v, v_ref, dt):
         e = v_ref - v
-        # self.ei += dt*e
+        self.ei += dt*e
         return np.clip(
             self.kp*e + self.ki*self.ei,
             -self.maxThrottle,
@@ -72,7 +72,7 @@ class SteeringController:
         dir = wrap_to_pi(np.arctan2(ct[1], ct[0]) - tangent) # whether vehicle is left (+) or right (–) of the road.
         ect = np.linalg.norm(ct) * np.sign(dir)  #signed cross-track error.
         psi = wrap_to_pi(tangent-th) # difference between road heading and vehicle heading.
-        print (v, "<vector along path segment>", psi, "difference heading")
+        # print (v, "<vector along path segment>", psi, "difference heading")
         self.p_ref = ep
         self.th_ref = tangent
 

@@ -68,7 +68,7 @@ class FleetLoggingConfig:
     - General fleet operations
     """
     
-    def __init__(self, log_dir: str = "logs", max_bytes: int = 5*1024*1024, backup_count: int = 3):
+    def __init__(self, log_dir: str = "logs", max_bytes: int = 20*1024*1024, backup_count: int = 3):
         """
         Initialize fleet logging configuration.
         
@@ -89,6 +89,7 @@ class FleetLoggingConfig:
             'gps': True,           # GPS synchronization
             'control': True,       # Vehicle control operations
             'observer': True,      # Observer timing and state estimation
+            'fleet_observer': True, # Fleet estimation data only
             'vehicle': True,       # Individual vehicle operations
             'timing': True,        # Performance timing logs
             'state': True,         # State update logs
@@ -145,6 +146,13 @@ class FleetLoggingConfig:
             'gps': logging.Formatter(
                 '%(asctime)s [%(levelname)s] V%(vehicle_id)s [GPS]: %(message)s',
                 defaults={'vehicle_id': 'N/A'}
+            ),
+            'fleet_observer': logging.Formatter(
+                '%(asctime)s [%(levelname)s] V%(vehicle_id)s [FLEET_OBS]: %(message)s',
+                defaults={'vehicle_id': 'N/A'}
+            ),
+            'concise': logging.Formatter(
+                '%(message)s'  # Only the message, no timestamp for concise logs
             )
         }
         
@@ -364,9 +372,10 @@ class FleetLoggingConfig:
             'communication': False,
             'gps': False,
             'control': False,
-            'observer': True,   # Keep observer timing
+            'observer': True,        # Keep observer timing
+            'fleet_observer': True,  # Keep fleet estimation data
             'vehicle': False,
-            'timing': True,     # Keep timing logs
+            'timing': True,          # Keep timing logs
             'state': False,
             'debug': False
         }
@@ -577,6 +586,60 @@ class FleetLoggingConfig:
         
         return FilteredLoggerAdapter(self.loggers[logger_name], {'vehicle_id': vehicle_id}, self, 'observer')
     
+    def get_fleet_observer_logger(self, vehicle_id: int) -> FilteredLoggerAdapter:
+        """
+        Get logger specifically for fleet estimation data with individual file per vehicle.
+        Creates separate fleet observer log files: fleet_observer_vehicle_N.log
+        This logger is dedicated to distributed observer fleet estimation data only.
+        """
+        logger_name = f"fleet_observer_vehicle_{vehicle_id}"
+        
+        # Create individual fleet observer logger if it doesn't exist
+        if logger_name not in self.loggers:
+            fleet_obs_logger = logging.getLogger(f"fleet.{logger_name}")
+            fleet_obs_logger.setLevel(logging.INFO)
+            fleet_obs_logger.handlers.clear()
+            fleet_obs_logger.propagate = False
+            
+            # Create vehicle-specific fleet observer log file
+            log_file_path = os.path.join(self.log_dir, f"fleet_observer_vehicle_{vehicle_id}.log")
+            
+            # Truncate existing log file
+            if os.path.exists(log_file_path):
+                try:
+                    with open(log_file_path, 'w') as f:
+                        f.truncate(0)
+                except Exception as e:
+                    print(f"Failed to truncate fleet_observer_vehicle_{vehicle_id}.log: {e}")
+            
+            # Setup file handler with specialized formatter for fleet estimation
+            file_handler = RotatingFileHandler(
+                log_file_path,
+                maxBytes=self.max_bytes,
+                backupCount=self.backup_count
+            )
+            
+            # Create specialized formatter for fleet observer data (time only, no date)
+            fleet_observer_formatter = logging.Formatter(
+                '%(asctime)s.%(msecs)03d [%(levelname)s] V%(vehicle_id)s [FLEET]: %(message)s',
+                datefmt='%H:%M:%S',
+                defaults={'vehicle_id': 'N/A'}
+            )
+            file_handler.setFormatter(fleet_observer_formatter)
+            fleet_obs_logger.addHandler(file_handler)
+            
+            # Add console handler if enabled
+            if self.show_console:
+                console_handler = logging.StreamHandler()
+                console_handler.setFormatter(fleet_observer_formatter)
+                fleet_obs_logger.addHandler(console_handler)
+            
+            # Store logger
+            self.loggers[logger_name] = fleet_obs_logger
+            fleet_obs_logger.info(f"Individual fleet observer logger created for Vehicle {vehicle_id}")
+        
+        return FilteredLoggerAdapter(self.loggers[logger_name], {'vehicle_id': vehicle_id}, self, 'fleet_observer')
+    
     def get_fleet_logger(self, vehicle_id: int) -> FilteredLoggerAdapter:
         """Get logger for general fleet operations."""
         return self.get_vehicle_logger(vehicle_id, 'fleet')
@@ -608,6 +671,10 @@ def get_control_logger(vehicle_id: int) -> FilteredLoggerAdapter:
 def get_observer_logger(vehicle_id: int) -> FilteredLoggerAdapter:
     """Get observer-specific logger for a vehicle."""
     return fleet_logging.get_observer_logger(vehicle_id)
+
+def get_fleet_observer_logger(vehicle_id: int) -> FilteredLoggerAdapter:
+    """Get fleet observer-specific logger for a vehicle."""
+    return fleet_logging.get_fleet_observer_logger(vehicle_id)
 
 def enable_console_logging(enabled: bool = True):
     """Enable or disable console output for all loggers."""

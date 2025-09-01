@@ -112,11 +112,15 @@ class QCarEKF:
             y_gps (ndarray, optional): GPS measurement vector [x, y, th].
             y_imu (float, optional): IMU measurement of orientation.
         """
+        # print("Update")
 
         if dt is not None:
+            # print("IMU used: dt not none")
+
             if y_imu is not None:
                 self.kf.predict(y_imu, dt)
                 self.kf.x_hat[0,0] = wrap_to_pi(self.kf.x_hat[0,0])
+                # print("IMU used: and x_hat [0 0] =  " + str(self.kf.x_hat[0,0]))
             if u is not None:
                 self.ekf.predict(u, dt)
                 self.ekf.x_hat[2,0] = wrap_to_pi(self.ekf.x_hat[2,0])

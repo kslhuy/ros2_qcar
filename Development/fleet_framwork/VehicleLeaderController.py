@@ -49,7 +49,7 @@ class VehicleLeaderController:
         # Control parameters (from ControlLeader)
         self.controllerUpdateRate = 100
         self.K_p = 0.1
-        self.K_i = 0.8
+        self.K_i = 0.08
         self.enableSteeringControl = True
         self.K_stanley = 0.8
         self.startDelay = 1
@@ -74,10 +74,10 @@ class VehicleLeaderController:
         self.qcar = None
         self.ekf = None
         self.gps = None
-        # self.use_observer_mode = config.get('use_observer_mode', False) if config else False
-        self.use_observer_mode = True
+        self.use_control_observer_mode = config.get('use_control_observer_mode', False) if config else False
+        print(f"Vehicle {self.vehicle_id}: use_control_observer_mode = {self.use_control_observer_mode}")
 
-        if self.use_observer_mode and PHYSICAL_QCAR_AVAILABLE:
+        if self.use_control_observer_mode and PHYSICAL_QCAR_AVAILABLE:
             try:
                 self.rtModel = os.path.normpath(os.path.join(os.environ['RTMODELS_DIR'], 'QCar2/QCar2_Workspace_studio'))
                 QLabsRealTime().start_real_time_model(self.rtModel, actorNumber=vehicle_id)
@@ -100,14 +100,14 @@ class VehicleLeaderController:
                     
             except Exception as e:
                 self.logger.error(f"Vehicle {self.vehicle_id}: Failed to initialize observer mode: {e}")
-                self.use_observer_mode = False
+                self.use_control_observer_mode = False
                 self.qcar = None
                 self.ekf = None
                 self.gps = None
         # else:
         #     # For process-based architecture or when observer mode disabled, 
         #     # don't create separate QLabsRealTime/QCar - these are managed by VehicleProcess
-        #     if not self.use_observer_mode:
+        #     if not self.use_control_observer_mode:
         #         try:
         #             self.rtModel = os.path.normpath(os.path.join(os.environ['RTMODELS_DIR'], 'QCar2/QCar2_Workspace_studio'))
         #             self.LeaderIndex = config.get('vehicle_id', 0) if config else 0
@@ -274,22 +274,21 @@ class VehicleLeaderController:
                             self.gps.position[1],
                             self.gps.orientation[2]
                         ])
-                        if hasattr(self, 'ekf') and self.ekf:
-                            self.ekf.update(
-                                [self.qcar.motorTach, self.delta],
-                                dt,
-                                y_gps,
-                                self.qcar.gyroscope[2],
-                            )
+                        # print("EKF update")
+                        self.ekf.update(
+                            [self.qcar.motorTach, self.delta],
+                            dt,
+                            y_gps,
+                            self.qcar.gyroscope[2],
+                        )
                     else:
                         # No GPS data - update EKF without GPS
-                        if hasattr(self, 'ekf') and self.ekf:
-                            self.ekf.update(
-                                [self.qcar.motorTach, self.delta],
-                                dt,
-                                None,
-                                self.qcar.gyroscope[2],
-                            )
+                        self.ekf.update(
+                            [self.qcar.motorTach, self.delta],
+                            dt,
+                            None,
+                            self.qcar.gyroscope[2],
+                        )
                 
                 # Extract state from EKF (like vehicle_control.py)
                 if hasattr(self, 'ekf') and self.ekf:
@@ -311,6 +310,8 @@ class VehicleLeaderController:
             
             # Get velocity from motor tachometer
             v = self.qcar.motorTach
+
+            # print(self.qcar.gyroscope[2] , "gyro z and delta " + str(self.delta))
             
             # Get reference velocity
             vref = self._get_vref(t)
@@ -426,7 +427,7 @@ class VehicleLeaderController:
         Returns:
             tuple: (forward_speed, steering_angle) control commands
         """
-        if self.use_observer_mode and PHYSICAL_QCAR_AVAILABLE:
+        if self.use_control_observer_mode and PHYSICAL_QCAR_AVAILABLE:
             # Use observer mode with EKF
             return self.compute_control_w_observer(dt)
         else:
@@ -463,11 +464,11 @@ class VehicleLeaderController:
         self.start_time = None
         
         # Stop QCar immediately based on mode
-        if self.use_observer_mode and self.qcar is not None:
+        if self.use_control_observer_mode and self.qcar is not None:
             # In observer mode, we control QCar directly - STOP IMMEDIATELY
             try:
                 self.qcar.write(0, 0)
-                print(f"Vehicle {self.vehicle_id}: QCar stopped with zero commands (observer mode)")
+                print(f"Vehicle {self.vehicle_id}: QCar stopped with zero commands (control observer mode)")
             except Exception as e:
                 self.logger.error(f"Error stopping QCar: {e}")
         
@@ -482,7 +483,7 @@ class VehicleLeaderController:
         self.stop_control()
         
         # Close QCar connections if in observer mode
-        if self.use_observer_mode and self.qcar is not None:
+        if self.use_control_observer_mode and self.qcar is not None:
             try:
                 # Close QCar and GPS resources
                 if hasattr(self.qcar, 'close'):

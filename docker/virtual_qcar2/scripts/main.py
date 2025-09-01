@@ -100,7 +100,7 @@ def main():
 
     # Stop vehicles
     leader_vehicle.stop()
-    # follower_vehicle.stop()
+    follower_vehicle.stop()
 
     qlabs.close()
     print("Simulation ended.")

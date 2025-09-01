@@ -27,6 +27,7 @@ class VehicleFollowerController:
         """
         self.vehicle_id = vehicle_id
         self.controller_type = controller_type
+        # print(controller_type , "control type")
         self.config = config
         self.logger = logger or logging.getLogger(f"FollowerController_{vehicle_id}")
         
@@ -53,24 +54,31 @@ class VehicleFollowerController:
     def _init_controller(self):
         """Initialize the appropriate longitudinal controller for this vehicle."""
         # print(f"Vehicle {self.vehicle_id}:  {self.config}")
+        print(f"Vehicle {self.vehicle_id}: Initializing controller with config type: {type(self.config)}")
         try:
             if self.config is not None:
                 # Handle config as dictionary - check if dummy_controller_params is vehicle-specific or global
                 dummy_controller_params = self.config.get('dummy_controller_params', {})
+                print(f"Vehicle {self.vehicle_id}: dummy_controller_params = {dummy_controller_params}")
+                print(f"Vehicle {self.vehicle_id}: dummy_controller_params keys = {list(dummy_controller_params.keys()) if dummy_controller_params else 'None'}")
                 
                 # Check if it's vehicle-specific (nested dict) or global params
                 if str(self.vehicle_id) in dummy_controller_params:
                     # Vehicle-specific params: config['dummy_controller_params']['1']
                     dummy_params = dummy_controller_params[str(self.vehicle_id)]
+                    print(f"Vehicle {self.vehicle_id}: Using vehicle-specific params: {dummy_params}")
                 elif isinstance(dummy_controller_params, dict) and 'alpha' in dummy_controller_params:
                     # Global params directly in dummy_controller_params
                     dummy_params = dummy_controller_params
+                    print(f"Vehicle {self.vehicle_id}: Using global params: {dummy_params}")
                 else:
                     # No params found, use defaults
                     dummy_params = None
+                    print(f"Vehicle {self.vehicle_id}: No params found, using defaults")
                     
                 dummy_controller = DummyController(self.vehicle_id, dummy_params)
             else:
+                print(f"Vehicle {self.vehicle_id}: Config is None, using default DummyController")
                 dummy_controller = DummyController(self.vehicle_id)
                 
             if self.controller_type == "CACC":

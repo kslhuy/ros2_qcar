@@ -162,18 +162,34 @@ class QcarFleet:
         """
         Prepare configuration dictionaries for each vehicle process.
         Each process will create its own QLabs connection and spawn its vehicle.
+        
+        NEW DESIGN: Bidirectional communication where each vehicle can communicate with all others
+        Each vehicle has its own unique send/receive ports for peer-to-peer communication
         """
-        # Port configuration for up to 5 vehicles (modular design)
+        # Port configuration for up to 5 vehicles (bidirectional design)
         # Format: [send_port, recv_port, ack_port] for each vehicle
-        # Communication design: Leader broadcasts to all followers
-        # Leader sends on 6001 -> All followers receive on 6001
+        # NEW: Each vehicle has unique ports for bidirectional communication
         port_config = {
-            0: [6001, 6000, 6002],  # Vehicle 0 (Leader): sends on 6001, receives on 6000
-            1: [6000, 6001, 6012],  # Vehicle 1 (Follower): sends on 6000, receives on 6001 (from leader)
-            2: [6021, 6001, 6022],  # Vehicle 2 (Follower): sends on 6021, receives on 6001 (from leader)  
-            3: [6031, 6001, 6032],  # Vehicle 3 (Follower): sends on 6031, receives on 6001 (from leader) - optional
-            4: [6041, 6001, 6042],  # Vehicle 4 (Follower): sends on 6041, receives on 6001 (from leader) - optional
+            0: [6000, 6000, 6002],  # Vehicle 0: send=6000, recv=6000, ack=6002
+            1: [6010, 6010, 6012],  # Vehicle 1: send=6010, recv=6010, ack=6012
+            2: [6020, 6020, 6022],  # Vehicle 2: send=6020, recv=6020, ack=6022  
+            3: [6030, 6030, 6032],  # Vehicle 3: send=6030, recv=6030, ack=6032
+            4: [6040, 6040, 6042],  # Vehicle 4: send=6040, recv=6040, ack=6042
         }
+        
+        # Create peer port mapping for bidirectional communication
+        # Each vehicle knows all other vehicles' ports for direct communication
+        self.peer_ports = {}
+        for vehicle_id in range(self.NumQcar):
+            self.peer_ports[vehicle_id] = {}
+            for peer_id in range(self.NumQcar):
+                if peer_id != vehicle_id:
+                    peer_send_port, peer_recv_port, peer_ack_port = port_config[peer_id]
+                    self.peer_ports[vehicle_id][peer_id] = {
+                        'send_to_peer': peer_recv_port,  # Send to peer's receive port
+                        'recv_from_peer': peer_send_port, # Receive from peer's send port
+                        'ack_from_peer': peer_ack_port    # Acknowledge to peer's ack port
+                    }
         
         # Validate NumQcar doesn't exceed our port configuration
         max_vehicles = len(port_config)
@@ -186,6 +202,15 @@ class QcarFleet:
         for i in range(self.NumQcar):
             is_leader = (i == self.LeaderIndex)
             send_port, recv_port, ack_port = port_config[i]
+            
+            # NEW: Chain-following configuration
+            # Each vehicle follows the one directly in front of it in the convoy
+            if is_leader:
+                following_target = None  # Leader doesn't follow anyone
+            else:
+                following_target = i - 1  # Follow the vehicle with ID one less than mine
+            
+            print(f"Vehicle {i}: {'Leader' if is_leader else f'Follower (following vehicle {following_target})'}")
             
             # Extract initial pose for this vehicle from InitPositionTable
             # InitPositionTable format: [QcarIndex, PositionX, PositionY, PositionZ, RotationX, RotationY, RotationZ]
@@ -219,11 +244,16 @@ class QcarFleet:
                 'fleet_size': self.NumQcar,
                 'initial_pose': vehicle_initial_pose,
                 
-                # Communication settings
+                # NEW: Chain-following configuration
+                'following_target': following_target,  # Which vehicle this one should follow
+                
+                # NEW: Bidirectional communication settings
                 'target_ip': "127.0.0.1",  # localhost for local testing
                 'send_port': send_port,
                 'recv_port': recv_port,
                 'ack_port': ack_port,
+                'peer_ports': self.peer_ports[i],  # Peer communication mapping
+                'communication_mode': 'bidirectional',  # Enable bidirectional mode
                 
                 # GPS settings
                 'gps_server_ip': "127.0.0.1",
@@ -235,6 +265,17 @@ class QcarFleet:
                 'update_rate': 100,  # Hz
                 'observer_rate': 100,  # Hz
                 'gps_update_rate': 50,  # Hz
+
+
+                # Configure observer to use EKF (like vehicle_control2.py)
+                'observer': {
+                    'local_observer_type': 'kalman',  # # "kalman", "luenberger", or "direct"
+                    'enable_distributed': True,
+                    "distributed_observer_type": "consensus",
+                    'enable_noise_measurement': False,
+                    'enable_prediction': True,
+                    'consensus_gain': 0.1,
+                },
                 
                 # Vehicle spawn information
                 'vehicle_scale': self.QcarScale,
@@ -252,15 +293,23 @@ class QcarFleet:
                 'controller_type': self.config.get_controller_type_name() if self.config else 'CACC',
                 'node_sequence': getattr(self.config, 'node_sequence', [0, 1]),
                 'dummy_controller_params': getattr(self.config, 'dummy_controller_params', {}),
+
+                #Vehicle Physic or virtual (use realtime model) 
+                
+                'use_physical_qcar': getattr(self.config, 'use_physical_qcar', False),
+                'use_control_observer_mode' : getattr(self.config, 'use_control_observer_mode', True)
+
             }
-            
+
+
             self.vehicle_configs.append(vehicle_config)
             print(f"Vehicle {i} {'(Leader)' if is_leader else '(Follower)'}: "
                   f"Send={send_port}, Recv={recv_port}, ACK={ack_port}")
         
         print(f"Prepared configurations for {self.NumQcar} vehicles with leader at index {self.LeaderIndex}")
-        print("Communication setup: Leader broadcasts on port 6001, all followers listen on port 6001")
-        print("Port configuration complete for local socket communication")
+        print("NEW: Bidirectional communication setup - Each vehicle can communicate with all others")
+        print("Port configuration complete for bidirectional peer-to-peer communication")
+        print(f"Peer port mapping: {self.peer_ports}")
         pass
     #endregion
 

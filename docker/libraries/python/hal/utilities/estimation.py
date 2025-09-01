@@ -105,6 +105,7 @@ class EKF:
                 )
             else:
                 # Motion model is linear
+                # print("Linear motion model")
                 self.A = A
                 self.B = B
                 self.predict = self.__predict_linear
@@ -119,6 +120,7 @@ class EKF:
                 )
             else:
                 # Motion model is nonlinear
+                # print("Nonlinear motion model")
                 self.f = f
                 self.J_f = J_f
                 self.predict = self.__predict_nonlinear

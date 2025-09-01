@@ -4,14 +4,15 @@ import multiprocessing
 
 # Import the new simple configuration system
 try:
-    from simple_config_txt import SimpleFleetConfig, ConfigPresets
+    from simple_config import SimpleFleetConfig, ConfigPresets
     SIMPLE_CONFIG_AVAILABLE = True
-    print("Using Simple Text Configuration System (config.txt)")
+    print("Using Simple YAML Configuration System (config.yaml)")
 except ImportError:
     try:
-        from simple_config import SimpleFleetConfig, ConfigPresets
+        from simple_config_txt import SimpleFleetConfig, ConfigPresets
         SIMPLE_CONFIG_AVAILABLE = True
-        print("Using Simple YAML Configuration System (config.yaml)")
+        print("Using Simple Text Configuration System (config.txt)")
+
     except ImportError:
         print("Warning: simple_config modules not available")
         print("Falling back to original FleetConfig system")
@@ -40,11 +41,11 @@ def main():
     
     if SIMPLE_CONFIG_AVAILABLE:
         print("Using Simple Configuration System")
-        print("To modify settings, edit 'config.txt' file")
+        # print("To modify settings, edit 'config.txt' file")
         
         # Option 1: Load from text file (recommended - easy to modify)
         # config = ConfigPresets.load_from_file("config.txt")
-        config = ConfigPresets.load_from_file("config.txt")
+        config = ConfigPresets.load_from_file("config.yaml")
 
         
         # Option 2: Create preset configurations programmatically
