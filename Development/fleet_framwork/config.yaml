@@ -91,6 +91,15 @@ logging:
   log_level: "INFO"               # Logging level: DEBUG, INFO, WARNING, ERROR
 
 # =============================================================================
+# DATA LOGGING SETTINGS
+# =============================================================================
+data_logging:
+  create_new_run: true            # If true, creates new timestamped directory each run
+                                  # If false, reuses "current_run" directory (overwrites data)
+  custom_run_name: current_run           # Custom name for run directory (e.g., "experiment_1")
+                                  # Set to null to use timestamp or "current_run"
+
+# =============================================================================
 # PRESET CONFIGURATIONS
 # =============================================================================
 # Uncomment one of these sections to quickly switch between common configurations

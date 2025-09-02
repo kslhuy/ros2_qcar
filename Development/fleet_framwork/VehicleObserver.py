@@ -7,6 +7,7 @@ from typing import Dict, List, Optional, Tuple
 from collections import defaultdict
 from hal.content.qcar_functions import QCarEKF
 from md_logging_config import get_observer_logger, get_fleet_observer_logger
+from DataLogger import ObserverDataLogger
 
 
 class VehicleObserver:
@@ -36,6 +37,28 @@ class VehicleObserver:
         # Add dedicated fleet observer logger for fleet estimation data
         self.fleet_logger = get_fleet_observer_logger(vehicle_id)
         
+        # Initialize data logger for plotting and MATLAB export
+        # Check config for data logging preferences
+        create_new_run = config.get('data_logging', {}).get('create_new_run', True) if config else True
+        custom_run_name = config.get('data_logging', {}).get('custom_run_name', None) if config else None
+        
+        try:
+            from DataLogger import ObserverDataLogger
+            self.data_logger = ObserverDataLogger(
+                vehicle_id, fleet_size, 
+                log_dir="data_logs", 
+                create_new_run=create_new_run,
+                custom_run_name=custom_run_name
+            )
+        except ImportError:
+            try:
+                from BasicDataLogger import BasicObserverDataLogger
+                self.data_logger = BasicObserverDataLogger(vehicle_id, fleet_size, log_dir="data_logs")
+                self.logger.info("Using BasicDataLogger (plotting features limited)")
+            except ImportError:
+                self.logger.warning("No DataLogger available. Data logging disabled.")
+                self.data_logger = None
+        
         # State dimensions: [x, y, theta, v] - position, orientation, velocity
         self.state_dim = 4
         self.control_dim = 2  # [steering, acceleration]
@@ -48,9 +71,8 @@ class VehicleObserver:
         # Local state estimation
         self.local_state = np.zeros(self.state_dim)
         self.local_state_prev = np.zeros(self.state_dim)
-        self.local_state[:3] = initial_pose  # Set x, y, theta
+        self.local_state[:3] = initial_pose if initial_pose is not None else [0.0, 0.0, 0.0]  # Set x, y, theta
         self.local_state[3] = 0.0  # Initialize velocity to 0        
-
 
         # Distributed state estimation - estimates for all vehicles
         self.fleet_states = np.zeros((self.state_dim, self.fleet_size))
@@ -59,17 +81,26 @@ class VehicleObserver:
         # Initialize ALL vehicles in fleet with host vehicle's state as starting estimate
         # This ensures all vehicles start with reasonable velocity estimates rather than zero
         for i in range(self.fleet_size):
-            self.fleet_states[:, i] = self.local_state.copy()
+            if i == self.vehicle_id:
+                # Initialize own state with the provided initial pose
+                self.fleet_states[:, i] = self.local_state
+            else:
+                # Initialize other vehicles with zero state (will be corrected by distributed observer)
+                # This prevents bias from assuming all vehicles start at the same location
+                self.fleet_states[:, i] = np.zeros(self.state_dim).copy()
+        
         
         # # Ensure the host vehicle's state is set (redundant but explicit)
         # self.fleet_states[:, self.vehicle_id] = self.local_state
         
         # Log initial fleet state setup
-        self.fleet_logger.info(f"FLEET_INIT: Initialized all {self.fleet_size} vehicles with host state, "
-                              f"initial_vel={self.local_state[3]:.3f}")
+        self.fleet_logger.info(f"FLEET_INIT: Initialized fleet with host vehicle {self.vehicle_id} at its pose, "
+                              f"others at origin to avoid initial bias")
         for i in range(self.fleet_size):
-            self.fleet_logger.info(f"FLEET_INIT_V{i}: vel={self.fleet_states[3, i]:.3f}")
-        
+            state = self.fleet_states[:, i]
+            self.fleet_logger.info(f"FLEET_INIT_V{i}: pos=({state[0]:.3f},{state[1]:.3f}), "
+                                  f"theta={state[2]:.3f}, vel={state[3]:.3f}")
+              
         # QCarEKF for local state estimation (inspired by VehicleLeaderController)
         self.ekf = None
         self.ekf_initialized = False
@@ -320,6 +351,18 @@ class VehicleObserver:
                 'gps_available': self.gps_available,
                 'dt': dt
             })
+            
+            # Log to enhanced data logger for plotting
+            if self.data_logger is not None:
+                self.data_logger.log_local_state(
+                    timestamp=timestamp,
+                    local_state=self.local_state,
+                    measured_state=measured_state,
+                    control_input=control_input,
+                    gps_available=self.gps_available,
+                    dt=dt
+                )
+            
             logging_time = (time.perf_counter() - logging_start) * 1000
             
             # Calculate total observer time
@@ -558,14 +601,21 @@ class VehicleObserver:
                 vehicle_time = (time.perf_counter() - vehicle_start) * 1000
                 # Log updated fleet_states_new for this vehicle
                 # same meaning = Log individual vehicle estimation update to fleet logger
-                self.fleet_logger.info(f"FLEET_STATES_NEW_UPDATE_V{j}: pos=({estimated_state[0]:.5f},{estimated_state[1]:.5f}), "
-                                     f"theta={estimated_state[2]:.5f}, vel={estimated_state[3]:.5f}",
-                                     f"Time={vehicle_time:.5f}ms")
+                # self.fleet_logger.info(f"FLEET_STATES_NEW_UPDATE_V{j}: pos=({estimated_state[0]:.5f},{estimated_state[1]:.5f}), "
+                #                      f"theta={estimated_state[2]:.5f}, vel={estimated_state[3]:.5f}",
+                #                      f"Time={vehicle_time:.5f}ms")
                 
 
             # Update fleet states
             self.fleet_states_prev = self.fleet_states.copy()
             self.fleet_states = fleet_states_new
+            
+            # Log fleet states to enhanced data logger for plotting
+            if self.data_logger is not None:
+                self.data_logger.log_fleet_states(
+                    timestamp=timestamp,
+                    fleet_states=self.fleet_states
+                )
 
             # # Log different new estimate and previous fleet_states_new before assignment
             # self.fleet_logger.info(f"FLEET_STATES_NEW_FINAL: Vehicle {self.vehicle_id} - Complete fleet_states_new before assignment")
@@ -752,17 +802,20 @@ class VehicleObserver:
         # Current estimate of target vehicle by this host: x_hat_i_j(:, host_id)
         x_hat_i_j = current_estimates[:, target_id].copy()
         
-        # Get system matrices A and B using the TARGET vehicle's current state estimate
+        # Get system matrices A and B using a consistent reference state
+        # Use the target vehicle's current estimate for consistency across all observers
         A, B = self.get_system_matrices(x_hat_i_j, control)
         
         # Step 1: Compute consensus term Sig = \sum_k W_{ik} * (x_{kj} - x_{ij})
-        # NEW: Use fleet estimates from other vehicles for true distributed consensus
+        # Use proper distributed consensus based on received fleet estimates
         Sig = np.zeros(self.state_dim)
         consensus_count = 0
+        total_consensus_weight = 0.0
         
         for k in range(self.fleet_size):
             if k != host_id:  # Don't include self in consensus
-                weight_ik = weights[host_id, k] if weights.ndim > 1 else weights[k]
+                # Get weight for communication from host_id to vehicle k
+                weight_ik = weights[host_id, k] if weights.ndim > 1 else (1.0 / (self.fleet_size - 1))
                 
                 # Try to get fleet estimate of target vehicle from vehicle k
                 x_kj_fleet = self._get_latest_state_fleet(sender_id=k, target_vehicle_id=target_id, timestamp=timestamp)
@@ -772,37 +825,42 @@ class VehicleObserver:
                     state_diff = x_kj_fleet - x_hat_i_j
                     Sig += weight_ik * state_diff
                     consensus_count += 1
+                    total_consensus_weight += weight_ik
                     
                     self.fleet_logger.debug(f"Fleet Consensus: V{host_id} using V{k}'s fleet estimate of V{target_id}, "
-                                          f"diff_norm={np.linalg.norm(state_diff):.3f}")
+                                          f"weight={weight_ik:.3f}, diff_norm={np.linalg.norm(state_diff):.3f}")
                 elif weight_ik > 0:
                     # Fallback: Use received individual state from vehicle k (if k == target_id)
                     if k == target_id:
                         received_state_k = self._get_latest_state(k, timestamp)
                         if received_state_k is not None:
                             state_diff = received_state_k - x_hat_i_j
-                            Sig += weight_ik * state_diff * 0.5  # Reduced weight for fallback
+                            reduced_weight = weight_ik * 0.3  # Reduced weight for individual state
+                            Sig += reduced_weight * state_diff
                             consensus_count += 1
+                            total_consensus_weight += reduced_weight
                             
-                            self.fleet_logger.debug(f"Individual Consensus fallback: V{host_id} using V{k}'s individual state")
-                    else:
-                        # For other vehicles, use current estimate as very weak consensus
-                        x_kj_fallback = current_estimates[:, target_id]
-                        state_diff = x_kj_fallback - x_hat_i_j
-                        Sig += weight_ik * state_diff * 0.1  # Very reduced weight for weak fallback
+                            self.fleet_logger.debug(f"Individual Consensus fallback: V{host_id} using V{k}'s individual state, "
+                                                   f"weight={reduced_weight:.3f}")
+        
+        # Apply consensus gain to the total consensus term
+        consensus_gain = self.observer_config.get("consensus_gain", 0.3)
+        if total_consensus_weight > 0:
+            Sig = Sig * (consensus_gain / total_consensus_weight)  # Normalize by total weight
         
         # Log consensus effectiveness
         if consensus_count > 0:
             self.fleet_logger.debug(f"Fleet Consensus: V{host_id} estimating V{target_id} using {consensus_count} estimates, "
-                                   f"consensus_norm={np.linalg.norm(Sig):.3f}")
+                                   f"total_weight={total_consensus_weight:.3f}, consensus_norm={np.linalg.norm(Sig):.3f}")
         else:
             self.fleet_logger.debug(f"Fleet Consensus: V{host_id} estimating V{target_id} with no external estimates")
         
         # If no consensus neighbors available, use stronger measurement weight
+        measurement_weight_boost = 1.0
         if consensus_count == 0:
-            consensus_weight_boost = 1.5
-        else:
-            consensus_weight_boost = 1.0
+            measurement_weight_boost = 2.0  # Stronger measurement when no consensus available
+        elif consensus_count < (self.fleet_size - 1) / 2:
+            measurement_weight_boost = 1.5  # Medium boost for partial consensus
         
         # Step 2: Get measurement x_bar_j for target vehicle j
         x_bar_j = np.zeros(self.state_dim)
@@ -811,16 +869,13 @@ class VehicleObserver:
         if target_id == host_id:
             # For own vehicle, use local state as measurement
             x_bar_j = self.local_state.copy()
-            w_i0 = self.observer_config.get("consensus_gain", 0.1) * consensus_weight_boost
+            base_weight = self.observer_config.get("consensus_gain", 0.3)
+            w_i0 = base_weight * measurement_weight_boost
         else:
             # For other vehicles, use received local state as measurement with time alignment
             received_state, received_timestamp = self._get_latest_received_state_with_time(target_id, timestamp)
-            # self.fleet_logger.info(f"received: Target={target_id}, pos={received_state[0]:.4f}, prop_vel={received_state[1]:.4f}, rota={received_state[2]:.4f}")
-
+            
             if received_state is not None:
-                # Debug logging to check received state
-                # self.fleet_logger.info(f"DIST_RECV_DEBUG: Target={target_id}, received_vel={received_state[3]:.4f}, timestamp_delay={timestamp - received_timestamp:.3f}")
-                
                 # Time-align the received state to current timestamp
                 time_delay = timestamp - received_timestamp
                 if time_delay > 0 and time_delay < self.max_state_age:
@@ -829,29 +884,31 @@ class VehicleObserver:
                     if received_control is not None:
                         # Propagate received state forward to current time
                         x_bar_j = self._propagate_state_forward(received_state, received_control, time_delay)
-                        # self.fleet_logger.info(f"DIST_PROP_DEBUG: Target={target_id}, orig_vel={received_state[3]:.4f}, prop_vel={x_bar_j[3]:.4f}, control_accel={received_control[1]:.4f}")
                     else:
                         # Use zero control if no control data available
                         x_bar_j = self._propagate_state_forward(received_state, np.zeros(2), time_delay)
-                        # self.fleet_logger.info(f"DIST_PROP_DEBUG: Target={target_id}, orig_vel={received_state[3]:.4f}, prop_vel={x_bar_j[3]:.4f}, zero_control")
                 else:
                     # Use received state directly if delay is minimal or too large
                     x_bar_j = received_state
-                    # self.fleet_logger.info(f"DIST_DIRECT_DEBUG: Target={target_id}, direct_vel={x_bar_j[3]:.4f}, delay={time_delay:.3f}")
                 
-                # Use stronger measurement weight for velocity estimation
-                base_weight = self.observer_config.get("consensus_gain", 0.1)
-                w_i0 = base_weight * consensus_weight_boost
+                # Calculate measurement weight based on data freshness and consensus availability
+                base_weight = self.observer_config.get("consensus_gain", 0.3)
+                freshness_factor = max(0.1, 1.0 - (time_delay / self.max_state_age))  # Fresher data gets higher weight
+                w_i0 = base_weight * measurement_weight_boost * freshness_factor
                 
-                # Boost velocity component specifically if it's very small
-                if abs(x_bar_j[3]) > 0.01:  # If velocity is significant
-                    w_i0 = min(w_i0 * 2.0, 0.5)  # Increase weight but cap at 0.5
+                # Cap the measurement weight to prevent instability
+                w_i0 = min(w_i0, 0.7)
+                
+                self.fleet_logger.debug(f"Measurement update V{host_id}->V{target_id}: "
+                                       f"delay={time_delay:.3f}s, freshness={freshness_factor:.3f}, "
+                                       f"weight={w_i0:.3f}")
             else:
                 # No measurement available for other vehicle
-                # Use reduced weight or skip measurement update to avoid corrupting estimate
+                # Use very weak correction to prevent divergence
                 x_bar_j = x_hat_i_j.copy()  # Use current estimate as "measurement" 
-                w_i0 = 0.05  # Very small weight to avoid disrupting good estimates
-                # self.fleet_logger.info(f"DIST_NO_STATE_DEBUG: Target={target_id}, no received state available, using current estimate vel={x_bar_j[3]:.4f}")
+                w_i0 = 0.01  # Very small weight to maintain stability
+                
+                self.fleet_logger.debug(f"No measurement available V{host_id}->V{target_id}, using minimal correction")
         
         # Step 3: Get control input u_j for target vehicle
         if target_id == host_id:
@@ -1207,11 +1264,25 @@ class VehicleObserver:
         Returns:
             Communication weights matrix [fleet_size x fleet_size]
         """
-        # Create fully connected communication graph (all 1s except diagonal 0s)
+        # Create fully connected communication graph (all equal except diagonal 0s)
         weights = np.ones((self.fleet_size, self.fleet_size))
         np.fill_diagonal(weights, 0)  # No self-communication
         
-        # Normalize weights for each row (equal distribution)
+        # Normalize weights for each row (each vehicle distributes weight equally among neighbors)
+        for i in range(self.fleet_size):
+            row_sum = np.sum(weights[i, :])
+            if row_sum > 0:
+                # Equal weight distribution among all other vehicles
+                weights[i, :] = weights[i, :] / row_sum
+            else:
+                # If no neighbors (shouldn't happen in fully connected graph)
+                weights[i, :] = 0.0
+        
+        # Additional check: ensure weights are symmetric for consistency
+        # In distributed consensus, typically we want W_ij = W_ji for stability
+        weights = (weights + weights.T) / 2.0
+        
+        # Re-normalize after symmetrization
         for i in range(self.fleet_size):
             row_sum = np.sum(weights[i, :])
             if row_sum > 0:
@@ -1452,3 +1523,100 @@ class VehicleObserver:
             
             self.logger.info(f"Observer reset for vehicle {self.vehicle_id}")
     #endregion
+    
+    #region Data Export and Plotting
+    #endregion
+    def save_data_for_plotting(self) -> str:
+        """
+        Save observer data in multiple formats for plotting and analysis.
+        
+        Returns:
+            Directory path where data was saved
+        """
+        if self.data_logger is None:
+            self.logger.error("DataLogger not available. Cannot save data for plotting.")
+            return ""
+        
+        # Close the data logger to save all data
+        data_dir = self.data_logger.data_dir
+        self.data_logger.close()
+        
+        # Reinitialize data logger for continued operation if needed
+        try:
+            self.data_logger = ObserverDataLogger(self.vehicle_id, self.fleet_size, log_dir="data_logs")
+        except ImportError:
+            self.data_logger = None
+        
+        self.logger.info(f"Data saved for plotting in directory: {data_dir}")
+        return data_dir
+    
+    def export_matlab_data(self, filename: Optional[str] = None) -> str:
+        """
+        Export observer data to MATLAB .mat format.
+        
+        Args:
+            filename: Optional custom filename
+            
+        Returns:
+            Path to the saved MATLAB file
+        """
+        if self.data_logger is None:
+            self.logger.error("DataLogger not available. Cannot export MATLAB data.")
+            return ""
+        
+        matlab_path = self.data_logger.save_matlab_data(filename)
+        self.logger.info(f"MATLAB data exported to: {matlab_path}")
+        return matlab_path
+        """
+            filename: Optional custom filename
+            
+        Returns:
+            Path to the saved MATLAB file
+        matlab_path = self.data_logger.save_matlab_data(filename)
+        self.logger.info(f"MATLAB data exported to: {matlab_path}")
+        return matlab_path
+        """
+    
+    def plot_trajectories(self, show_gps: bool = True, save_fig: bool = True):
+        """
+        Plot vehicle trajectories using the data logger.
+        
+        Args:
+            show_gps: Whether to show GPS measurements
+            save_fig: Whether to save the figure
+        """
+        try:
+            from DataLogger import FleetDataVisualizer
+        except ImportError:
+            self.logger.error("DataLogger module not found. Cannot create plots.")
+            return
+        
+        # Ensure data is saved first
+        data_dir = self.data_logger.data_dir
+        
+        # Create visualizer and plot
+        visualizer = FleetDataVisualizer(data_dir)
+        
+        # Plot individual trajectory
+        visualizer.plot_vehicle_trajectory(self.vehicle_id, show_gps, save_fig)
+        
+        # Plot fleet trajectories
+        visualizer.plot_fleet_trajectories(self.vehicle_id, save_fig)
+        
+        # Plot state comparison
+        visualizer.plot_state_comparison(self.vehicle_id, save_fig)
+        
+        self.logger.info(f"Plots generated for vehicle {self.vehicle_id}")
+    
+    def close_data_logger(self):
+        """Close the data logger and save all data."""
+        if hasattr(self, 'data_logger'):
+            self.data_logger.close()
+            self.logger.info(f"Data logger closed for vehicle {self.vehicle_id}")
+    
+    def __del__(self):
+        """Destructor to ensure data logger is closed."""
+        try:
+            self.close_data_logger()
+        except:
+            pass  # Ignore errors during cleanup
