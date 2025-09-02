@@ -13,6 +13,7 @@ import pyqtgraph as pg
 from pyqtgraph.Qt import QtWidgets
 from collections import deque
 from sensor_msgs.msg import LaserScan
+from pynput import keyboard
 
 class VehicleControl(Node):
     def __init__(self):
@@ -47,7 +48,7 @@ class VehicleControl(Node):
         
         roadmap = SDCSRoadMap(leftHandTraffic=False)
         self.waypointSequence = roadmap.generate_path(self.nodeSequence)
-        self.waypointSequence = self.waypointSequence[:, :self.waypointSequence.shape[1] // 3]
+        # self.waypointSequence = self.waypointSequence[:, :self.waypointSequence.shape[1] // 2]
         
         self.utils = Utils()
 
@@ -116,12 +117,39 @@ class VehicleControl(Node):
        
         self.IS_OCCUPIED = 100
         self.IS_FREE = 50
-        
+
+        listener = keyboard.Listener(on_press=self.on_press, on_release=self.on_release)
+        listener.start()
+
+    key_states = {
+        'm': False,
+    }
+
+    def on_press(self, key):
+        """Handles key press events."""
+        try:
+            if key.char in self.key_states:
+                self.key_states[key.char] =  not self.key_states[key.char]
+        except AttributeError:
+            pass  # Ignore special keys
+
+    def on_release(self, key):
+        """Handles key release events."""
+        pass
+        # try:
+        #     if key.char in self.key_states:
+        #         self.key_states[key.char] = False
+        # except AttributeError:
+        #     pass  # Ignore special keys
+
     def joint_callback(self, msg: JointState): 
         # self.get_logger().info("joint " + str(msg.velocity[0] * self.CPS_TO_MPS))
         self.motorTach = msg.velocity[0] * self.CPS_TO_MPS
         
     def ekf_callback(self, msg: PoseStamped): 
+        if self.key_states['m']:
+            self.send_control(0, 0)
+            return
         xs = self.waypointSequence[0]
         ys = self.waypointSequence[1] 
         pose = msg.pose
@@ -156,12 +184,22 @@ class VehicleControl(Node):
 
         u = self.speedController.update(v, self.v_ref, dt)
         self.delta = self.stanleyController.update(p, th, v)
-        dx = np.cos(self.delta)
-        dy = np.sin(self.delta)
+
+        # Stop if path is complete
+        # There's a problem in StanleyController update algorithm where it doesn't stop at the end of the path (pathComplete never True)
+        # Check manually here
+        if self.stanleyController.wpi >= self.stanleyController.N - 2:
+            self.get_logger().info("path completed")
+            self.send_control(0, 0)
+            return
+
+        dx = np.cos(self.delta)/2
+        dy = np.sin(self.delta)/2
         if self.avoid_obstacle_occupancy_grid(u, dx, dy):
             return  # Skip sending control if obstacle detected
         
-        self.get_logger().info(f"delta = {self.delta}")
+        # self.get_logger().info(f"delta = {self.delta}")
+
         self.send_control(u, self.delta)
         # self.send_control(0, self.delta)
 
