@@ -118,7 +118,7 @@ class StateQueue:
                 return False
             
             # Extract sender_id early for error reporting
-            sender_id = state_data.get('id', 'unknown')
+            sender_id = state_data.get('id', state_data.get('vehicle_id' , 'unknown'))
             
             # Check for excessive delay that indicates network problems
             if abs(time_delay) > self.max_delay_threshold:

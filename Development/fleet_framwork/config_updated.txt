@@ -1,55 +1,183 @@
-# Fleet Configuration File
-# Easy to modify configuration for QCar fleet simulation
-# Format: key = value
-# Sections: [section_name]
+        # Statistics for monitoring
+        self.stats = {
+            'total_received': 0,
+            'valid_states': 0,
+            'expired_states': 0,
+            'delayed_states': 0,
+            'duplicate_states': 0,
+            'queue_size': 0,
+            'last_cleanup': time.time(),
+            'gps_cache_hits': 0,
+            'gps_cache_misses': 0
+        }
 
-[simulation]
-time = 60
-road_type = "Studio"
-controller_type = "CACC"
+--------------------------------
+        # State caches
+        self.observer_state_cache = {
+            'position': [0.0, 0.0, 0.0],
+            'rotation': [0.0, 0.0, 0.0],
+            'velocity': 0.0,
+            'gps_available': False,
+            'ekf_initialized': False,
+            'source': 'unknown',
+            'timestamp': 0.0
+        }
+        
+        self.gps_data_cache = {
+            'position': None,
+            'rotation': None,
+            'velocity': 0.0,
+            'available': False,
+            'timestamp': 0.0,
+            'last_update': 0.0
+        }
+        
 
-[fleet]
-num_vehicles = 3
-leader_index = 0
-distance_between_cars = 0.2
+    # Create fleet estimates message
+        fleet_message = {
+            'msg_type': 'fleet_estimates',
+            'sender_id': self.vehicle_id,
+            'timestamp': current_time,
+            'fleet_size': len(self.fleet_state_estimates),
+            'estimates': {}
+        }
+            
+    # Add each vehicle's estimated state
+    for vehicle_id, state in self.fleet_state_estimates.items():
+        fleet_message['estimates'][vehicle_id] = {
+            'pos': state['position'][:2],  # [x, y] only for compatibility
+            'rot': state['rotation'],
+            'vel': state['velocity'],
+            'timestamp': state['timestamp'],
+            'source': state['source']
+        }
 
-[control]
-max_velocity = 0.5
-max_steering = 0.6
-lookahead_distance = 0.5
-enable_steering_control = True
-update_rate = 100
-observer_rate = 100
-gps_update_rate = 50
 
-[path]
-rebuild_path = True
-node_sequence = [10, 4, 20, 13, 10]
 
-[controller_params]
-alpha = 1.2
-beta = 2.0
-v0 = 0.5
-delta = 3
-T = 0.3
-s0 = 2.0
-ri = 2.0
-hi = 0.3
-K_gains = [1.1, 0.0, 0.0, 1.1]
-K = [[1.1 0. ]
- [0.  1.1]]
 
-[communication]
-use_communication = True
-communication_delay = 0.01
-gps_server_ip = "127.0.0.1"
-gps_server_port = 8001
 
-[physical_qcar]
-use_physical_qcar = False
-calibrate = False
 
-[logging]
-enable_performance_monitoring = False
-log_level = "INFO"
 
+------------- LOCAL state
+    # Non-blocking communication methods for process-based vehicles
+    def send_state_broadcast(self, state_data: dict):
+        """Send state data to other vehicles using non-blocking method with optimizations.
+        
+        NEW: Supports both unidirectional (leader->followers) and bidirectional (peer-to-peer) communication.
+        """
+        if self.mode != 'non_blocking':
+            self.logger.warning("send_state_broadcast called in threaded mode - use send_state instead")
+            return
+            
+        current_time = time.time()
+        if not self.initialized or current_time - self.last_send_time < self.send_interval:
+            return
+            
+        try:
+            # Start performance timing if available
+            if PERFORMANCE_MONITORING:
+                send_start = perf_monitor.start_timing()
+            
+            # Create optimized message structure
+            message = {
+                'type': 'state',
+                'vehicle_id': self.vehicle_id,
+                'timestamp': current_time,
+                'id': self.vehicle_id,  # For compatibility with existing message handlers
+                'pos': state_data.get('position', [0, 0, 0]),
+                'rot': state_data.get('rotation', [0, 0, 0]),
+                'v': state_data.get('velocity', 0.0),
+                'ctrl_u': state_data.get('control_input', [0.0, 0.0]),
+                'seq': self.sequence_number,
+                'ack_port': self.ack_port
+            }
+            
+            # Fast JSON encode
+            message_bytes = ujson.dumps(message).encode('utf-8')
+
+
+
+
+
+
+
+
+
+-------------------------------------------- FLEET (distributed)
+    def _build_fleet_estimates_message(self, timestamp: float) -> dict:
+        """Create the fleet estimates message dict (refactored, single authoritative builder)."""
+        if not hasattr(self, 'fleet_state_estimates') or not self.fleet_state_estimates:
+            return {}
+        msg = {
+            'msg_type': 'fleet_estimates',
+            'sender_id': self.vehicle_id,
+            'timestamp': timestamp,
+            'fleet_size': len(self.fleet_state_estimates),
+            'estimates': {}
+        }
+        for vid, state in self.fleet_state_estimates.items():
+            msg['estimates'][vid] = {
+                'pos': state['position'][:2],
+                'rot': state['rotation'],
+                'vel': state['velocity'],
+                'timestamp': state['timestamp'],
+                'source': state['source']
+            }
+        return msg
+
+
+    def _send_fleet_estimates_non_blocking(self, fleet_message: dict) -> bool:
+        """Send fleet estimates in non-blocking mode."""        
+        if not self.initialized:
+            self.logger.warning(f"Vehicle {self.vehicle_id}: Sockets not initialized for fleet broadcast")
+            return False
+            
+        try:
+            # Start performance timing if available
+            if PERFORMANCE_MONITORING:
+                send_start = perf_monitor.start_timing()
+            
+            # Prepare fleet estimates message with minimal fields
+            message = {
+                'type': 'fleet_estimates',  # Different type for fleet estimates
+                'vehicle_id': self.vehicle_id,
+                'timestamp': time.time(),
+                'seq': self.sequence_number,
+                'fleet_size': fleet_message.get('fleet_size', 0),
+                'estimates': fleet_message.get('estimates', {})
+            }
+            
+            # Fast JSON encode
+            message_bytes = ujson.dumps(message).encode('utf-8')
+
+------------------------
+    receive_state_non_blocking()
+
+        # Log detailed receive data for vehicle 1 (save all data received by vehicle 1)
+            receive_time = time.time()
+            pos = message.get('pos', message.get('position', [0, 0, 0]))
+            rot = message.get('rot', message.get('rotation', [0, 0, 0]))
+            vel = message.get('v', message.get('velocity', 0.0))
+            control = message.get('ctrl_u', [0.0, 0.0])
+            msg_timestamp = message.get('timestamp', 0.0)
+            seq = message.get('seq', -1)
+            delay = receive_time - msg_timestamp if msg_timestamp > 0 else 0.0
+
+            msg_type = received_data.get('type', received_data.get('msg_type', 'vehicle_state'))
+            'fleet_estimates'
+
+
+
+------------ State Queue 
+
+        # Create interpolated state
+        interpolated_state = {
+            'id': state1.get('id'),
+            'pos': interp_pos,
+            'rot': interp_rot,
+            'v': interp_v,
+            'timestamp': target_time,
+            'interpolated': True,
+            'alpha': alpha,
+            'source_states': [state1.get('seq'), state2.get('seq')]
+        }

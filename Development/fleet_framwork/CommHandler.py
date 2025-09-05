@@ -767,16 +767,16 @@ class CommHandler:
             if sender_id == self.vehicle_id:
                 return None  # Don't process our own messages
             
-            # Log detailed receive data for vehicle 1 (save all data received by vehicle 1)
-            if self.vehicle_id == 1:
-                receive_time = time.time()
-                pos = message.get('pos', message.get('position', [0, 0, 0]))
-                rot = message.get('rot', message.get('rotation', [0, 0, 0]))
-                vel = message.get('v', message.get('velocity', 0.0))
-                control = message.get('ctrl_u', [0.0, 0.0])
-                msg_timestamp = message.get('timestamp', 0.0)
-                seq = message.get('seq', -1)
-                delay = receive_time - msg_timestamp if msg_timestamp > 0 else 0.0
+            # # Log detailed receive data in vehicle 1 (we see all messages send to vehicle 1)
+            # if self.vehicle_id == 1:
+            #     receive_time = time.time()
+            #     pos = message.get('pos', message.get('position', [0, 0, 0]))
+            #     rot = message.get('rot', message.get('rotation', [0, 0, 0]))
+            #     vel = message.get('v', message.get('velocity', 0.0))
+            #     control = message.get('ctrl_u', [0.0, 0.0])
+            #     msg_timestamp = message.get('timestamp', 0.0)
+            #     seq = message.get('seq', -1)
+            #     delay = receive_time - msg_timestamp if msg_timestamp > 0 else 0.0
                 
                 # self.logger.info(f"RECEIVE_DATA: {{\"receive_timestamp\": {receive_time:.6f}, \"message_timestamp\": {msg_timestamp:.6f}, \"delay\": {delay:.6f}, \"seq\": {seq}, \"sender_id\": {sender_id}, \"position\": {pos}, \"rotation\": {rot}, \"velocity\": {vel:.2f}, \"control_input\": {control}, \"message_size\": {len(data)}}}")
                 
@@ -792,13 +792,7 @@ class CommHandler:
                     except Exception as ack_error:
                         self.logger.debug(f"ACK send failed (non-critical): {ack_error}")
             
-            # Log received message for debugging
-            if self.logger.isEnabledFor(logging.DEBUG):
-                pos = message.get('pos', message.get('position', [0, 0, 0]))
-                vel = message.get('v', message.get('velocity', 0.0))
-                control = message.get('ctrl_u', [0.0, 0.0])
-                self.logger.debug(f"Vehicle {self.vehicle_id}: Received from {sender_id} - "
-                                f"pos={pos}, v={vel:.3f}, control={control}")
+
             
             # End performance timing
             if PERFORMANCE_MONITORING:

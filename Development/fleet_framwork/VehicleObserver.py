@@ -133,6 +133,9 @@ class VehicleObserver:
         # Timing parameters
         self.dt = 1 / self.config.get("observer_rate", 100)   # 100 Hz default
         self.max_state_age = 0.5  # Maximum age of received states to use (seconds)
+
+        self.max_history = 64  # Smaller history for fleet estimates as they are larger
+
         
         # Tolerances for state validation
         self.tolerances = np.array([5.0, 2.0, np.deg2rad(8), 2.0])  # [x, y, theta, v]
@@ -570,12 +573,12 @@ class VehicleObserver:
             # Initialize new fleet state estimates
             fleet_states_new = self.fleet_states.copy()
             
-            # Log initial fleet_states_new
-            self.fleet_logger.info(f"FLEET_STATES_NEW_INIT: Vehicle {self.vehicle_id} - Initial copy from fleet_states")
-            for i in range(self.fleet_size):
-                state = fleet_states_new[:, i]
-                self.fleet_logger.info(f"FLEET_STATES_NEW_INIT_V{i}: pos=({state[0]:.5f},{state[1]:.5f}), "
-                                     f"theta={state[2]:.5f}, vel={state[3]:.5f}")
+            # # -------- Log initial fleet_states_new
+            # self.fleet_logger.info(f"FLEET_STATES_NEW_INIT: Vehicle {self.vehicle_id} - Initial copy from fleet_states")
+            # for i in range(self.fleet_size):
+            #     state = fleet_states_new[:, i]
+            #     self.fleet_logger.info(f"FLEET_STATES_NEW_INIT_V{i}: pos=({state[0]:.5f},{state[1]:.5f}), "
+            #                          f"theta={state[2]:.5f}, vel={state[3]:.5f}")
             
             # Get communication weights (equally distributed as requested)
             weights = self._get_distributed_weights()
@@ -639,11 +642,11 @@ class VehicleObserver:
             # Log fleet state summary to dedicated fleet logger
             # self.fleet_logger.info(f"DIST_FLEET: loop estimates for all vehicles")
 
-            # Log detailed fleet states for all vehicles
-            for i in range(self.fleet_size):
-                vehicle_state = self.fleet_states[:, i]
-                self.fleet_logger.debug(f"FLEET_STATE_V{i}: pos=({vehicle_state[0]:.5f},{vehicle_state[1]:.5f}), "
-                                      f"vel=({vehicle_state[2]:.5f},{vehicle_state[3]:.5f})")
+            # # Log detailed fleet states for all vehicles
+            # for i in range(self.fleet_size):
+            #     vehicle_state = self.fleet_states[:, i]
+            #     self.fleet_logger.info(f"FLEET_STATE_V{i}: pos=({vehicle_state[0]:.5f},{vehicle_state[1]:.5f}), "
+            #                           f"vel=({vehicle_state[2]:.5f},{vehicle_state[3]:.5f})")
             
             # Performance warning to dedicated fleet logger
             if total_distributed_time > 10.0:  # More than 10ms
@@ -1002,46 +1005,75 @@ class VehicleObserver:
         #                        f"pos=({state[0]:.3f}, {state[1]:.3f}), v={state[3]:.3f} , control=({control[0]:.3f}, {control[1]:.3f})")
         return True
     
-    def add_received_state_fleet(self, sender_id: int, fleet_estimates: Dict[str, str], 
+    def add_received_state_fleet(self, sender_id: int, fleet_estimates: Dict, 
                                timestamp: float) -> bool:
         """
         Add received fleet estimates from another vehicle's distributed observer.
         
         Args:
             sender_id: ID of the vehicle sending the fleet estimates
-            fleet_estimates: Dictionary of fleet estimates {vehicle_id_str: estimate_str}
+                        fleet_estimates: Dictionary in structured format ONLY:
+                                {
+                                    <vehicle_id:int or str>: {
+                                             'pos': [x, y],              # required (first two elements of position)
+                                             'rot': [roll, pitch, yaw],  # required (yaw used)
+                                             'vel': <velocity>,          # required float
+                                             'timestamp': <t>,           # optional passthrough
+                                             'source': <str>             # optional metadata
+                                    }, ...
+                                }
+                                Accepts numeric keys (int or numeric string). 'Vj' prefixed keys and legacy string summaries are no longer accepted.
             timestamp: GPS-synchronized timestamp of the fleet estimates
             
         Returns:
             True if successfully added, False otherwise
         """
         current_time = time.time()
-        
+
         # Validate timestamp
         if current_time - timestamp > self.max_state_age:
-            self.fleet_logger.debug(f"Rejected old fleet estimates from vehicle {sender_id} "
-                                  f"(age: {current_time - timestamp:.3f}s)")
+            self.fleet_logger.debug(
+                f"Rejected old fleet estimates from vehicle {sender_id} "
+                f"(age: {current_time - timestamp:.3f}s)")
             return False
-        
-        # Validate fleet estimates format
+
+        # Validate fleet estimates format (must be non-empty dict)
         if not isinstance(fleet_estimates, dict) or len(fleet_estimates) == 0:
-            self.fleet_logger.warning(f"Invalid fleet estimates format from vehicle {sender_id}")
+            self.fleet_logger.warning(
+                f"Invalid fleet estimates format from vehicle {sender_id}")
             return False
-        
+
         with self.lock:
             # Clean old fleet data
             self._cleanup_old_fleet_data(sender_id, current_time)
-            
+
             # Add new fleet estimates
-            self.received_states_fleet[sender_id].append((timestamp, fleet_estimates.copy()))
-            
+            self.received_states_fleet[sender_id].append(
+                (timestamp, fleet_estimates.copy()))
+
             # Keep only recent data
-            max_history = 50  # Smaller history for fleet estimates as they are larger
-            if len(self.received_states_fleet[sender_id]) > max_history:
-                self.received_states_fleet[sender_id] = self.received_states_fleet[sender_id][-max_history:]
-        
-        self.fleet_logger.debug(f"Added fleet estimates from vehicle {sender_id}: "
-                               f"{len(fleet_estimates)} vehicle estimates")
+            if len(self.received_states_fleet[sender_id]) > self.max_history:
+                self.received_states_fleet[sender_id] = \
+                    self.received_states_fleet[sender_id][-self.max_history:]
+
+        # # Validate entries adhere to structured schema (light check)
+        # invalid = []
+        # for k, v in fleet_estimates.items():
+        #     if not isinstance(v, dict):
+        #         invalid.append(k); continue
+        #     pos = v.get('pos') or v.get('position')
+        #     rot = v.get('rot') or v.get('rotation')
+        #     vel = v.get('vel') or v.get('velocity')
+        #     if not (isinstance(pos, (list, tuple)) and len(pos) >= 2 and
+        #             isinstance(rot, (list, tuple)) and len(rot) >= 3 and
+        #             isinstance(vel, (int, float))):
+        #         invalid.append(k)
+        # if invalid:
+        #     self.fleet_logger.warning(
+        #         f"Structured fleet estimates from {sender_id} contain invalid entries: {invalid}")
+        # else:
+        #     self.fleet_logger.debug(
+        #         f"Added structured fleet estimates from vehicle {sender_id}: {len(fleet_estimates)} entries")
         return True
     
     def _cleanup_old_data(self, sender_id: int, current_time: float):
@@ -1137,32 +1169,37 @@ class VehicleObserver:
         # Get the most recent fleet estimates
         _, latest_fleet_estimates = max(valid_fleet_estimates, key=lambda x: x[0])
         
-        # Extract the specific vehicle's state from the fleet estimates
-        target_key = f'V{target_vehicle_id}'
-        if target_key not in latest_fleet_estimates:
+        # Key lookup: numeric id or numeric string only
+        entry = None
+        for k in (target_vehicle_id, str(target_vehicle_id)):
+            if k in latest_fleet_estimates:
+                entry = latest_fleet_estimates[k]
+                break
+        if entry is None:
             return None
-        
-        # Parse the estimate string format: 'Pos=(x,y) Rot=theta Vel=v'
+
+        if not isinstance(entry, dict):
+            self.fleet_logger.debug(
+                f"Non-dict fleet entry ignored sender={sender_id} target={target_vehicle_id} type={type(entry)}")
+            return None
+
+        pos = entry.get('pos') or entry.get('position')
+        rot = entry.get('rot') or entry.get('rotation')
+        vel = entry.get('vel') or entry.get('velocity')
+        if pos is None or rot is None or vel is None:
+            return None
+        if len(pos) < 2 or len(rot) < 3:
+            return None
         try:
-            import re
-            estimate_str = latest_fleet_estimates[target_key]
-            pos_match = re.search(r'Pos=\(([-\d.]+),([-\d.]+)\)', estimate_str)
-            rot_match = re.search(r'Rot=([-\d.]+)', estimate_str)
-            vel_match = re.search(r'Vel=([-\d.]+)', estimate_str)
-            
-            if pos_match and rot_match and vel_match:
-                x = float(pos_match.group(1))
-                y = float(pos_match.group(2))
-                theta = float(rot_match.group(1))
-                vel = float(vel_match.group(1))
-                
-                return np.array([x, y, theta, vel])
-            else:
-                self.fleet_logger.warning(f"Failed to parse fleet estimate string: {estimate_str}")
-                return None
-                
+            return np.array([
+                float(pos[0]),
+                float(pos[1]),
+                float(rot[2]),
+                float(vel)
+            ])
         except Exception as e:
-            self.fleet_logger.error(f"Error parsing fleet estimate from sender {sender_id} for vehicle {target_vehicle_id}: {e}")
+            self.fleet_logger.warning(
+                f"Fleet estimate conversion error sender={sender_id} target={target_vehicle_id}: {e}")
             return None
     
     def get_local_state(self) -> np.ndarray:
@@ -1300,9 +1337,7 @@ class VehicleObserver:
         """
         # GPS measures position [x, y]
         C = np.identity(self.state_dim)
-        # C = np.zeros((2, self.state_dim))
-        # C[0, 0] = 1  # x position
-        # C[1, 1] = 1  # y position
+
         
         return C
     

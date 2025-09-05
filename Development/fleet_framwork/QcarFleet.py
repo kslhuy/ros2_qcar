@@ -264,7 +264,7 @@ class QcarFleet:
                 'lookahead_distance': getattr(self.config, 'lookahead_distance', 7.0),
                 'update_rate': 100,  # Hz
                 'observer_rate': 100,  # Hz
-                'gps_update_rate': 50,  # Hz
+                'gps_update_rate': 5,  # Hz
 
 
                 # Configure observer to use EKF (like vehicle_control2.py)
