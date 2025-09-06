@@ -28,6 +28,10 @@ class FilteredLoggerAdapter(logging.LoggerAdapter):
         if 'STATE:' in msg_str or 'OBS_STATE:' in msg_str or 'EKF_STATE:' in msg_str:
             return self.fleet_config.module_logging_enabled.get('state', True)
         
+        # Trust logs
+        if 'TRUST:' in msg_str or 'TRUST_SCORE:' in msg_str or 'TRUST_EVAL:' in msg_str or 'GRAPH_TRUST:' in msg_str:
+            return self.fleet_config.module_logging_enabled.get('trust', True)
+        
         # Debug logs
         if level == logging.DEBUG:
             return self.fleet_config.module_logging_enabled.get('debug', False)
@@ -91,6 +95,7 @@ class FleetLoggingConfig:
             'observer': True,      # Observer timing and state estimation
             'fleet_observer': True, # Fleet estimation data only
             'vehicle': True,       # Individual vehicle operations
+            'trust': True,         # Trust evaluation and scores
             'timing': True,        # Performance timing logs
             'state': True,         # State update logs
             'debug': False         # Debug level logs
@@ -151,6 +156,10 @@ class FleetLoggingConfig:
                 '%(asctime)s [%(levelname)s] V%(vehicle_id)s [FLEET_OBS]: %(message)s',
                 defaults={'vehicle_id': 'N/A'}
             ),
+            'trust': logging.Formatter(
+                '%(asctime)s [%(levelname)s] V%(vehicle_id)s [TRUST]: %(message)s',
+                defaults={'vehicle_id': 'N/A'}
+            ),
             'concise': logging.Formatter(
                 '%(message)s'  # Only the message, no timestamp for concise logs
             )
@@ -195,6 +204,8 @@ class FleetLoggingConfig:
             file_handler.setFormatter(self.formatters['communication'])
         elif logger_name == 'gps':
             file_handler.setFormatter(self.formatters['gps'])
+        elif logger_name == 'trust':
+            file_handler.setFormatter(self.formatters['trust'])
         else:
             file_handler.setFormatter(self.formatters['vehicle'])
         
@@ -353,6 +364,7 @@ class FleetLoggingConfig:
             'control': False,
             'observer': False,
             'vehicle': False,
+            'trust': False,
             'timing': False,
             'state': False,
             'debug': False
@@ -375,6 +387,7 @@ class FleetLoggingConfig:
             'observer': True,        # Keep observer timing
             'fleet_observer': True,  # Keep fleet estimation data
             'vehicle': False,
+            'trust': True,          # Keep trust evaluation logs
             'timing': True,          # Keep timing logs
             'state': False,
             'debug': False
@@ -640,6 +653,60 @@ class FleetLoggingConfig:
         
         return FilteredLoggerAdapter(self.loggers[logger_name], {'vehicle_id': vehicle_id}, self, 'fleet_observer')
     
+    def get_trust_logger(self, vehicle_id: int) -> FilteredLoggerAdapter:
+        """
+        Get logger specifically for trust evaluation and scoring with individual file per vehicle.
+        Creates separate trust log files: trust_vehicle_N.log
+        This logger is dedicated to trust model operations and trust scores.
+        """
+        logger_name = f"trust_vehicle_{vehicle_id}"
+        
+        # Create individual trust logger if it doesn't exist
+        if logger_name not in self.loggers:
+            trust_logger = logging.getLogger(f"fleet.{logger_name}")
+            trust_logger.setLevel(logging.INFO)
+            trust_logger.handlers.clear()
+            trust_logger.propagate = False
+            
+            # Create trust-specific log file
+            log_file_path = os.path.join(self.log_dir, f"trust_vehicle_{vehicle_id}.log")
+            
+            # Truncate existing log file
+            if os.path.exists(log_file_path):
+                try:
+                    with open(log_file_path, 'w') as f:
+                        f.truncate(0)
+                except Exception as e:
+                    print(f"Failed to truncate trust_vehicle_{vehicle_id}.log: {e}")
+            
+            # Setup file handler with specialized formatter for trust data
+            file_handler = RotatingFileHandler(
+                log_file_path,
+                maxBytes=self.max_bytes,
+                backupCount=self.backup_count
+            )
+            
+            # Create specialized formatter for trust data
+            trust_formatter = logging.Formatter(
+                '%(asctime)s.%(msecs)03d [%(levelname)s] V%(vehicle_id)s [TRUST]: %(message)s',
+                datefmt='%H:%M:%S',
+                defaults={'vehicle_id': 'N/A'}
+            )
+            file_handler.setFormatter(trust_formatter)
+            trust_logger.addHandler(file_handler)
+            
+            # Add console handler if enabled
+            if self.show_console:
+                console_handler = logging.StreamHandler()
+                console_handler.setFormatter(trust_formatter)
+                trust_logger.addHandler(console_handler)
+            
+            # Store logger
+            self.loggers[logger_name] = trust_logger
+            trust_logger.info(f"Individual trust logger created for Vehicle {vehicle_id}")
+        
+        return FilteredLoggerAdapter(self.loggers[logger_name], {'vehicle_id': vehicle_id}, self, 'trust')
+    
     def get_fleet_logger(self, vehicle_id: int) -> FilteredLoggerAdapter:
         """Get logger for general fleet operations."""
         return self.get_vehicle_logger(vehicle_id, 'fleet')
@@ -675,6 +742,10 @@ def get_observer_logger(vehicle_id: int) -> FilteredLoggerAdapter:
 def get_fleet_observer_logger(vehicle_id: int) -> FilteredLoggerAdapter:
     """Get fleet observer-specific logger for a vehicle."""
     return fleet_logging.get_fleet_observer_logger(vehicle_id)
+
+def get_trust_logger(vehicle_id: int) -> FilteredLoggerAdapter:
+    """Get trust evaluation-specific logger for a vehicle."""
+    return fleet_logging.get_trust_logger(vehicle_id)
 
 def enable_console_logging(enabled: bool = True):
     """Enable or disable console output for all loggers."""

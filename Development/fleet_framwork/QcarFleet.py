@@ -158,6 +158,91 @@ class QcarFleet:
         self.lock = threading.Lock()
         pass
 
+    def create_fleet_graph(self, graph_type="fully_connected"):
+        """
+        Create adjacency matrix representing the fleet vehicle connections.
+        
+        graph_type: str - Type of graph topology
+                   "fully_connected" - All vehicles connected to all others
+                   "chain" - Chain topology (each vehicle connected to neighbors)
+                   "star" - Star topology (leader connected to all, others only to leader)
+                   "custom" - Custom adjacency matrix (to be defined)
+        
+        Returns: numpy array - Adjacency matrix where graph[i][j] = 1 means vehicle i can communicate with vehicle j
+        """
+        n = self.NumQcar
+        
+        if graph_type == "fully_connected":
+            # Fully connected graph - all vehicles connected to all others
+            graph = np.ones((n, n), dtype=int)
+            # Set diagonal to 0 (vehicle doesn't connect to itself)
+            np.fill_diagonal(graph, 0)
+            
+        elif graph_type == "chain":
+            # Chain topology - each vehicle connected to its immediate neighbors
+            graph = np.zeros((n, n), dtype=int)
+            for i in range(n):
+                if i > 0:  # Connect to previous vehicle
+                    graph[i][i-1] = 1
+                if i < n-1:  # Connect to next vehicle
+                    graph[i][i+1] = 1
+                    
+        elif graph_type == "star":
+            # Star topology - leader connected to all, others only to leader
+            graph = np.zeros((n, n), dtype=int)
+            leader_idx = self.LeaderIndex
+            for i in range(n):
+                if i != leader_idx:
+                    graph[leader_idx][i] = 1  # Leader to follower
+                    graph[i][leader_idx] = 1  # Follower to leader
+                    
+        elif graph_type == "custom":
+            # Custom graph - can be modified as needed
+            # Example: predefined adjacency matrix
+            if n == 3:
+                graph = np.array([
+                    [0, 1, 1],  # Vehicle 0 connects to 1, 2
+                    [1, 0, 1],  # Vehicle 1 connects to 0, 2
+                    [1, 1, 0]   # Vehicle 2 connects to 0, 1
+                ])
+            elif n == 4:
+                graph = np.array([
+                    [0, 1, 1, 1],  # Vehicle 0 connects to 1, 2, 3
+                    [1, 0, 1, 1],  # Vehicle 1 connects to 0, 2, 3
+                    [1, 1, 0, 1],  # Vehicle 2 connects to 0, 1, 3
+                    [1, 1, 1, 0]   # Vehicle 3 connects to 0, 1, 2
+                ])
+            else:
+                # Default to fully connected for other sizes
+                graph = np.ones((n, n), dtype=int)
+                np.fill_diagonal(graph, 0)
+        else:
+            raise ValueError(f"Unknown graph type: {graph_type}")
+            
+        return graph
+
+    def print_fleet_graph(self, graph):
+        """
+        Print the fleet adjacency matrix in a readable format
+        """
+        print(f"\nFleet Adjacency Matrix ({self.NumQcar} vehicles):")
+        print("=" * 50)
+        print("   ", end="")
+        for j in range(self.NumQcar):
+            print(f"V{j:2d}", end=" ")
+        print()
+        
+        for i in range(self.NumQcar):
+            role = "L" if i == self.LeaderIndex else "F"
+            print(f"V{i:2d}({role})", end=" ")
+            for j in range(self.NumQcar):
+                print(f"{graph[i][j]:2d} ", end=" ")
+            print()
+        print("=" * 50)
+        print("L = Leader, F = Follower")
+        print("1 = Connected, 0 = Not Connected")
+        print()
+
     def PrepareVehicleConfigs(self):
         """
         Prepare configuration dictionaries for each vehicle process.
@@ -166,6 +251,11 @@ class QcarFleet:
         NEW DESIGN: Bidirectional communication where each vehicle can communicate with all others
         Each vehicle has its own unique send/receive ports for peer-to-peer communication
         """
+        # Create fleet communication graph
+        # You can change this to "chain", "star", or "custom" as needed
+        self.fleet_graph = self.create_fleet_graph("fully_connected")
+        self.print_fleet_graph(self.fleet_graph)
+        
         # Port configuration for up to 5 vehicles (bidirectional design)
         # Format: [send_port, recv_port, ack_port] for each vehicle
         # NEW: Each vehicle has unique ports for bidirectional communication
@@ -179,11 +269,13 @@ class QcarFleet:
         
         # Create peer port mapping for bidirectional communication
         # Each vehicle knows all other vehicles' ports for direct communication
+        # UPDATED: Now considers graph connectivity
         self.peer_ports = {}
         for vehicle_id in range(self.NumQcar):
             self.peer_ports[vehicle_id] = {}
             for peer_id in range(self.NumQcar):
-                if peer_id != vehicle_id:
+                # Only add peer if there's a connection in the graph
+                if peer_id != vehicle_id and self.fleet_graph[vehicle_id][peer_id] == 1:
                     peer_send_port, peer_recv_port, peer_ack_port = port_config[peer_id]
                     self.peer_ports[vehicle_id][peer_id] = {
                         'send_to_peer': peer_recv_port,  # Send to peer's receive port
@@ -247,12 +339,17 @@ class QcarFleet:
                 # NEW: Chain-following configuration
                 'following_target': following_target,  # Which vehicle this one should follow
                 
+                # NEW: Fleet graph information
+                'fleet_graph': self.fleet_graph.tolist(),  # Convert numpy array to list for serialization
+                'connected_vehicles': [j for j in range(self.NumQcar) if self.fleet_graph[i][j] == 1],  # List of connected vehicle IDs
+                'num_connections': np.sum(self.fleet_graph[i]),  # Number of connections for this vehicle
+                
                 # NEW: Bidirectional communication settings
                 'target_ip': "127.0.0.1",  # localhost for local testing
                 'send_port': send_port,
                 'recv_port': recv_port,
                 'ack_port': ack_port,
-                'peer_ports': self.peer_ports[i],  # Peer communication mapping
+                'peer_ports': self.peer_ports[i],  # Peer communication mapping (now filtered by graph)
                 'communication_mode': 'bidirectional',  # Enable bidirectional mode
                 
                 # GPS settings
@@ -285,7 +382,10 @@ class QcarFleet:
                 # Fleet information
                 'leader_index': self.LeaderIndex,
                 'distance_between_cars': self.Distance,
-                
+
+                #Trust and Safety
+                'enable_trust_evaluation': True,
+
                 # Additional config parameters (convert config object to dict)
                 'simulation_time': getattr(self.config, 'simulation_time', 0),
                 'enable_steering_control': getattr(self.config, 'enable_steering_control', True),
@@ -303,14 +403,83 @@ class QcarFleet:
 
 
             self.vehicle_configs.append(vehicle_config)
+            connected_peers = [j for j in range(self.NumQcar) if self.fleet_graph[i][j] == 1]
             print(f"Vehicle {i} {'(Leader)' if is_leader else '(Follower)'}: "
                   f"Send={send_port}, Recv={recv_port}, ACK={ack_port}")
+            print(f"  Connected to vehicles: {connected_peers} ({len(connected_peers)} connections)")
         
         print(f"Prepared configurations for {self.NumQcar} vehicles with leader at index {self.LeaderIndex}")
-        print("NEW: Bidirectional communication setup - Each vehicle can communicate with all others")
-        print("Port configuration complete for bidirectional peer-to-peer communication")
-        print(f"Peer port mapping: {self.peer_ports}")
+        print("NEW: Graph-based communication setup - Vehicle connections defined by adjacency matrix")
+        print("Port configuration complete for graph-based peer-to-peer communication")
+        
+        # Print connection summary
+        total_connections = np.sum(self.fleet_graph) // 2  # Divide by 2 since graph is symmetric
+        max_connections = self.NumQcar * (self.NumQcar - 1) // 2
+        connectivity_ratio = total_connections / max_connections if max_connections > 0 else 0
+        print(f"Graph connectivity: {total_connections}/{max_connections} connections ({connectivity_ratio:.1%})")
         pass
+
+    def get_fleet_graph(self):
+        """
+        Get the current fleet adjacency matrix
+        """
+        return self.fleet_graph.copy() if hasattr(self, 'fleet_graph') else None
+
+    def update_fleet_graph(self, new_graph):
+        """
+        Update the fleet adjacency matrix and reconfigure peer ports
+        
+        new_graph: numpy array - New adjacency matrix
+        """
+        if new_graph.shape != (self.NumQcar, self.NumQcar):
+            raise ValueError(f"Graph shape {new_graph.shape} doesn't match fleet size ({self.NumQcar}, {self.NumQcar})")
+        
+        self.fleet_graph = new_graph.copy()
+        print("Fleet graph updated:")
+        self.print_fleet_graph(self.fleet_graph)
+        
+        # Update peer ports based on new graph
+        port_config = {
+            0: [6000, 6000, 6002],
+            1: [6010, 6010, 6012], 
+            2: [6020, 6020, 6022],
+            3: [6030, 6030, 6032],
+            4: [6040, 6040, 6042],
+        }
+        
+        # Reconfigure peer ports based on new graph
+        self.peer_ports = {}
+        for vehicle_id in range(self.NumQcar):
+            self.peer_ports[vehicle_id] = {}
+            for peer_id in range(self.NumQcar):
+                if peer_id != vehicle_id and self.fleet_graph[vehicle_id][peer_id] == 1:
+                    peer_send_port, peer_recv_port, peer_ack_port = port_config[peer_id]
+                    self.peer_ports[vehicle_id][peer_id] = {
+                        'send_to_peer': peer_recv_port,
+                        'recv_from_peer': peer_send_port,
+                        'ack_from_peer': peer_ack_port
+                    }
+
+    def get_vehicle_connections(self, vehicle_id):
+        """
+        Get list of vehicles that the specified vehicle can communicate with
+        """
+        if not hasattr(self, 'fleet_graph') or vehicle_id >= self.NumQcar:
+            return []
+        
+        return [i for i in range(self.NumQcar) if self.fleet_graph[vehicle_id][i] == 1]
+
+    def is_connected(self, vehicle_a, vehicle_b):
+        """
+        Check if two vehicles can communicate directly
+        """
+        if not hasattr(self, 'fleet_graph'):
+            return False
+        
+        if vehicle_a >= self.NumQcar or vehicle_b >= self.NumQcar:
+            return False
+            
+        return self.fleet_graph[vehicle_a][vehicle_b] == 1
     #endregion
 
 

@@ -7,6 +7,7 @@ import os
 import sys
 import socket
 import json
+from collections import deque
 from typing import Any, Optional, Dict, List
 
 # QLabs imports - these will be created inside each process
@@ -39,12 +40,14 @@ from VehicleLeaderController import VehicleLeaderController
 from VehicleFollowerController import VehicleFollowerController
 from StateQueue import StateQueue
 from VehicleObserver import VehicleObserver
+from src.Trust.TriPTrustModel import TriPTrustModel
+from GraphBasedTrust import GraphBasedTrustEvaluator
 
 from src.GPS_sim.md_gps_sync import GPSSync
 from md_logging_config import (
     get_individual_vehicle_logger, get_communication_logger, get_gps_logger, 
-    get_control_logger, get_observer_logger, get_fleet_observer_logger, 
-    disable_all_logging, set_module_logging
+    get_control_logger, get_observer_logger, get_fleet_observer_logger,
+    get_trust_logger, disable_all_logging, set_module_logging
 )
 
 # Import performance monitoring
@@ -275,9 +278,6 @@ class VehicleProcess:
                 self.ekf = None
                 self.ekf_initialized = False
 
-
-        self.stop_event = stop_event
-        self.status_queue = status_queue
         
         # Multiprocessing-safe running flag
         self.running = multiprocessing.Event()
@@ -290,6 +290,14 @@ class VehicleProcess:
         self.recv_port = vehicle_config['recv_port']
         self.ack_port = vehicle_config['ack_port']
         
+        # NEW: Extract fleet graph configuration from vehicle_config
+        self.fleet_graph = vehicle_config.get('fleet_graph', [])  # Full adjacency matrix
+        self.connected_vehicles = vehicle_config.get('connected_vehicles', [])  # List of connected vehicle IDs
+        self.num_connections = vehicle_config.get('num_connections', 0)  # Number of connections
+        
+        print(f"Vehicle {self.vehicle_id}: Fleet graph connections: {self.connected_vehicles}")
+        print(f"Vehicle {self.vehicle_id}: Number of connections: {self.num_connections}")
+
         # NEW: Chain-following configuration
         self.following_target = vehicle_config.get('following_target', None)
         if self.following_target is not None:
@@ -313,6 +321,7 @@ class VehicleProcess:
         self.control_logger = get_control_logger(vehicle_id)
         self.observer_logger = get_observer_logger(vehicle_id)
         self.fleet_observer_logger = get_fleet_observer_logger(vehicle_id)
+        self.trust_logger = get_trust_logger(vehicle_id)
         
         # Configure logging for performance
         self.configure_logging_for_performance()
@@ -447,6 +456,37 @@ class VehicleProcess:
         self.leader_vehicle = None
         self.leader_state = None
 
+        # Initialize Graph-Based Trust Model for connected vehicles only
+        self.trust_enabled = vehicle_config.get('enable_trust_evaluation', True)
+        
+        if self.trust_enabled and len(self.connected_vehicles) > 0:
+            # Create trust models only for connected vehicles (based on fleet graph)
+            trust_models = {}
+            for target_vehicle_id in self.connected_vehicles:
+                if target_vehicle_id != self.vehicle_id:  # Don't create trust model for self
+                    trust_models[target_vehicle_id] = TriPTrustModel()
+                    print(f"Vehicle {self.vehicle_id}: Created trust model for connected vehicle {target_vehicle_id}")
+            
+            # Create simplified graph-based trust evaluator
+            self.trust_evaluator = GraphBasedTrustEvaluator(
+                vehicle_id=self.vehicle_id,
+                connected_vehicles=self.connected_vehicles,
+                trust_models=trust_models
+            )
+            
+            print(f"Vehicle {self.vehicle_id}: Graph-based trust evaluation enabled for {len(trust_models)} connected vehicles")
+            
+            # Log trust initialization details
+            self.trust_logger.info(f"TRUST_INIT: Graph-based trust evaluation initialized - "
+                                 f"connected_vehicles={self.connected_vehicles}, "
+                                 f"trust_models_count={len(trust_models)}")
+        else:
+            self.trust_evaluator = None
+            print(f"Vehicle {self.vehicle_id}: Trust evaluation disabled or no connected vehicles")
+            self.trust_logger.info(f"TRUST_INIT: Trust evaluation disabled - "
+                                 f"trust_enabled={self.trust_enabled}, "
+                                 f"connected_vehicles_count={len(self.connected_vehicles)}")
+        
         print(f"Vehicle {self.vehicle_id} process initialized successfully")
         self.logger.info(f"Vehicle {self.vehicle_id} process initialized successfully")
 
@@ -456,12 +496,18 @@ class VehicleProcess:
         set_module_logging('observer', True)
         set_module_logging('communication', True)
         set_module_logging('fleet_observer', True)  # Enable fleet observer logging
+        set_module_logging('trust', True)  # Enable trust logging
+        # set_module_logging('debug', True)  # Enable debug level logs
         
         # Set fleet observer logger to INFO level to see the velocity debug messages
         self.fleet_observer_logger.setLevel(logging.INFO)
-        self.comm_logger.setLevel(logging.INFO)
+        self.comm_logger.setLevel(logging.INFO)  # Already set to INFO - this enables info messages
         self.observer_logger.setLevel(logging.INFO)
-
+        self.trust_logger.setLevel(logging.INFO)  # Enable trust logging at INFO level
+    
+    
+    # ------------------------------------ GPS Update Methods
+    # region GPS Update Methods
     def update_gps_data(self):
         """Update GPS data from QCar sensors (supports both virtual and physical QCar modes)."""
         try:
@@ -483,6 +529,8 @@ class VehicleProcess:
             self.logger.error(f"Vehicle {self.vehicle_id}: GPS update error: {e}")
             self.gps_data_cache['available'] = False
             print(f"Vehicle {self.vehicle_id}: GPS update exception: {e}")
+
+
 
     def _update_virtual_qcar_data(self, current_time):
         """Update using virtual QCar (QLabs) API."""
@@ -646,99 +694,13 @@ class VehicleProcess:
     def get_cached_gps_data(self):
         """Get cached GPS data."""
         return self.gps_data_cache.copy()
+
+    # endregion   GPS Update Methods
+
+    # --------------------- Control Logic Methods ---------------------
+    # region Control Logic Methods
     
-    def get_observer_state_direct(self) -> Optional[dict]:
-        """
-        Get state directly from observer without caching.
-        
-        Returns:
-            Observer state dictionary with essential fields only: position, rotation, velocity
-        """
-        if self.observer is None:
-            return None
-            
-        try:
-            # Get the local state directly from observer (more efficient)
-            local_state = self.observer.get_local_state()
-            if local_state is not None and len(local_state) >= 4:
-                return {
-                    'position': [local_state[0], local_state[1], 0.0],  # [x, y, z] format
-                    'rotation': [0.0, 0.0, local_state[2]],  # [roll, pitch, yaw] format
-                    'velocity': local_state[3]
-                }
-            else:
-                # Fallback to the formatted method if local state is not available
-                return self.observer.get_estimated_state_for_control()
-        except Exception as e:
-            self.logger.error(f"Vehicle {self.vehicle_id}: Failed to get observer state: {e}")
-            return None
     
-    # --------------------- Helper / Refactor Methods ---------------------
-
-    def _ensure_fleet_state_store(self):
-        """Ensure the fleet state estimates dict exists."""
-        if not hasattr(self, 'fleet_state_estimates') or self.fleet_state_estimates is None:
-            self.fleet_state_estimates = {}
-
-    def _set_fleet_vehicle_estimate(self, vehicle_idx: int, vehicle_state: np.ndarray, timestamp: float):
-        """Refactored helper: store per-vehicle distributed observer estimate from numpy array."""
-        self._ensure_fleet_state_store()
-        try:
-            self.fleet_state_estimates[vehicle_idx] = {
-                'position': [float(vehicle_state[0]), float(vehicle_state[1]), 0.0],
-                'rotation': [0.0, 0.0, float(vehicle_state[2])],
-                'velocity': float(vehicle_state[3]),
-                'timestamp': timestamp
-            }
-        except Exception:
-            # Silent fail to avoid impacting real-time loop
-            pass
-
-    def _build_fleet_estimates_message(self, timestamp: float) -> dict:
-        """Create the fleet estimates message dict (refactored, single authoritative builder)."""
-        if not hasattr(self, 'fleet_state_estimates') or not self.fleet_state_estimates:
-            return {}
-        msg = {
-            'msg_type': 'fleet_estimates',
-            'sender_id': self.vehicle_id,
-            'timestamp': timestamp,
-            'fleet_size': len(self.fleet_state_estimates),
-            'estimates': {}
-        }
-        for vid, state in self.fleet_state_estimates.items():
-            msg['estimates'][vid] = {
-                'pos': state['position'][:2],
-                'rot': state['rotation'],
-                'vel': state['velocity'],
-                'timestamp': state['timestamp']
-            }
-        return msg
-
-    # ---------------------------------------------------------------------
-    def get_best_available_state(self) -> dict:
-        """
-        Factory method that returns the best available state estimate.
-        Priority: Observer EKF > Raw GPS fallback
-        
-        Returns:
-            Best available state estimate with essential fields: position, rotation, velocity
-        """
-        # Try observer first (check if EKF is initialized through observer attributes)
-        if self.observer is not None:
-            observer_state = self.get_observer_state_direct()
-            if observer_state and hasattr(self.observer, 'ekf_initialized') and self.observer.ekf_initialized:
-                return observer_state
-        
-        # Fallback to raw GPS if observer not available or EKF not initialized
-        return {
-            'position': self.current_pos.copy(),
-            'rotation': self.current_rot.copy(),
-            'velocity': self.velocity
-        }
-        
-    def get_state_for_control(self) -> dict:
-        """Get current vehicle state for control algorithms using observer estimates."""
-        return self.get_best_available_state()
     
     def leader_control_logic(self):
         """Leader control logic that delegates to VehicleLeaderController."""
@@ -880,9 +842,9 @@ class VehicleProcess:
                         'interpolated': False,
                         'state_age': state_age
                     }
-                    self.logger.debug(f"Using fallback leader data: age={state_age:.3f}s")
+                    self.comm_logger.debug(f"Using fallback leader data: age={state_age:.3f}s")
                 else:
-                    self.comm_logger.warning(f"Target state too old ({state_age:.3f}s), stopping vehicle")
+                    self.comm_logger.info(f"Fallback but target state too old ({state_age:.3f}s), stopping vehicle")
                     # Stop vehicle if target data is too old
                     self.qcar.set_velocity_and_request_state(forward=0.0, turn=0.0, headlights=False,
                                                         leftTurnSignal=False,
@@ -953,53 +915,11 @@ class VehicleProcess:
                 rightTurnSignal=False,
                 brakeSignal=False,
                 reverseSignal=False)
+    # --------------------- Control Logic Methods ---------------------
+    #endregion Control Logic Methods
+   
 
-    def get_interpolated_leader_state(self, target_time: Optional[float] = None) -> Optional[dict]:
-        """Get interpolated leader state from state queue."""
-        if target_time is None:
-            target_time = time.time()
-        
-        # Add debug info about queue state
-        queue_stats = self.state_queue.get_queue_stats()
-        self.comm_logger.debug(f"Vehicle {self.vehicle_id}: Queue stats - size: {queue_stats['current_queue_size']}, "
-              f"total_received: {queue_stats['total_received']}, valid: {queue_stats['valid_states']}")
-        
-        # Get all states to see what's in the queue
-        all_states = self.state_queue.get_all_states(sender_id=0)  # Leader is vehicle 0
-        self.comm_logger.debug(f"Vehicle {self.vehicle_id}: States from leader in queue: {len(all_states)}")
-        
-        result = self.state_queue.get_interpolated_state(target_time, sender_id=0)
-        self.comm_logger.debug(f"Vehicle {self.vehicle_id}: Interpolated result: {result}")
-        return result
-
-    def get_interpolated_target_state(self, target_time: Optional[float] = None) -> Optional[dict]:
-        """
-        NEW: Get interpolated state from the target vehicle this one should follow.
-        For chain-following: Vehicle 1 follows 0, Vehicle 2 follows 1, Vehicle 3 follows 2, etc.
-        """
-        if target_time is None:
-            target_time = time.time()
-        
-        # Determine which vehicle to get state from
-        if self.following_target is None:
-            # This is a leader, no target to follow
-            return None
-        
-        target_vehicle_id = self.following_target
-        
-        # Add debug info about queue state for the target vehicle
-        queue_stats = self.state_queue.get_queue_stats()
-        self.comm_logger.debug(f"Vehicle {self.vehicle_id}: Looking for target vehicle {target_vehicle_id} - Queue stats - size: {queue_stats['current_queue_size']}")
-        
-        # Get all states from the target vehicle
-        all_states = self.state_queue.get_all_states(sender_id=target_vehicle_id)
-        self.comm_logger.debug(f"Vehicle {self.vehicle_id}: States from target vehicle {target_vehicle_id} in queue: {len(all_states)}")
-        
-        # Get interpolated state from the target vehicle
-        result = self.state_queue.get_interpolated_state(target_time, sender_id=target_vehicle_id)
-        self.comm_logger.debug(f"Vehicle {self.vehicle_id}: Interpolated result from vehicle {target_vehicle_id}: {result}")
-        return result
-
+    # --------------------- Main Run Loop ---------------------
     def run(self):
         """Main run loop for the vehicle process."""
         self.logger.info(f"Vehicle {self.vehicle_id}: Starting main run loop")
@@ -1013,6 +933,7 @@ class VehicleProcess:
         last_observer_time = time.time()
         last_gps_time = time.time()
         last_status_time = time.time()
+        last_trust_summary_time = time.time()  # For periodic trust logging
         
 
         
@@ -1048,6 +969,18 @@ class VehicleProcess:
                     self.send_status_update()
                     last_status_time = current_time
                 
+                # # Log trust summary periodically (every 10 seconds)
+                # if current_time - last_trust_summary_time >= 10.0:
+                #     if hasattr(self, 'trust_evaluator') and self.trust_evaluator is not None:
+                #         self.trust_evaluator.log_trust_summary(self.trust_logger)
+                #         # Also log trust statistics
+                #         stats = self.trust_evaluator.get_trust_statistics()
+                #         if stats['count'] > 0:
+                #             self.trust_logger.info(f"TRUST_STATS: count={stats['count']}, "
+                #                                  f"mean={stats['mean']:.3f}, min={stats['min']:.3f}, "
+                #                                  f"max={stats['max']:.3f}")
+                #     last_trust_summary_time = current_time
+                
                 # Small sleep to prevent excessive CPU usage
                 time.sleep(0.001)  # 1ms
                 
@@ -1057,43 +990,7 @@ class VehicleProcess:
         finally:
             self.cleanup()
 
-    def stop(self):
-        """Gracefully stop the vehicle process control logic."""
-        self.logger.info(f"Vehicle {self.vehicle_id}: Stopping control logic")
-        
-        # First stop the running flag to exit the main loop
-        self.running.clear()
-        
-        # Stop all control immediately with zero commands
-        try:
-            if self.use_physical_qcar and self.physical_qcar is not None:
-                # Stop physical QCar
-                self.physical_qcar.write(0, 0)
-                print(f"Vehicle {self.vehicle_id}: Physical QCar stopped with zero commands")
-            else:
-                # Stop virtual QCar
-                self.qcar.set_velocity_and_request_state(
-                        forward=0.0, 
-                        turn=0.0,
-                        headlights=False,
-                        leftTurnSignal=False,
-                        rightTurnSignal=False,
-                        brakeSignal=False,
-                        reverseSignal=False
-                    )
-                print(f"Vehicle {self.vehicle_id}: Virtual QCar stopped with zero commands")
-        except Exception as e:
-            print(f"Vehicle {self.vehicle_id}: Error stopping vehicle: {e}")
-        
-        # Close QLabs connection
-        try:
-            if hasattr(self, 'qlabs') and self.qlabs is not None:
-                self.qlabs.close()
-                print(f"Vehicle {self.vehicle_id}: QLabs connection closed")
-        except Exception as e:
-            print(f"Vehicle {self.vehicle_id}: Error closing QLabs: {e}")
-            
-        self.logger.info(f"Vehicle {self.vehicle_id}: Control logic stopped")
+
 
     def observer_update(self):
         """
@@ -1177,6 +1074,8 @@ class VehicleProcess:
         except Exception as e:
             self.observer_logger.error(f"Vehicle {self.vehicle_id}: Observer update error: {e}")
 
+    # --------------------- Communication Methods ---------------------
+    #region Communication Methods
     def broadcast_fleet_estimates(self):
         """
         Broadcast fleet state estimates from distributed observer.
@@ -1393,17 +1292,18 @@ class VehicleProcess:
             success = self.state_queue.add_state(received_state, self.gps_sync)
             
             if not success:
-                self.comm_logger.warning(f"Vehicle {self.vehicle_id}: State rejected by queue! "
-                                       f"Data: sender={sender_id}, seq={seq}, timestamp={timestamp}")
-                # Log the exact data that was rejected
-                self.comm_logger.warning(f"Vehicle {self.vehicle_id}: REJECTED_DATA_DETAILS: {received_state}")
+                # self.comm_logger.warning(f"Vehicle {self.vehicle_id}: State rejected by queue! "
+                #                        f"Data: sender={sender_id}, seq={seq}, timestamp={timestamp}")
+                # # Log the exact data that was rejected
+                # self.comm_logger.warning(f"Vehicle {self.vehicle_id}: REJECTED_DATA_DETAILS: {received_state}")
+                pass
             else:
                 queue_stats = self.state_queue.get_queue_stats()
-                self.comm_logger.debug(f"Vehicle {self.vehicle_id}: State added to queue successfully. "
-                                     f"Queue size: {queue_stats['current_queue_size']}")
+                # self.comm_logger.debug(f"Vehicle {self.vehicle_id}: State added to queue successfully. "
+                #                      f"Queue size: {queue_stats['current_queue_size']}")
                 
                 # Update leader_state for fallback (preserve original structure)
-                if 'pos' in received_state:
+                if sender_id == self.following_target and 'pos' in received_state :
                     self.leader_state = received_state.copy()  # Make a copy to preserve original
                     self.comm_logger.debug(f"Vehicle {self.vehicle_id}: Updated leader_state fallback")
 
@@ -1439,10 +1339,315 @@ class VehicleProcess:
                     except Exception as obs_error:
                         self.observer_logger.warning(f"Vehicle {self.vehicle_id}: Error feeding state to observer: {obs_error}")
                 
+                # Evaluate trust for this vehicle if enabled
+                if self.trust_enabled and sender_id != self.vehicle_id and sender_id > 0:
+                    self._evaluate_trust_for_received_state(sender_id, received_state)
+                    
         except Exception as e:
             self.comm_logger.error(f"Vehicle {self.vehicle_id}: Error handling vehicle state: {e}")
             # Log the full received_state for debugging
             self.comm_logger.error(f"Vehicle {self.vehicle_id}: ERROR_DATA_DUMP: {received_state}")
+
+    #endregion Communication Methods
+
+    # --------------------- Trust Evaluation Methods ---------------------
+    ############ Trust Evaluation Methods ############
+    #region Trust Evaluation Methods
+
+    def _evaluate_trust_for_received_state(self, sender_id: int, received_state: dict):
+        """
+        Evaluate trust for a connected vehicle using the graph-based trust evaluator.
+        
+        Args:
+            sender_id: ID of the vehicle that sent the state
+            received_state: The received state data
+        """
+        try:
+            # Skip if trust evaluator not available or sender not connected
+            if not hasattr(self, 'trust_evaluator') or self.trust_evaluator is None:
+                return
+                
+                
+            # Get our current state for comparison
+            our_state = self.get_best_available_state()
+            
+            # Evaluate trust using the graph-based evaluator
+            trust_score = self.trust_evaluator.evaluate_trust_for_received_state(
+                sender_id, received_state, our_state, self.trust_logger
+            )
+            
+            # # Apply trust-based control if this is our following target
+            # if trust_score is not None and self.following_target == sender_id:
+            #     base_distance = self.config.get('distance_between_cars', 8.0)
+            #     adjusted_distance = self.trust_evaluator.apply_trust_based_control(
+            #         sender_id, base_distance, self.trust_logger
+            #     )
+                
+            #     # Apply adjustment to controller if supported
+            #     if (hasattr(self, 'follower_controller') and self.follower_controller is not None and
+            #         hasattr(self.follower_controller, 'set_following_distance')):
+            #         self.follower_controller.set_following_distance(adjusted_distance)
+            #         # Log the trust-based control adjustment
+            #         self.trust_logger.info(f"TRUST_CONTROL: Applied trust-based distance adjustment - "
+            #                              f"trust_score={trust_score:.3f}, base_distance={base_distance:.1f}m, "
+            #                              f"adjusted_distance={adjusted_distance:.1f}m")
+                
+        except Exception as e:
+            self.comm_logger.warning(f"Vehicle {self.vehicle_id}: Error in graph-based trust evaluation: {e}")
+
+    def get_trust_score(self, vehicle_id: int) -> float:
+        """
+        Get current trust score for a vehicle.
+        
+        Args:
+            vehicle_id: ID of the vehicle
+            
+        Returns:
+            Trust score (0.0 to 1.0), defaults to 1.0 if trust evaluation disabled
+        """
+        if hasattr(self, 'trust_evaluator') and self.trust_evaluator is not None:
+            return self.trust_evaluator.get_trust_score(vehicle_id)
+        return 1.0
+
+    def get_connected_vehicle_trust_scores(self) -> Dict[int, float]:
+        """
+        Get current trust scores for all connected vehicles.
+        
+        Returns:
+            Dictionary mapping vehicle_id to trust_score for connected vehicles
+        """
+        if hasattr(self, 'trust_evaluator') and self.trust_evaluator is not None:
+            return self.trust_evaluator.get_all_trust_scores()
+        return {}
+
+    def is_vehicle_trusted(self, vehicle_id: int, threshold: float = 0.5) -> bool:
+        """
+        Check if a connected vehicle is trusted above a threshold.
+        
+        Args:
+            vehicle_id: ID of the vehicle to check
+            threshold: Trust threshold (0.0 to 1.0)
+            
+        Returns:
+            True if vehicle is connected and trusted above threshold
+        """
+        if hasattr(self, 'trust_evaluator') and self.trust_evaluator is not None:
+            return self.trust_evaluator.is_vehicle_trusted(vehicle_id, threshold)
+        return True  # Default to trusted if trust evaluation disabled
+
+    def _adjust_control_based_on_trust(self, target_id: int, trust_score: float):
+        """
+        Legacy method - replaced by GraphBasedTrustEvaluator.
+        Kept for compatibility.
+        """
+        pass
+
+    # Simplified trust methods - most functionality moved to GraphBasedTrustEvaluator
+    
+    def calculate_trust_and_opinion(self, instant_idx: int, connected_vehicles: List[int] = None):
+        """
+        Legacy method - simplified for graph-based trust.
+        Trust is now evaluated when messages are received.
+        """
+        if hasattr(self, 'trust_evaluator') and self.trust_evaluator is not None:
+            # Just log current trust scores periodically
+            if instant_idx % 100 == 0:  # Every 100 steps
+                trust_scores = self.trust_evaluator.get_all_trust_scores()
+                for vid, score in trust_scores.items():
+                    self.logger.debug(f"Vehicle {self.vehicle_id}: Trust for vehicle {vid}: {score:.3f}")
+
+    def get_current_trust_weights(self) -> Dict[int, float]:
+        """
+        Get current trust weights for connected vehicles.
+        """
+        if hasattr(self, 'trust_evaluator') and self.trust_evaluator is not None:
+            return self.trust_evaluator.get_all_trust_scores()
+        return {}
+
+    def update_vehicle_with_trust(self, instant_idx: int):
+        """Legacy method - simplified.""" 
+        pass
+
+    def get_trust_data(self, target_vehicle_id: int) -> Optional[Dict[str, float]]:
+        """Get trust data for a vehicle."""
+        if hasattr(self, 'trust_evaluator') and self.trust_evaluator is not None:
+            trust_score = self.trust_evaluator.get_trust_score(target_vehicle_id)
+            return {
+                'final_score': trust_score,
+                'trust_score': trust_score
+            }
+        return None
+
+    def evaluate_trust_for_target(self, target_vehicle_id: int, neighbors_list: List[Any] = None, 
+                                 instant_idx: int = None) -> Optional[Dict[str, float]]:
+        """Legacy method - replaced by graph-based evaluation."""
+        return self.get_trust_data(target_vehicle_id)
+
+    #endregion Trust Evaluation Methods
+
+
+    # --------------------- Helper / Refactor Methods ---------------------
+    #region Helper Methods
+
+    def _ensure_fleet_state_store(self):
+        """Ensure the fleet state store is properly initialized."""
+        if not hasattr(self, 'fleet_state_store') or self.fleet_state_store is None:
+            self.fleet_state_store = {}
+            
+        # Initialize state storage for all vehicles
+        for i in range(self.num_vehicles):
+            vehicle_id = i + 1
+            if vehicle_id not in self.fleet_state_store:
+                self.fleet_state_store[vehicle_id] = deque(maxlen=1000)
+
+   
+
+
+
+    #endregion Trust Evaluation Methods
+
+
+    # --------------------- Helper / Refactor Methods ---------------------
+    #region Helper Methods 
+
+    def _ensure_fleet_state_store(self):
+        """Ensure the fleet state estimates dict exists."""
+        if not hasattr(self, 'fleet_state_estimates') or self.fleet_state_estimates is None:
+            self.fleet_state_estimates = {}
+
+    def _set_fleet_vehicle_estimate(self, vehicle_idx: int, vehicle_state: np.ndarray, timestamp: float):
+        """Refactored helper: store per-vehicle distributed observer estimate from numpy array."""
+        self._ensure_fleet_state_store()
+        try:
+            self.fleet_state_estimates[vehicle_idx] = {
+                'position': [float(vehicle_state[0]), float(vehicle_state[1]), 0.0],
+                'rotation': [0.0, 0.0, float(vehicle_state[2])],
+                'velocity': float(vehicle_state[3]),
+                'timestamp': timestamp
+            }
+        except Exception:
+            # Silent fail to avoid impacting real-time loop
+            pass
+
+    def _build_fleet_estimates_message(self, timestamp: float) -> dict:
+        """Create the fleet estimates message dict (refactored, single authoritative builder)."""
+        if not hasattr(self, 'fleet_state_estimates') or not self.fleet_state_estimates:
+            return {}
+        msg = {
+            'msg_type': 'fleet_estimates',
+            'sender_id': self.vehicle_id,
+            'timestamp': timestamp,
+            'fleet_size': len(self.fleet_state_estimates),
+            'estimates': {}
+        }
+        for vid, state in self.fleet_state_estimates.items():
+            msg['estimates'][vid] = {
+                'pos': state['position'][:2],
+                'rot': state['rotation'],
+                'vel': state['velocity'],
+                'timestamp': state['timestamp']
+            }
+        return msg
+
+    def get_observer_state_direct(self) -> Optional[dict]:
+        """
+        Get state directly from observer without caching.
+        
+        Returns:
+            Observer state dictionary with essential fields only: position, rotation, velocity
+        """
+        if self.observer is None:
+            return None
+            
+        try:
+            # Get the local state directly from observer (more efficient)
+            local_state = self.observer.get_local_state()
+            if local_state is not None and len(local_state) >= 4:
+                return {
+                    'position': [local_state[0], local_state[1], 0.0],  # [x, y, z] format
+                    'rotation': [0.0, 0.0, local_state[2]],  # [roll, pitch, yaw] format
+                    'velocity': local_state[3]
+                }
+            else:
+                # Fallback to the formatted method if local state is not available
+                return self.observer.get_estimated_state_for_control()
+        except Exception as e:
+            self.logger.error(f"Vehicle {self.vehicle_id}: Failed to get observer state: {e}")
+            return None
+
+    def get_best_available_state(self) -> dict:
+        """
+        Factory method that returns the best available state estimate.
+        Priority: Observer EKF > Raw GPS fallback
+        
+        Returns:
+            Best available state estimate with essential fields: position, rotation, velocity
+        """
+        # Try observer first (check if EKF is initialized through observer attributes)
+        if self.observer is not None:
+            observer_state = self.get_observer_state_direct()
+            if observer_state and hasattr(self.observer, 'ekf_initialized') and self.observer.ekf_initialized:
+                return observer_state
+        
+        # Fallback to raw GPS if observer not available or EKF not initialized
+        return {
+            'position': self.current_pos.copy(),
+            'rotation': self.current_rot.copy(),
+            'velocity': self.velocity
+        }
+        
+    def get_state_for_control(self) -> dict:
+        """Get current vehicle state for control algorithms using observer estimates."""
+        return self.get_best_available_state()
+
+
+    def get_interpolated_leader_state(self, target_time: Optional[float] = None) -> Optional[dict]:
+        """Get interpolated leader state from state queue."""
+        if target_time is None:
+            target_time = time.time()
+        
+        # Add debug info about queue state
+        queue_stats = self.state_queue.get_queue_stats()
+        self.comm_logger.debug(f"Vehicle {self.vehicle_id}: Queue stats - size: {queue_stats['current_queue_size']}, "
+              f"total_received: {queue_stats['total_received']}, valid: {queue_stats['valid_states']}")
+        
+        # Get all states to see what's in the queue
+        all_states = self.state_queue.get_all_states(sender_id=0)  # Leader is vehicle 0
+        self.comm_logger.debug(f"Vehicle {self.vehicle_id}: States from leader in queue: {len(all_states)}")
+        
+        result = self.state_queue.get_interpolated_state(target_time, sender_id=0)
+        self.comm_logger.debug(f"Vehicle {self.vehicle_id}: Interpolated result: {result}")
+        return result
+
+    def get_interpolated_target_state(self, target_time: Optional[float] = None) -> Optional[dict]:
+        """
+        NEW: Get interpolated state from the target vehicle this one should follow.
+        For chain-following: Vehicle 1 follows 0, Vehicle 2 follows 1, Vehicle 3 follows 2, etc.
+        """
+        if target_time is None:
+            target_time = time.time()
+        
+        # Determine which vehicle to get state from
+        if self.following_target is None:
+            # This is a leader, no target to follow
+            return None
+        
+        target_vehicle_id = self.following_target
+        
+        # Add debug info about queue state for the target vehicle
+        queue_stats = self.state_queue.get_queue_stats()
+        self.comm_logger.debug(f"Vehicle {self.vehicle_id}: Looking for target vehicle {target_vehicle_id} - Queue stats - size: {queue_stats['current_queue_size']}")
+        
+        # Get all states from the target vehicle
+        all_states = self.state_queue.get_all_states(sender_id=target_vehicle_id)
+        self.comm_logger.debug(f"Vehicle {self.vehicle_id}: States from target vehicle {target_vehicle_id} in queue: {len(all_states)}")
+        
+        # Get interpolated state from the target vehicle
+        result = self.state_queue.get_interpolated_state(target_time, sender_id=target_vehicle_id)
+        self.comm_logger.debug(f"Vehicle {self.vehicle_id}: Interpolated result from vehicle {target_vehicle_id}: {result}")
+        return result
+    # ---------------------------------------------------------------------
+    #endregion Helper Methods
 
     def send_status_update(self):
         """Send status update to main process."""
@@ -1522,3 +1727,41 @@ class VehicleProcess:
         except Exception as e:
             self.logger.error(f"Vehicle {self.vehicle_id}: Cleanup error: {e}")
             print(f"Vehicle {self.vehicle_id}: Cleanup error: {e}")
+    
+    def stop(self):
+        """Gracefully stop the vehicle process control logic."""
+        self.logger.info(f"Vehicle {self.vehicle_id}: Stopping control logic")
+        
+        # First stop the running flag to exit the main loop
+        self.running.clear()
+        
+        # Stop all control immediately with zero commands
+        try:
+            if self.use_physical_qcar and self.physical_qcar is not None:
+                # Stop physical QCar
+                self.physical_qcar.write(0, 0)
+                print(f"Vehicle {self.vehicle_id}: Physical QCar stopped with zero commands")
+            else:
+                # Stop virtual QCar
+                self.qcar.set_velocity_and_request_state(
+                        forward=0.0, 
+                        turn=0.0,
+                        headlights=False,
+                        leftTurnSignal=False,
+                        rightTurnSignal=False,
+                        brakeSignal=False,
+                        reverseSignal=False
+                    )
+                print(f"Vehicle {self.vehicle_id}: Virtual QCar stopped with zero commands")
+        except Exception as e:
+            print(f"Vehicle {self.vehicle_id}: Error stopping vehicle: {e}")
+        
+        # Close QLabs connection
+        try:
+            if hasattr(self, 'qlabs') and self.qlabs is not None:
+                self.qlabs.close()
+                print(f"Vehicle {self.vehicle_id}: QLabs connection closed")
+        except Exception as e:
+            print(f"Vehicle {self.vehicle_id}: Error closing QLabs: {e}")
+            
+        self.logger.info(f"Vehicle {self.vehicle_id}: Control logic stopped")

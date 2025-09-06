@@ -256,7 +256,7 @@ class ObserverDataLogger:
             
             # Save to MATLAB file
             savemat(mat_path, matlab_data)
-            print(f"MATLAB data saved to: {mat_path}")
+            # print(f"MATLAB data saved to: {mat_path}")
             return mat_path
     
     def save_json_data(self, filename: Optional[str] = None):
@@ -310,7 +310,7 @@ class ObserverDataLogger:
             with open(json_path, 'w') as f:
                 json.dump(json_data, f, indent=2)
             
-            print(f"JSON data saved to: {json_path}")
+            # print(f"JSON data saved to: {json_path}")
             return json_path
     
     def close(self):
@@ -322,7 +322,7 @@ class ObserverDataLogger:
                     if file_handle and not file_handle.closed:
                         file_handle.flush()  # Ensure all data is written
                         file_handle.close()
-                        print(f"Closed CSV file: {name}")
+                        # print(f"Closed CSV file: {name}")
                 self.csv_files.clear()
                 self.csv_writers.clear()
             except Exception as e:
@@ -334,12 +334,13 @@ class ObserverDataLogger:
                 json_path = self.save_json_data()
                 
                 print(f"DataLogger for Vehicle {self.vehicle_id} closed.")
-                print(f"Total local state samples: {len(self.local_state_data)}")
-                print(f"Total fleet state samples: {len(self.fleet_state_data)}")
-                print(f"Data saved in multiple formats:")
-                print(f"  - CSV: {self.data_dir}")
-                print(f"  - MATLAB: {matlab_path}")
-                print(f"  - JSON: {json_path}")
+                # print(f"DataLogger for Vehicle {self.vehicle_id} closed.")
+                # print(f"Total local state samples: {len(self.local_state_data)}")
+                # print(f"Total fleet state samples: {len(self.fleet_state_data)}")
+                # print(f"Data saved in multiple formats:")
+                # print(f"  - CSV: {self.data_dir}")
+                # print(f"  - MATLAB: {matlab_path}")
+                # print(f"  - JSON: {json_path}")
             except Exception as e:
                 print(f"Error saving final data: {e}")
     
