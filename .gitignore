@@ -8,8 +8,12 @@ __pycache__/
 logs/
 Development/fleet_framwork/logs/
 Development/fleet_framwork/data_logs/
+# docker/libraries/resources/pretrained_models
+docker/libraries/resources/pretrained_models/
 docker/libraries/resources/pretrained_models/yolov8s-seg.engine
 docker/libraries/resources/pretrained_models/yolov8s-seg.onnx
 docker/libraries/resources/pretrained_models/yolov8s-seg.pt
+
+
 
 .history

@@ -124,16 +124,16 @@ def main():
                 alive_count = sum(1 for v in status.values() if v['alive'])
                 print(f"Fleet status: {alive_count}/{QcarNum} vehicle processes alive")
                 
-                # Print any vehicle status updates from the queue
-                try:
-                    while True:
-                        update = Fleet.status_queue.get_nowait()
-                        if update['status'] == 'running':
-                            pos = update.get('position', [0, 0, 0])
-                            vel = update.get('velocity', 0)
-                            print(f"  Vehicle {update['vehicle_id']}: pos=({pos[0]:.2f}, {pos[1]:.2f}), vel={vel:.2f}")
-                except:
-                    pass  # Queue is empty
+                # # Print any vehicle status updates from the queue
+                # try:
+                #     while True:
+                #         update = Fleet.status_queue.get_nowait()
+                #         if update['status'] == 'running':
+                #             pos = update.get('position', [0, 0, 0])
+                #             vel = update.get('velocity', 0)
+                #             print(f"  Vehicle {update['vehicle_id']}: pos=({pos[0]:.2f}, {pos[1]:.2f}), vel={vel:.2f}")
+                # except:
+                #     pass  # Queue is empty
                     
                 last_status_time = current_time
 

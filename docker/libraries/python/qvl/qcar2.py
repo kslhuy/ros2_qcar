@@ -562,6 +562,11 @@ class QLabsQCar2(QLabsActor):
 
             jpg_buffer = cv2.imdecode(np.frombuffer(bytearray(c.payload[8:len(c.payload)]), dtype=np.uint8, count=-1, offset=0), 1)
 
+            # # Crop bottom pixels for better performance (remove dashboard/ground clutter)
+            # if jpg_buffer is not None and len(jpg_buffer.shape) == 3:
+            #     height = jpg_buffer.shape[0]
+            #     if height > 40:  # Only crop if image is large enough
+            #         jpg_buffer = jpg_buffer[0:height-40, :]  # Remove bottom 40 pixels
 
             return True, jpg_buffer
         else:

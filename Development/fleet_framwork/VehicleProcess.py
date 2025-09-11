@@ -1340,7 +1340,7 @@ class VehicleProcess:
                         self.observer_logger.warning(f"Vehicle {self.vehicle_id}: Error feeding state to observer: {obs_error}")
                 
                 # Evaluate trust for this vehicle if enabled
-                if self.trust_enabled and sender_id != self.vehicle_id and sender_id > 0:
+                if self.trust_enabled and sender_id != self.vehicle_id:
                     self._evaluate_trust_for_received_state(sender_id, received_state)
                     
         except Exception as e:
@@ -1655,8 +1655,8 @@ class VehicleProcess:
             status = {
                 'vehicle_id': self.vehicle_id,
                 'status': 'running',
-                'position': self.current_pos,
-                'velocity': self.velocity,
+                # 'position': self.current_pos,
+                # 'velocity': self.velocity,
                 'timestamp': time.time()
             }
             self.status_queue.put(status)

@@ -29,8 +29,6 @@ from hal.products.mats import SDCSRoadMap
 import pal.resources.images as images
 
 # Import for leader controller testing
-from src.OpenRoad import OpenRoad
-from src.Controller.ControllerLeader import SpeedController as OriginalSpeedController, SteeringController as OriginalSteeringController
 
 #===================== QLabs Setup ========================
 # This modified version of vehicle control is intended to be used in
