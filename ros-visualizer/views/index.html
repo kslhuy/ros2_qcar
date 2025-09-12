@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>QCar Visualization</title>
+    <script src="https://cdn.jsdelivr.net/npm/roslib@1/build/roslib.min.js"></script>
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <link rel="stylesheet" href="/css/styles.css">
+</head>
+<body>
+    <div class="container">
+        <div class="header-bar">
+            <h1>Dashboard</h1>
+            <div class="header-actions">
+                <a href="/settings" class="settings-link btn btn-secondary">⚙️ Settings</a>
+            </div>
+        </div>
+        
+        <div id="connection-status">Connecting...</div>
+        <!-- System Info Section -->
+        <div class="system-info">
+            <div class="info-section">
+                <h3>ROS2 Nodes</h3>
+                <div id="nodes-list" class="info-content">Loading...</div>
+                <button id="refresh-nodes">Refresh Nodes</button>
+            </div>
+            <div class="info-section">
+                <h3>Parameters</h3>
+                <select id="node-select">
+                    <option value="">Select a node...</option>
+                </select>
+                <div id="parameters-list" class="info-content">Select a node to view parameters</div>
+            </div>
+        </div>
+        
+        <!-- Plot Selection Controls -->
+        <div class="controls">
+            <h3>Select Plots to Display:</h3>
+            <label>
+                <input type="checkbox" id="show-pose" checked> Pose Plot
+            </label>
+            <label>
+                <input type="checkbox" id="show-lidar" checked> LIDAR Plot
+            </label>
+            <label>
+                <input type="checkbox" id="show-occupancy" checked> Occupancy Grid
+            </label>
+        </div>
+        
+        <div class="plot-container">
+            <div class="plot-row">
+                <div id="pose-plot" class="plot-item"></div>
+                <div id="lidar-plot" class="plot-item"></div>
+            </div>
+            <div id="occupancy-plot" class="plot-item"></div>
+        </div>
+    </div>
+    
+    <script src="/js/config.js"></script>
+    <script src="/js/ros-connection.js"></script>
+    <script src="/js/plot-management.js"></script>
+    <script src="/js/node-management.js"></script>
+    <script src="/js/event-handlers.js"></script>
+    <script src="/js/main.js"></script>
+</body>
+</html>

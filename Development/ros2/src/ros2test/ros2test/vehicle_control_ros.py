@@ -14,6 +14,8 @@ from pyqtgraph.Qt import QtWidgets
 from collections import deque
 from sensor_msgs.msg import LaserScan
 from pynput import keyboard
+from nav_msgs.msg import OccupancyGrid
+from std_msgs.msg import Header
 
 class VehicleControl(Node):
     def __init__(self):
@@ -59,7 +61,7 @@ class VehicleControl(Node):
         vehicle_control_plot.setYRange(-2, 6)
         
         self.plotwaypoints = vehicle_control_plot.plot([], [], pen=None, symbol='o', symbolBrush='r', symbolPen=None, symbolSize=2)
-        self.plotpos = vehicle_control_plot.plot([], [], pen=None, symbol='o', symbolBrush='g', symbolPen=None, symbolSize=2)
+        # self.plotpos = vehicle_control_plot.plot([], [], pen=None, symbol='o', symbolBrush='g', symbolPen=None, symbolSize=2)
         
         self.poslistx = deque(maxlen=300)
         self.poslisty = deque(maxlen=300)
@@ -107,6 +109,7 @@ class VehicleControl(Node):
         self.occupancy_img.setZValue(-10)  # Draw under LiDAR points
         vehicle_control_plot.addItem(self.occupancy_img)
 
+        self.occupancy_pub = self.create_publisher(OccupancyGrid, "/occupancy_grid", 10)
                 
         self.L = 3
         self.CELLS_PER_METER = 20
@@ -161,7 +164,7 @@ class VehicleControl(Node):
         y = pose.position.y
         self.poslistx.append(x)
         self.poslisty.append(y)
-        self.plotpos.setData(self.poslistx, self.poslisty)
+        # self.plotpos.setData(self.poslistx, self.poslisty)
 
         ox = pose.orientation.x
         oy = pose.orientation.y
@@ -193,8 +196,8 @@ class VehicleControl(Node):
             self.send_control(0, 0)
             return
 
-        dx = np.cos(self.delta)/2
-        dy = np.sin(self.delta)/2
+        dx = np.cos(self.delta)*0.7
+        dy = np.sin(self.delta)*0.7
         if self.avoid_obstacle_occupancy_grid(u, dx, dy):
             return  # Skip sending control if obstacle detected
         
@@ -345,8 +348,15 @@ class VehicleControl(Node):
             if self.obstacle_detected:
                 target_x_rot = target[1]
                 target_y_rot = -target[0]
-                delta = np.arctan2(target_y_rot, target_x_rot)
-                self.send_control(0.6*u, delta)
+
+                K_p = 0.8
+
+                L = np.linalg.norm(target)
+                y = target_y_rot
+                angle = K_p * (2 * y) / (L**2)
+                angle = np.clip(angle, -np.radians(30), np.radians(30))
+
+                self.send_control(0.6*u, angle)
                 self.target2.setData([target[0]], [target[1]])
                 return True
             else:
@@ -394,6 +404,42 @@ class VehicleControl(Node):
         occupied_indices = np.where((i > 0) & (i < self.grid_height) & (j > 0) & (j < self.grid_width))
         self.occupancy_grid[i[occupied_indices], j[occupied_indices]] = self.IS_OCCUPIED
         
+        # Publish occupancy grid
+    #     self.publish_occupancy_grid()
+        
+    # def publish_occupancy_grid(self):
+    #     """
+    #     Publish the occupancy grid as a ROS2 OccupancyGrid message
+    #     """
+    #     msg = OccupancyGrid()
+        
+    #     # Header
+    #     msg.header = Header()
+    #     msg.header.stamp = self.get_clock().now().to_msg()
+    #     msg.header.frame_id = "base_link"
+        
+    #     # Map metadata
+    #     msg.info.resolution = 1.0 / self.CELLS_PER_METER  # meters per cell
+    #     msg.info.width = self.grid_width
+    #     msg.info.height = self.grid_height
+        
+    #     # Origin (bottom-left corner in real-world coordinates)
+    #     msg.info.origin.position.x = -self.grid_width_meters / 2.0
+    #     msg.info.origin.position.y = 0.0
+    #     msg.info.origin.position.z = 0.0
+    #     msg.info.origin.orientation.w = 1.0
+        
+    #     # Convert occupancy grid to ROS format (0-100, -1 for unknown)
+    #     # Your format: IS_FREE=50, IS_OCCUPIED=100
+    #     # ROS format: 0=free, 100=occupied, -1=unknown
+    #     ros_grid = np.copy(self.occupancy_grid).astype(np.int8)
+    #     ros_grid[ros_grid == self.IS_FREE] = 0      # Free cells
+    #     ros_grid[ros_grid == self.IS_OCCUPIED] = 100  # Occupied cells
+        
+    #     # Flatten and convert to list (ROS expects row-major order)
+    #     msg.data = ros_grid.flatten().tolist()
+        
+    #     self.occupancy_pub.publish(msg)
         
     # === Occupancy Grid Plot Update Function ===
     def update_occupancy_image(self, cell_size=1/20):

@@ -42,7 +42,7 @@ class EKF(Node):
         self.sub_imu = self.create_subscription(Imu, '/qcar2_imu', self.imu_callback, 10)
         self.sub_joint = self.create_subscription(JointState, '/qcar2_joint', self.joint_callback, 10)
 
-        self.pub_pose = self.create_publisher(PoseStamped, "/ekf_pose", 10)
+        self.pub_pose = self.create_publisher(PoseStamped, "/ekf_pose", 50)
 
         self.t0 = time.time()
         self.t = 0

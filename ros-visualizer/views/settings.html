@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>QCar Settings</title>
+    <script src="https://cdn.jsdelivr.net/npm/roslib@1/build/roslib.min.js"></script>
+    <link rel="stylesheet" href="/css/styles.css">
+    <link rel="stylesheet" href="/css/settings.css">
+</head>
+<body>
+    <div class="settings-container">
+        <header class="settings-header">
+            <h1>Settings</h1>
+            <div class="header-actions">
+                <button id="back-btn" class="btn btn-secondary">← Back to Dashboard</button>
+            </div>
+        </header>
+
+        <div class="settings-content">
+            <!-- Connection Settings -->
+            <section class="settings-section">
+                <h2>🔗 Connection Settings</h2>
+                <div class="settings-grid">
+                    <div class="setting-group">
+                        <label for="robot-ip">Robot IP Address:</label>
+                        <input type="text" id="robot-ip" placeholder="192.168.1.100" value="localhost">
+                        <small>IP address of the robot running ROS2</small>
+                    </div>
+                    
+                    <div class="setting-group">
+                        <label for="rosbridge-port">ROSBridge Port:</label>
+                        <input type="number" id="rosbridge-port" placeholder="9090" value="9090" min="1" max="65535">
+                        <small>Port number for ROSBridge WebSocket server</small>
+                    </div>
+                    
+                    <div class="setting-group">
+                        <label>Current Connection URL:</label>
+                        <div class="connection-url">
+                            <code id="current-url">ws://localhost:9090</code>
+                        </div>
+                    </div>
+                    
+                    <div class="setting-group">
+                        <label>Connection Actions:</label>
+                        <div class="button-group">
+                            <button id="test-connection-btn" class="btn btn-info">Test Connection</button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Node Information Display Settings -->
+            <section class="settings-section">
+                <h2>📋 Node Information Display</h2>
+                <p class="section-description">Configure what information to show when viewing node details</p>
+                <div class="settings-grid">
+                    <div class="setting-group">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="show-subscribed-topics" checked>
+                            <span class="checkmark"></span>
+                            Show Subscribed Topics
+                        </label>
+                        <small>Display topics that the node subscribes to (📥)</small>
+                    </div>
+                    
+                    <div class="setting-group">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="show-published-topics" checked>
+                            <span class="checkmark"></span>
+                            Show Published Topics
+                        </label>
+                        <small>Display topics that the node publishes to (📤)</small>
+                    </div>
+                    
+                    <div class="setting-group">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="show-services" checked>
+                            <span class="checkmark"></span>
+                            Show Services
+                        </label>
+                        <small>Display services provided by the node (⚙️)</small>
+                    </div>
+                    
+                    <div class="setting-group">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="show-parameters" checked>
+                            <span class="checkmark"></span>
+                            Show Parameters
+                        </label>
+                        <small>Display editable parameters for the node (🔧)</small>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Parameter Display Settings -->
+            <section class="settings-section">
+                <h2>🔧 Parameter Display Settings</h2>
+                <div class="settings-grid">
+                    <div class="setting-group">
+                        <label for="parameter-update-mode">Parameter Update Mode:</label>
+                        <select id="parameter-update-mode">
+                            <option value="manual">Manual - Click save button to update</option>
+                            <option value="auto">Auto - Update immediately on change</option>
+                            <option value="batch">Batch - Save all changes at once</option>
+                        </select>
+                        <small>How parameter updates are handled</small>
+                    </div>
+                    
+                    <div class="setting-group">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="show-parameter-types" checked>
+                            <span class="checkmark"></span>
+                            Show Parameter Types
+                        </label>
+                        <small>Display parameter type information (string, int, bool, etc.)</small>
+                    </div>
+                    
+                    <div class="setting-group">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="confirm-parameter-changes" checked>
+                            <span class="checkmark"></span>
+                            Confirm Parameter Changes
+                        </label>
+                        <small>Show confirmation before updating critical parameters</small>
+                    </div>
+                </div>
+            </section>
+        </div>
+
+        <footer class="settings-footer">
+            <div class="footer-actions">
+                <button id="reset-settings-btn" class="btn btn-warning">Reset to Defaults</button>
+                <button id="export-settings-btn" class="btn btn-secondary">Export Settings</button>
+                <button id="save-settings-btn" class="btn btn-success">Save Settings</button>
+            </div>
+        </footer>
+    </div>
+
+    <script src="/js/config.js"></script>
+    <script src="/js/settings-page.js"></script>
+</body>
+</html>
