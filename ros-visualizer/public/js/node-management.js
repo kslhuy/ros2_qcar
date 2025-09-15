@@ -116,8 +116,7 @@ function getDisplaySettings() {
         showParameters: localStorage.getItem('show-parameters') !== 'false',
         parameterUpdateMode: localStorage.getItem('parameter-update-mode') || 'manual',
         showParameterTypes: localStorage.getItem('show-parameter-types') !== 'false',
-        confirmParameterChanges: localStorage.getItem('confirm-parameter-changes') !== 'false',
-        maxParametersDisplay: parseInt(localStorage.getItem('max-parameters-display')) || 50
+        confirmParameterChanges: localStorage.getItem('confirm-parameter-changes') !== 'false'    
     };
 }
 
@@ -214,19 +213,10 @@ function processParameterValues(nodeParams, existingHtml, nodeName) {
         }
         return;
     }
-    
-    // Limit number of parameters displayed
-    const maxParams = settings.maxParametersDisplay;
-    const limitedParams = nodeParams.slice(0, maxParams);
-    
-    if (nodeParams.length > maxParams) {
-        existingHtml += `<div class="param-warning">⚠️ Showing ${maxParams} of ${nodeParams.length} parameters (limit set in settings)</div><br>`;
-    }
-    
+        
     existingHtml += '<strong>⚙️ Parameters:</strong><br>';
     existingHtml += '<div class="parameters-container">';
     
-    // Rest of the function remains the same but uses limitedParams instead of nodeParams
     let processedParams = 0;
     
     limitedParams.forEach(paramName => {
@@ -246,8 +236,12 @@ function processParameterValues(nodeParams, existingHtml, nodeName) {
             if (processedParams === limitedParams.length) {
                 existingHtml += '</div>';
                 existingHtml += `<div class="param-actions">
-                    <button onclick="refreshNodeParameters('${nodeName}')" class="btn btn-secondary">🔄 Refresh</button>
-                    <button onclick="saveAllNodeParameters('${nodeName}')" class="btn btn-success">💾 Save All</button>
+                    <button onclick="refreshNodeParameters('${nodeName}')" class="btn btn-secondary">
+                        <i class="bi bi-arrow-clockwise"></i> Refresh
+                    </button>
+                    <button onclick="saveAllNodeParameters('${nodeName}')" class="btn btn-success">
+                        <i class="bi bi-save"></i> Save All
+                    </button>
                 </div>`;
                 
                 const paramsList = document.getElementById('parameters-list');
@@ -261,13 +255,17 @@ function processParameterValues(nodeParams, existingHtml, nodeName) {
 }
 
 function createParameterEditableHtml(fullParamName, shortParamName, value, paramId) {
+    const settings = getDisplaySettings();
     const valueType = typeof value;
     let inputHtml = '';
     
     // Determine input type based on value type
     if (valueType === 'boolean') {
         inputHtml = `
-            <select id="${paramId}" data-param-name="${fullParamName}" data-original-value="${value}">
+            <select id="${paramId}" 
+                    data-param-name="${fullParamName}" 
+                    data-original-value="${value}"
+                    class="param-input form-select">
                 <option value="true" ${value ? 'selected' : ''}>true</option>
                 <option value="false" ${!value ? 'selected' : ''}>false</option>
             </select>`;
@@ -280,7 +278,7 @@ function createParameterEditableHtml(fullParamName, shortParamName, value, param
                    data-original-value="${value}"
                    value="${value}" 
                    step="${step}"
-                   class="param-input">`;
+                   class="param-input form-control">`;
     } else if (valueType === 'string') {
         inputHtml = `
             <input type="text" 
@@ -288,7 +286,7 @@ function createParameterEditableHtml(fullParamName, shortParamName, value, param
                    data-param-name="${fullParamName}" 
                    data-original-value="${value}"
                    value="${value}" 
-                   class="param-input">`;
+                   class="param-input form-control">`;
     } else {
         // For arrays or complex objects, use textarea
         inputHtml = `
@@ -296,22 +294,26 @@ function createParameterEditableHtml(fullParamName, shortParamName, value, param
                       data-param-name="${fullParamName}" 
                       data-original-value="${JSON.stringify(value)}"
                       rows="3" 
-                      class="param-input">${JSON.stringify(value)}</textarea>`;
+                      class="param-input form-control">${JSON.stringify(value)}</textarea>`;
     }
+    
+    // Build the parameter type display based on settings
+    const typeDisplay = settings.showParameterTypes ? 
+        `<span class="param-type">[${valueType}]</span>` : '';
     
     return `
         <div class="param-item-editable" data-param-name="${fullParamName}">
             <div class="param-header">
                 <span class="param-name">${shortParamName}:</span>
-                <span class="param-type">[${valueType}]</span>
+                ${typeDisplay}
                 <div class="param-buttons">
                     <button onclick="updateParameter('${fullParamName}', '${paramId}')" 
-                            class="btn-mini btn-primary" title="Update this parameter">
-                        💾
+                            class="btn btn-sm btn-primary" title="Update this parameter">
+                        <i class="bi bi-save"></i>
                     </button>
                     <button onclick="resetParameter('${paramId}')" 
-                            class="btn-mini btn-secondary" title="Reset to original value">
-                        🔄
+                            class="btn btn-sm btn-secondary" title="Reset to original value">
+                        <i class="bi bi-arrow-clockwise"></i>
                     </button>
                 </div>
             </div>
@@ -323,9 +325,12 @@ function createParameterEditableHtml(fullParamName, shortParamName, value, param
 }
 
 function setupParameterEventListeners() {
-    // Add change detection to all parameter inputs
-    document.querySelectorAll('.param-input').forEach(input => {
-        input.addEventListener('input', function() {
+    // Add change detection to all parameter inputs and selects
+    document.querySelectorAll('.param-input').forEach(element => {
+        // Determine which event to listen for based on element type
+        const eventType = element.tagName.toLowerCase() === 'select' ? 'change' : 'input';
+        
+        element.addEventListener(eventType, function() {
             const originalValue = this.getAttribute('data-original-value');
             const currentValue = this.value;
             const statusDiv = document.getElementById(this.id + '-status');

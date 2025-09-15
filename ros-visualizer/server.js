@@ -23,6 +23,5 @@ process.on('SIGINT', () => {
 const PORT = 3000;
 app.listen(PORT, () => {
     console.log(`Server running at http://localhost:${PORT}`);
-    console.log(`Settings page: http://localhost:${PORT}/settings`);
-    console.log('Make sure ros2-web-bridge is running');
+    console.log('Make sure rosbridge-server is running');
 });

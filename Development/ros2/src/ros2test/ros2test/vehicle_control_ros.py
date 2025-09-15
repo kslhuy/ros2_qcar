@@ -124,6 +124,14 @@ class VehicleControl(Node):
         listener = keyboard.Listener(on_press=self.on_press, on_release=self.on_release)
         listener.start()
 
+        # Subscribe to the occupancy grid topic
+        self.occupancy_sub = self.create_subscription(
+            OccupancyGrid,
+            '/occupancy_grid',
+            self.occupancy_callback,
+            10
+        )
+
     key_states = {
         'm': False,
     }
@@ -377,35 +385,6 @@ class VehicleControl(Node):
         i = np.round(y * -self.CELLS_PER_METER + (self.grid_height - 1)).astype(int)
         j = np.round(x * self.CELLS_PER_METER + self.CELL_Y_OFFSET).astype(int)
         return i, j
-
-    def populate_occupancy_grid(self, ranges, thetas):
-        """
-        Populate occupancy grid using lidar scans and save
-        the data in class member variable self.occupancy_grid.
-
-        Optimization performed to improve the speed at which we generate the occupancy grid.
-
-        Args:
-            scan_msg (LaserScan): message from lidar scan topic
-        """
-        # reset empty occupacny grid (-1 = unknown)
-
-        self.occupancy_grid = np.full(shape=(self.grid_height, self.grid_width), fill_value=self.IS_FREE, dtype=int)
-
-        ranges = np.array(ranges)
-        valid = ranges > 0
-        ranges = ranges[valid]
-        thetas = thetas[valid]
-        xs = ranges * np.sin(thetas)
-        ys = ranges * np.cos(thetas)
-
-        i, j = self.local_to_grid_parallel(xs, ys)
-
-        occupied_indices = np.where((i > 0) & (i < self.grid_height) & (j > 0) & (j < self.grid_width))
-        self.occupancy_grid[i[occupied_indices], j[occupied_indices]] = self.IS_OCCUPIED
-        
-        # Publish occupancy grid
-    #     self.publish_occupancy_grid()
         
     # def publish_occupancy_grid(self):
     #     """
@@ -440,9 +419,29 @@ class VehicleControl(Node):
     #     msg.data = ros_grid.flatten().tolist()
         
     #     self.occupancy_pub.publish(msg)
-        
-    # === Occupancy Grid Plot Update Function ===
-    def update_occupancy_image(self, cell_size=1/20):
+
+    def scan_callback(self, msg: LaserScan):
+
+        ranges = np.array(list(msg.ranges))[::-1] 
+        angles = np.linspace(msg.angle_min, msg.angle_max, len(ranges))
+        angles = (angles + np.pi) % (2 * np.pi)
+
+        x = np.sin(angles)*ranges
+
+        y = np.cos(angles)*ranges
+
+        self.lidarData.setData(x,y)
+        QtWidgets.QApplication.instance().processEvents()
+
+    def occupancy_callback(self, msg: OccupancyGrid):
+        """
+        Callback to process the received occupancy grid.
+        """
+        # Process the occupancy grid data as needed
+        self.occupancy_grid = np.array(msg.data).reshape(msg.info.height, msg.info.width)
+        self.update_occupancy_image()
+
+    def update_occupancy_image(self):
         """
         Update the PyQtGraph image layer with new occupancy grid data.
         """
@@ -454,28 +453,12 @@ class VehicleControl(Node):
         shape = self.occupancy_grid.shape
         self.occupancy_img.setRect(
             pg.QtCore.QRectF(
-                -shape[1] / 2.0 * cell_size,
+                -shape[1] / 2.0 * (1 / self.CELLS_PER_METER),
                 0,
-                shape[1] * cell_size,
-                shape[0] * cell_size
+                shape[1] * (1 / self.CELLS_PER_METER),
+                shape[0] * (1 / self.CELLS_PER_METER)
             )
-        )    
-
-    def scan_callback(self, msg: LaserScan):
-
-        ranges = np.array(list(msg.ranges))[::-1] 
-        angles = np.linspace(msg.angle_min, msg.angle_max, len(ranges))
-        angles = (angles + np.pi) % (2 * np.pi)
-        self.populate_occupancy_grid(ranges, angles)
-        self.update_occupancy_image()
-
-        x = np.sin(angles)*ranges
-
-        y = np.cos(angles)*ranges
-
-        self.lidarData.setData(x,y)
-        QtWidgets.QApplication.instance().processEvents()
-
+        )
 
 def main(args=None):
     rclpy.init(args=args)

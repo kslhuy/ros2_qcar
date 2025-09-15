@@ -81,7 +81,6 @@
     max-height: 200px;
     overflow-y: auto;
     font-family: monospace;
-    font-size: 14px;
 }
 
 #node-select {
@@ -105,8 +104,19 @@ button:hover {
 }
 
 .node-item {
-    padding: 2px 0;
-    border-bottom: 1px solid #eee;
+    padding: 8px 12px;
+    margin: 4px 0;
+    background: #f8f9fa;
+    border-left: 3px solid #007bff;
+    border-radius: 4px;
+    font-family: monospace;
+    font-size: 0.9em;
+    transition: all 0.2s ease;
+}
+
+.node-item:hover {
+    background: #e9ecef;
+    transform: translateX(2px);
 }
 
 .param-item {
@@ -115,8 +125,8 @@ button:hover {
 }
 
 .param-name {
-    font-weight: bold;
-    color: #0066cc;
+    font-weight: 600;
+    color: #495057;
 }
 
 .param-value {
@@ -224,26 +234,25 @@ button:hover {
 .param-item-editable {
     background: white;
     margin-bottom: 10px;
-    padding: 10px;
-    border-radius: 4px;
+    padding: 15px;
+    border-radius: 6px;
     border: 1px solid #dee2e6;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
 }
 
 .param-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: 5px;
-}
-
-.param-name {
-    font-weight: bold;
-    color: #2c3e50;
+    margin-bottom: 10px;
 }
 
 .param-type {
-    color: #7f8c8d;
+    color: #6c757d;
     font-style: italic;
+    background: #f8f9fa;
+    padding: 2px 6px;
+    border-radius: 3px;
 }
 
 .param-buttons {
@@ -252,21 +261,16 @@ button:hover {
 }
 
 .btn-mini {
-    padding: 2px 6px;
+    padding: 4px 8px;
+    border-radius: 4px;
     border: none;
-    border-radius: 3px;
     cursor: pointer;
-    min-width: 20px;
+    transition: all 0.2s ease;
 }
 
-.btn-mini.btn-primary {
-    background: #007bff;
-    color: white;
-}
-
-.btn-mini.btn-secondary {
-    background: #6c757d;
-    color: white;
+.btn-mini:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 2px 4px rgba(0,0,0,0.2);
 }
 
 .param-input-container {
@@ -276,11 +280,19 @@ button:hover {
 }
 
 .param-input {
-    padding: 5px;
+    width: 100%;
+    padding: 8px 12px;
     border: 1px solid #ced4da;
-    border-radius: 3px;
-    font-family: monospace;
-    font-size: 12px;
+    border-radius: 4px;
+    font-family: 'Courier New', monospace;
+    font-size: 0.9em;
+    transition: border-color 0.2s ease;
+}
+
+.param-input:focus {
+    outline: none;
+    border-color: #80bdff;
+    box-shadow: 0 0 0 0.2rem rgba(0,123,255,0.25);
 }
 
 .param-input.param-modified {
@@ -289,9 +301,9 @@ button:hover {
 }
 
 .param-status {
-    font-size: 10px;
-    font-weight: bold;
-    min-height: 12px;
+    font-weight: 500;
+    margin-top: 5px;
+    min-height: 16px;
 }
 
 .param-status.modified {
@@ -311,20 +323,45 @@ button:hover {
 }
 
 .param-actions {
-    margin-top: 15px;
-    padding-top: 10px;
+    margin-top: 20px;
+    padding-top: 15px;
     border-top: 1px solid #dee2e6;
     display: flex;
     gap: 10px;
     justify-content: flex-end;
 }
 
-.param-actions .btn {
-    padding: 5px 10px;
-    font-size: 12px;
+.param-warning {
+    background: #fff3cd;
+    color: #856404;
+    padding: 10px;
+    border-radius: 4px;
+    border: 1px solid #ffeaa7;
+    margin-bottom: 15px;
 }
 
-/* Add these styles to your existing settings.css */
+.plot-card-hidden {
+    display: none !important;
+}
+
+#connection-status.connected {
+    background-color: #28a745 !important;
+    color: white !important;
+}
+
+#connection-status.connected i::before {
+    content: "\f5a2"; /* bi-wifi */
+}
+
+#connection-status.disconnected {
+    background-color: #dc3545 !important;
+    color: white !important;
+}
+
+#connection-status.connecting {
+    background-color: #ffc107 !important;
+    color: #212529 !important;
+}
 
 .section-description {
     color: #7f8c8d;
@@ -521,4 +558,55 @@ select:focus {
     justify-content: flex-end;
     gap: 15px;
     flex-wrap: wrap;
+}
+
+@media (max-width: 768px) {
+    .navbar-brand {
+        font-size: 1.1rem;
+    }
+    
+    .card-body {
+        padding: 1rem;
+    }
+    
+    .param-header {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 10px;
+    }
+    
+    .param-buttons {
+        align-self: flex-end;
+    }
+}
+
+.info-content::-webkit-scrollbar {
+    width: 6px;
+}
+
+.info-content::-webkit-scrollbar-track {
+    background: #f1f1f1;
+    border-radius: 3px;
+}
+
+.info-content::-webkit-scrollbar-thumb {
+    background: #c1c1c1;
+    border-radius: 3px;
+}
+
+.info-content::-webkit-scrollbar-thumb:hover {
+    background: #a8a8a8;
+}
+
+.spinner-border-sm {
+    width: 1rem;
+    height: 1rem;
+}
+
+.alert-floating {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    z-index: 1050;
+    min-width: 300px;
 }

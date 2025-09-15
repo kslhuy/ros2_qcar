@@ -56,3 +56,11 @@ vehicle_control_ros_bridge3:
     WHEEL_RADIUS: 0.033 # front/rear wheel radius in m
     PIN_TO_SPUR_RATIO: 0.09536679536679536
     qcar_id: 3
+
+lidar_occupancy_node:
+  ros__parameters:
+    CELLS_PER_METER: 20
+    GRID_WIDTH_METERS: 6
+    GRID_HEIGHT_METERS: 3
+    IS_OCCUPIED: 100
+    IS_FREE: 50
