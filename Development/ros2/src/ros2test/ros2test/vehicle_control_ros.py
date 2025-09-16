@@ -32,6 +32,7 @@ class VehicleControl(Node):
                 ('ENCODER_COUNTS_PER_REV', 720.0),
                 ('WHEEL_RADIUS', 0.033),
                 ('PIN_TO_SPUR_RATIO', 0.09536679536679536),
+                ('VIRTUAL', True),
             ]
         )        
         
@@ -44,6 +45,7 @@ class VehicleControl(Node):
         self.ENCODER_COUNTS_PER_REV = self.get_parameter("ENCODER_COUNTS_PER_REV").value
         self.WHEEL_RADIUS = self.get_parameter("WHEEL_RADIUS").value
         self.PIN_TO_SPUR_RATIO = self.get_parameter("PIN_TO_SPUR_RATIO").value
+        self.VIRTUAL = self.get_parameter("VIRTUAL").value
         
         self.CPS_TO_MPS = (1/(self.ENCODER_COUNTS_PER_REV*4) # motor-speed unit conversion
             * self.PIN_TO_SPUR_RATIO * 2*np.pi * self.WHEEL_RADIUS)
@@ -204,8 +206,14 @@ class VehicleControl(Node):
             self.send_control(0, 0)
             return
 
-        dx = np.cos(self.delta)*0.7
-        dy = np.sin(self.delta)*0.7
+        lookahead_x = x2[(self.stanleyController.wpi + 30)%self.stanleyController.N]
+        lookahead_y = y2[(self.stanleyController.wpi + 30)%self.stanleyController.N]
+        
+        # dx = np.cos(self.delta)*0.7
+        # dy = np.sin(self.delta)*0.7
+        dx = lookahead_x
+        dy = lookahead_y
+
         if self.avoid_obstacle_occupancy_grid(u, dx, dy):
             return  # Skip sending control if obstacle detected
         
@@ -298,14 +306,16 @@ class VehicleControl(Node):
         
         current_pos = np.array(self.local_to_grid(0, 0))
         
-        dx_rot = -dy
-        dy_rot = dx
+        # dx_rot = -dy
+        # dy_rot = dx
+        dx_rot = dx
+        dy_rot = dy
         self.target.setData([dx_rot], [dy_rot])
         self.target2.setData([], [])
 
         goal_pos = np.array(self.local_to_grid(dx_rot, dy_rot))
         target = None
-        MARGIN = 5
+        MARGIN = 4
 
         if self.check_collision(current_pos, goal_pos, margin=MARGIN):
             self.obstacle_detected = True
@@ -424,7 +434,8 @@ class VehicleControl(Node):
 
         ranges = np.array(list(msg.ranges))[::-1] 
         angles = np.linspace(msg.angle_min, msg.angle_max, len(ranges))
-        angles = (angles + np.pi) % (2 * np.pi)
+        if not self.VIRTUAL :
+            angles = (angles + np.pi) % (2 * np.pi)
 
         x = np.sin(angles)*ranges
 
@@ -459,6 +470,7 @@ class VehicleControl(Node):
                 shape[0] * (1 / self.CELLS_PER_METER)
             )
         )
+        QtWidgets.QApplication.instance().processEvents()
 
 def main(args=None):
     rclpy.init(args=args)

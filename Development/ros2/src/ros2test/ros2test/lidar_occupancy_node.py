@@ -17,6 +17,7 @@ class LidarOccupancyNode(Node):
                 ('GRID_HEIGHT_METERS', 3),
                 ('IS_OCCUPIED', 100),
                 ('IS_FREE', 50),
+                ('VIRTUAL', True),
             ]
         )
 
@@ -26,6 +27,7 @@ class LidarOccupancyNode(Node):
         self.GRID_HEIGHT_METERS = self.get_parameter("GRID_HEIGHT_METERS").value
         self.IS_OCCUPIED = self.get_parameter("IS_OCCUPIED").value
         self.IS_FREE = self.get_parameter("IS_FREE").value
+        self.VIRTUAL = self.get_parameter("VIRTUAL").value
 
         self.grid_width = int(self.GRID_WIDTH_METERS * self.CELLS_PER_METER)
         self.grid_height = int(self.GRID_HEIGHT_METERS * self.CELLS_PER_METER)
@@ -43,7 +45,8 @@ class LidarOccupancyNode(Node):
     def scan_callback(self, msg: LaserScan):
         ranges = np.array(list(msg.ranges))[::-1]
         angles = np.linspace(msg.angle_min, msg.angle_max, len(ranges))
-        angles = (angles + np.pi) % (2 * np.pi)
+        if not self.VIRTUAL
+            angles = (angles + np.pi) % (2 * np.pi)
 
         self.populate_occupancy_grid(ranges, angles)
         self.publish_occupancy_grid()

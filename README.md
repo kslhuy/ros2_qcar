@@ -2,7 +2,7 @@
 
 This repository is originally the development environment for ACC Competition 2025. On Ubuntu 24.04, you can move this directory to ```/home/$USER/Documents``` and rename it to ```ACC_Development```. Once relocated and renamed, it'll function as such.
 
-## Fix error keyring when running development container 
+## Setup development container 
 
 Copy file ```.isaac_ros_common-config-quanser``` in ```docker/isaac_ros/config/``` to ```isaac_ros_common/scripts``` and rename it to ```.isaac_ros_common-config```
 
