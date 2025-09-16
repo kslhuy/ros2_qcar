@@ -11,14 +11,14 @@ def generate_launch_description():
     config = os.path.join(
         get_package_share_directory('ros2test'),
         'config',
-        'ekf_launch_config.yaml'
+        'launch_config.yaml'
     )
     
     # Include launch file from qcar2_nodes package
     qcar2_virtual_launch_path = os.path.join(
         get_package_share_directory('qcar2_nodes'),
         'launch',
-        'qcar2_virtual_launch.py'
+        'qcar2_launch.py'
     )
 
     include_qcar2_virtual_launch = IncludeLaunchDescription(
@@ -38,9 +38,18 @@ def generate_launch_description():
         name='vehicle_control_ros',
         parameters=[config]
     )
+
+    lidar_occupancy_node = Node(
+        package='ros2test',
+        executable='lidar_occupancy_node',
+        name='lidar_occupancy_node',
+        parameters=[config]
+    )
+
     # finalize
     ld.add_action(include_qcar2_virtual_launch)
     ld.add_action(ekf)
     ld.add_action(vehicle_control_ros)
+    ld.add_action(lidar_occupancy_node)
 
     return ld

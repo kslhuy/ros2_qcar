@@ -4,7 +4,7 @@ FROM ${BASE_IMAGE}
 # Remove the apt.kitware.com sources because its signatures seem to be out of date.
 # We don't need it anymore as it is only needed for CMake, which is already
 # installed by the upper image layers (BASE_IMAGE) anyways.
-RUN test -f /etc/apt/sources.list.d/kitware.list && rm /etc/apt/sources.list.d/kitware.list
+# RUN test -f /etc/apt/sources.list.d/kitware.list && rm /etc/apt/sources.list.d/kitware.list
 
 # Install all the necessary non-Quanser debian packages
 RUN apt-get update && apt-get install -y \
@@ -25,7 +25,7 @@ RUN apt-get update && apt-get install -y \
     libfreenect-dev \
     && rm -rf /var/lib/apt/lists/*
 
-RUN cp /usr/local/bin/pip3.8 /usr/bin/
+# RUN cp /usr/local/bin/pip3.8 /usr/bin/
 
 # Install debian files from online
 RUN wget --no-cache https://repo.quanser.com/keys/Quanser.pub

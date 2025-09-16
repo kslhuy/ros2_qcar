@@ -10,13 +10,25 @@ RUN test -f /etc/apt/sources.list.d/kitware.list && rm /etc/apt/sources.list.d/k
 # So we need to get the latest one so that we can run apt without errors.
 RUN curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key -o /usr/share/keyrings/ros-archive-keyring.gpg
 
+# Update GPG key signature
+RUN curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key -o /usr/share/keyrings/ros-archive-keyring.gpg
+
+RUN rm -f /etc/apt/sources.list.d/isaac-ros.list \
+    && sed -i '/isaac.download.nvidia.com/d' /etc/apt/sources.list \
+# && wget -qO - https://isaac.download.nvidia.com/isaac-ros/repos.key | sudo apt-key add - \
+# && grep -qxF "deb https://isaac.download.nvidia.com/isaac-ros/release-3 $(lsb_release -cs) release-3.0" /etc/apt/sources.list || \
+# echo "deb https://isaac.download.nvidia.com/isaac-ros/release-3 $(lsb_release -cs) release-3.0" | sudo tee -a /etc/apt/sources.list \
+&& sed -i '/isaac.download.nvidia.com/d' /etc/apt/sources.list || true \
+ && find /etc/apt/sources.list.d -type f -exec sed -i '/isaac.download.nvidia.com/d' {} \; \
+ && rm -f /etc/apt/sources.list.d/isaac-ros.list 
+
 # Install all the necessary non-Quanser debian packages
 RUN apt-get update && apt-get install -y \
     ros-humble-vision-opencv \
-    ros-humble-control-msgs \
+    # ros-humble-control-msgs \
     ros-humble-image-transport \
-    ros-humble-cartographer \
-    ros-humble-cartographer-ros \
+    # ros-humble-cartographer \
+    # ros-humble-cartographer-ros \
     && rm -rf /var/lib/apt/lists/*
 
 # Install system libraries that quanser-sdk depends on
@@ -52,6 +64,12 @@ RUN apt-get update && apt-get install -y \
     quanser-sdk \
     quarc-runtime \
     && rm -rf /var/lib/apt/lists/*
+    
+# Install Python Packages if necessary
+RUN pip3 install -U \
+    pytransform3d \
+    pyqtgraph \
+    matplotlib
 
 # Copy quanser hal and pal folders inside isaac_ros and define environment variable
 COPY ./libraries /home/Quanser/libraries

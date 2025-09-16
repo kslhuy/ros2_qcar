@@ -56,7 +56,7 @@ K_i = 1
 # - nodeSequence: list of nodes from roadmap. Used for trajectory generation.
 enableSteeringControl = True
 K_stanley = 1
-nodeSequence = [10, 4, 20, 10]
+nodeSequence = [10, 4, 10]
 
 #endregion
 # -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
@@ -69,7 +69,7 @@ if enableSteeringControl:
 else:
     initialPose = [0, 0, 0]
 
-calibrate=False
+calibrate=True
 
 # Define the calibration pose
 # Calibration pose is either [0,0,-pi/2] or [0,2,-pi/2]
@@ -89,7 +89,7 @@ signal.signal(signal.SIGINT, sig_handler)
 class SpeedController:
 
     def __init__(self, kp=0, ki=0):
-        self.maxThrottle = 0.3
+        self.maxThrottle = 0.1
 
         self.kp = kp
         self.ki = ki
@@ -189,7 +189,7 @@ def controlLoop():
     qcar = QCar(readMode=1, frequency=controllerUpdateRate)
     if enableSteeringControl or calibrate:
         ekf = QCarEKF(x_0=initialPose)
-        gps = QCarGPS(initialPose=calibrationPose,calibrate=calibrate)
+        gps = QCarGPS(initialPose=initialPose,calibrate=calibrate)
     else:
         gps = memoryview(b'')
     #endregion

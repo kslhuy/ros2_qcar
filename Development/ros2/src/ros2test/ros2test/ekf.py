@@ -21,6 +21,7 @@ class EKF(Node):
                 ('ENCODER_COUNTS_PER_REV', 720.0),
                 ('WHEEL_RADIUS', 0.033),
                 ('PIN_TO_SPUR_RATIO', 0.09536679536679536),
+                ('VIRTUAL', True),
             ]
         )        
         
@@ -29,20 +30,23 @@ class EKF(Node):
         self.ENCODER_COUNTS_PER_REV = self.get_parameter("ENCODER_COUNTS_PER_REV").value
         self.WHEEL_RADIUS = self.get_parameter("WHEEL_RADIUS").value
         self.PIN_TO_SPUR_RATIO = self.get_parameter("PIN_TO_SPUR_RATIO").value
+        self.VIRTUAL = self.get_parameter("VIRTUAL").value
 
         self.CPS_TO_MPS = (1/(self.ENCODER_COUNTS_PER_REV*4) # motor-speed unit conversion
             * self.PIN_TO_SPUR_RATIO * 2*np.pi * self.WHEEL_RADIUS)
         
         roadmap = SDCSRoadMap(leftHandTraffic=False)
         initialPose = roadmap.get_node_pose(self.nodeSequence[0]).squeeze()
-        
-        self.gps = QCarGPS(initialPose=initialPose,calibrate=False)
+        calibrate = True
+        if self.VIRTUAL : 
+            calibrate = False
+        self.gps = QCarGPS(initialPose=initialPose,calibrate=calibrate)
         self.ekf = QCarEKF(x_0=initialPose)
         
         self.sub_imu = self.create_subscription(Imu, '/qcar2_imu', self.imu_callback, 10)
         self.sub_joint = self.create_subscription(JointState, '/qcar2_joint', self.joint_callback, 10)
 
-        self.pub_pose = self.create_publisher(PoseStamped, "/ekf_pose", 10)
+        self.pub_pose = self.create_publisher(PoseStamped, "/ekf_pose", 50)
 
         self.t0 = time.time()
         self.t = 0
