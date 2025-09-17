@@ -45,7 +45,7 @@ class LidarOccupancyNode(Node):
     def scan_callback(self, msg: LaserScan):
         ranges = np.array(list(msg.ranges))[::-1]
         angles = np.linspace(msg.angle_min, msg.angle_max, len(ranges))
-        if not self.VIRTUAL
+        if not self.VIRTUAL:
             angles = (angles + np.pi) % (2 * np.pi)
 
         self.populate_occupancy_grid(ranges, angles)
