@@ -4,7 +4,7 @@ document.addEventListener('DOMContentLoaded', function() {
     console.log('Initializing QCar Visualization...');
     
     // Initialize Plotly graphs
-    initializePlotlyGraphs();
+    // initializePlotlyGraphs();
     
     // Load saved settings
     loadSettings();

@@ -92,8 +92,59 @@
             </div>
         </div>
 
+        <!-- Add this after the existing Node Parameters card -->
+        <div class="col-12 mb-4">
+            <div class="card shadow-sm">
+                <div class="card-header bg-warning text-dark d-flex justify-content-between align-items-center">
+                    <h5 class="card-title mb-0">
+                        <i class="bi bi-broadcast"></i> Topic Subscriptions
+                    </h5>
+                    <button onclick="updateTopicSubscriptionsList()" class="btn btn-sm btn-outline-dark">
+                        <i class="bi bi-arrow-clockwise"></i> Refresh
+                    </button>
+                </div>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-md-6">
+                            <h6>Available Topics for Selected Node:</h6>
+                            <div id="topic-subscription-options" class="mb-3">
+                                <em class="text-muted">Select a node to see available topics</em>
+                            </div>
+                            
+                            <!-- Topic subscription prompt -->
+                            <div id="topic-subscription-prompt" style="display: none;" class="border p-3 rounded bg-light">
+                            </div>
+                        </div>
+                        
+                        <div class="col-md-6">
+                            <h6>Active Subscriptions:</h6>
+                            <div id="active-subscriptions-list">
+                                <em class="text-muted">No active subscriptions</em>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Topic Messages Display -->
+        <div class="col-12 mb-4">
+            <div class="card shadow-sm">
+                <div class="card-header bg-info text-white">
+                    <h5 class="card-title mb-0">
+                        <i class="bi bi-chat-dots"></i> Topic Messages
+                    </h5>
+                </div>
+                <div class="card-body">
+                    <div id="topic-subscriptions-container">
+                        <em class="text-muted">Subscribe to topics above to see messages here</em>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <!-- Plot Controls Row -->
-        <div class="row mb-4">
+        <!-- <div class="row mb-4">
             <div class="col-12">
                 <div class="card shadow-sm">
                     <div class="card-header bg-warning text-dark">
@@ -131,12 +182,12 @@
                     </div>
                 </div>
             </div>
-        </div>
+        </div> -->
 
         <!-- Plots Row -->
         <div class="row">
             <!-- Pose and LIDAR Plots -->
-            <div class="col-lg-6 col-md-12 mb-4">
+            <!-- <div class="col-lg-6 col-md-12 mb-4">
                 <div class="card shadow-sm" id="pose-plot-card">
                     <div class="card-header bg-primary text-white">
                         <h6 class="card-title mb-0">
@@ -160,10 +211,10 @@
                         <div id="lidar-plot" style="height: 400px;"></div>
                     </div>
                 </div>
-            </div>
+            </div> -->
 
             <!-- Occupancy Grid Plot -->
-            <div class="col-12 mb-4">
+            <!-- <div class="col-12 mb-4">
                 <div class="card shadow-sm" id="occupancy-plot-card">
                     <div class="card-header bg-primary text-white">
                         <h6 class="card-title mb-0">
@@ -174,7 +225,7 @@
                         <div id="occupancy-plot" style="height: 500px;"></div>
                     </div>
                 </div>
-            </div>
+            </div> -->
         </div>
     </div>
 
@@ -184,7 +235,7 @@
             <div class="row">
                 <div class="col-md-6">
                     <small>
-                        <i class="bi bi-robot"></i> QCar Visualization Dashboard v2.0
+                        Visualization Dashboard
                     </small>
                 </div>
                 <div class="col-md-6 text-end">

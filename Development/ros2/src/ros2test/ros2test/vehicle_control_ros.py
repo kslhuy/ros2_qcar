@@ -15,7 +15,6 @@ from collections import deque
 from sensor_msgs.msg import LaserScan
 from pynput import keyboard
 from nav_msgs.msg import OccupancyGrid
-from std_msgs.msg import Header
 
 class VehicleControl(Node):
     def __init__(self):
@@ -110,8 +109,6 @@ class VehicleControl(Node):
         self.occupancy_img = pg.ImageItem()
         self.occupancy_img.setZValue(-10)  # Draw under LiDAR points
         vehicle_control_plot.addItem(self.occupancy_img)
-
-        self.occupancy_pub = self.create_publisher(OccupancyGrid, "/occupancy_grid", 10)
                 
         self.L = 3
         self.CELLS_PER_METER = 20
@@ -451,6 +448,8 @@ class VehicleControl(Node):
         # Process the occupancy grid data as needed
         self.occupancy_grid = np.array(msg.data).reshape(msg.info.height, msg.info.width)
         self.update_occupancy_image()
+        QtWidgets.QApplication.instance().processEvents()
+
 
     def update_occupancy_image(self):
         """

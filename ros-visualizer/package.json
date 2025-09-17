@@ -11,7 +11,6 @@
   "description": "",
   "dependencies": {
     "express": "^5.1.0",
-    "rclnodejs": "^1.5.0",
     "socket.io": "^4.8.1"
   }
 }
