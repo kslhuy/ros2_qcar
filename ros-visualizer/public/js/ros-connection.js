@@ -88,16 +88,6 @@ function connectToRobot() {
         // Store last connected timestamp
         localStorage.setItem('last-connected', new Date().toISOString());
         
-        // Debug all parameters after connection
-        setTimeout(() => {
-            if (typeof getAllParametersOrganized === 'function') {
-                getAllParametersOrganized();
-            }
-        }, 2000);
-        
-        // Initialize plots if they are enabled
-        initializeEnabledPlots();
-        
         // Refresh nodes if function exists
         if (typeof refreshNodes === 'function') {
             refreshNodes();
@@ -161,23 +151,6 @@ function updateConnectionStatus(text, color) {
     const detailedStatusElement = document.getElementById('detailed-status');
     if (detailedStatusElement) {
         detailedStatusElement.textContent = text;
-    }
-}
-
-function initializeEnabledPlots() {
-    // Check if plot control elements exist before checking their state
-    const showPose = document.getElementById('show-pose');
-    const showLidar = document.getElementById('show-lidar');
-    const showOccupancy = document.getElementById('show-occupancy');
-    
-    if (showPose && showPose.checked && typeof initializePosePlot === 'function') {
-        initializePosePlot();
-    }
-    if (showLidar && showLidar.checked && typeof initializeLidarPlot === 'function') {
-        initializeLidarPlot();
-    }
-    if (showOccupancy && showOccupancy.checked && typeof initializeOccupancyPlot === 'function') {
-        initializeOccupancyPlot();
     }
 }
 

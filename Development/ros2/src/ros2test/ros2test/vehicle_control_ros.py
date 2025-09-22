@@ -49,7 +49,7 @@ class VehicleControl(Node):
         self.CPS_TO_MPS = (1/(self.ENCODER_COUNTS_PER_REV*4) # motor-speed unit conversion
             * self.PIN_TO_SPUR_RATIO * 2*np.pi * self.WHEEL_RADIUS)
         
-        roadmap = SDCSRoadMap(leftHandTraffic=False)
+        roadmap = SDCSRoadMap()
         self.waypointSequence = roadmap.generate_path(self.nodeSequence)
         # self.waypointSequence = self.waypointSequence[:, :self.waypointSequence.shape[1] // 2]
         
@@ -77,9 +77,7 @@ class VehicleControl(Node):
             ki=self.K_i
         )
         self.stanleyController = StanleyController(
-            waypoints=self.waypointSequence,
-            k=self.K_stanley,
-            cyclic=False
+            waypoints=self.waypointSequence
         )
         
         self.t0 = time.time()
@@ -97,19 +95,21 @@ class VehicleControl(Node):
 
         squareSize = 10
 
-        vehicle_control_plot.setXRange(-squareSize, squareSize)
+        # vehicle_control_plot.setXRange(-squareSize, squareSize)
 
-        vehicle_control_plot.setYRange(-squareSize, squareSize)
+        # vehicle_control_plot.setYRange(-squareSize, squareSize)
 
         self.lidarData = vehicle_control_plot.plot([], [], pen=None, symbol='o', symbolBrush='b', symbolPen=None, symbolSize=2)
         self.detected = vehicle_control_plot.plot([], [], pen=None, symbol='o', symbolBrush='g', symbolPen=None, symbolSize=2)
         self.target = vehicle_control_plot.plot([], [], pen=None, symbol='o', symbolBrush='b', symbolPen=None, symbolSize=10)
         self.target2 = vehicle_control_plot.plot([], [], pen=None, symbol='o', symbolBrush='y', symbolPen=None, symbolSize=10)
-        # Occupancy grid (added as image item)
+        self.pos = vehicle_control_plot.plot([], [], pen=None, symbol='o', symbolBrush='g', symbolPen=None, symbolSize=10)
+        self.pos.setData([0], [0])
         self.occupancy_img = pg.ImageItem()
         self.occupancy_img.setZValue(-10)  # Draw under LiDAR points
         vehicle_control_plot.addItem(self.occupancy_img)
                 
+        
         self.L = 3
         self.CELLS_PER_METER = 20
         self.grid_width_meters = 6
@@ -203,8 +203,8 @@ class VehicleControl(Node):
             self.send_control(0, 0)
             return
 
-        lookahead_x = x2[(self.stanleyController.wpi + 30)%self.stanleyController.N]
-        lookahead_y = y2[(self.stanleyController.wpi + 30)%self.stanleyController.N]
+        lookahead_x = x2[(self.stanleyController.wpi + 40)%self.stanleyController.N]
+        lookahead_y = y2[(self.stanleyController.wpi + 40)%self.stanleyController.N]
         
         # dx = np.cos(self.delta)*0.7
         # dy = np.sin(self.delta)*0.7

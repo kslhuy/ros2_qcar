@@ -171,11 +171,6 @@ function getDisplaySettings() {
 document.addEventListener('DOMContentLoaded', function() {
     loadAllSettings();
     
-    // Navigation
-    document.getElementById('back-btn').addEventListener('click', function() {
-        window.location.href = '/';
-    });
-    
     // Connection actions
     document.getElementById('test-connection-btn').addEventListener('click', testConnection);
     

@@ -1,140 +1,229 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>QCar Settings</title>
+    
+    <!-- Bootstrap CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css" rel="stylesheet">
+    
+    <!-- External Libraries -->
     <script src="https://cdn.jsdelivr.net/npm/roslib@1/build/roslib.min.js"></script>
+    
+    <!-- Custom CSS -->
     <link rel="stylesheet" href="/css/styles.css">
-    <link rel="stylesheet" href="/css/settings.css">
 </head>
-<body>
-    <div class="settings-container">
-        <header class="settings-header">
-            <h1>Settings</h1>
-            <div class="header-actions">
-                <button id="back-btn" class="btn btn-secondary">← Back to Dashboard</button>
+<body class="bg-light">
+    <!-- Navigation -->
+    <nav class="navbar navbar-expand-lg navbar-dark bg-primary shadow-sm">
+        <div class="container-fluid">
+            <span class="navbar-brand mb-0 h1">
+                <i class="bi bi-gear"></i> Settings
+            </span>
+            
+            <!-- Back to Dashboard Button -->
+            <div class="navbar-nav">
+                <a href="/" class="btn btn-outline-light">
+                    <i class="bi bi-arrow-left"></i> Back to Dashboard
+                </a>
             </div>
-        </header>
+        </div>
+    </nav>
 
-        <div class="settings-content">
+    <div class="container-fluid py-4">
+        <div class="row">
             <!-- Connection Settings -->
-            <section class="settings-section">
-                <h2>🔗 Connection Settings</h2>
-                <div class="settings-grid">
-                    <div class="setting-group">
-                        <label for="robot-ip">Robot IP Address:</label>
-                        <input type="text" id="robot-ip" placeholder="192.168.1.100" value="localhost">
-                        <small>IP address of the robot running ROS2</small>
+            <div class="col-lg-6 col-md-12 mb-4">
+                <div class="card h-100 shadow-sm">
+                    <div class="card-header bg-success text-white">
+                        <h5 class="card-title mb-0">
+                            <i class="bi bi-wifi"></i> Connection Settings
+                        </h5>
                     </div>
-                    
-                    <div class="setting-group">
-                        <label for="rosbridge-port">ROSBridge Port:</label>
-                        <input type="number" id="rosbridge-port" placeholder="9090" value="9090" min="1" max="65535">
-                        <small>Port number for ROSBridge WebSocket server</small>
-                    </div>
-                    
-                    <div class="setting-group">
-                        <label>Current Connection URL:</label>
-                        <div class="connection-url">
-                            <code id="current-url">ws://localhost:9090</code>
+                    <div class="card-body">
+                        <div class="mb-3">
+                            <label for="robot-ip" class="form-label">Robot IP Address:</label>
+                            <input type="text" id="robot-ip" class="form-control" placeholder="192.168.1.100" value="localhost">
+                            <div class="form-text">IP address of the robot running ROS2</div>
                         </div>
-                    </div>
-                    
-                    <div class="setting-group">
-                        <label>Connection Actions:</label>
-                        <div class="button-group">
-                            <button id="test-connection-btn" class="btn btn-info">Test Connection</button>
+                        
+                        <div class="mb-3">
+                            <label for="rosbridge-port" class="form-label">ROSBridge Port:</label>
+                            <input type="number" id="rosbridge-port" class="form-control" placeholder="9090" value="9090" min="1" max="65535">
+                            <div class="form-text">Port number for ROSBridge WebSocket server</div>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label class="form-label">Current Connection URL:</label>
+                            <div class="alert alert-info mb-0">
+                                <code id="current-url">ws://localhost:9090</code>
+                            </div>
+                        </div>
+                        
+                        <div class="d-grid">
+                            <button id="test-connection-btn" class="btn btn-info">
+                                <i class="bi bi-router"></i> Test Connection
+                            </button>
                         </div>
                     </div>
                 </div>
-            </section>
+            </div>
 
             <!-- Node Information Display Settings -->
-            <section class="settings-section">
-                <h2>📋 Node Information Display</h2>
-                <p class="section-description">Configure what information to show when viewing node details</p>
-                <div class="settings-grid">
-                    <div class="setting-group">
-                        <label class="checkbox-label">
-                            <input type="checkbox" id="show-subscribed-topics" checked>
-                            <span class="checkmark"></span>
-                            Show Subscribed Topics
-                        </label>
-                        <small>Display topics that the node subscribes to (📥)</small>
+            <div class="col-lg-6 col-md-12 mb-4">
+                <div class="card h-100 shadow-sm">
+                    <div class="card-header bg-info text-white">
+                        <h5 class="card-title mb-0">
+                            <i class="bi bi-list-ul"></i> Node Information Display
+                        </h5>
                     </div>
-                    
-                    <div class="setting-group">
-                        <label class="checkbox-label">
-                            <input type="checkbox" id="show-published-topics" checked>
-                            <span class="checkmark"></span>
-                            Show Published Topics
-                        </label>
-                        <small>Display topics that the node publishes to (📤)</small>
-                    </div>
-                    
-                    <div class="setting-group">
-                        <label class="checkbox-label">
-                            <input type="checkbox" id="show-services" checked>
-                            <span class="checkmark"></span>
-                            Show Services
-                        </label>
-                        <small>Display services provided by the node (⚙️)</small>
-                    </div>
-                    
-                    <div class="setting-group">
-                        <label class="checkbox-label">
-                            <input type="checkbox" id="show-parameters" checked>
-                            <span class="checkmark"></span>
-                            Show Parameters
-                        </label>
-                        <small>Display editable parameters for the node (🔧)</small>
-                    </div>
-                </div>
-            </section>
-
-            <!-- Parameter Display Settings -->
-            <section class="settings-section">
-                <h2>🔧 Parameter Display Settings</h2>
-                <div class="settings-grid">
-                    <div class="setting-group">
-                        <label for="parameter-update-mode">Parameter Update Mode:</label>
-                        <select id="parameter-update-mode">
-                            <option value="manual">Manual - Click save button to update</option>
-                            <option value="auto">Auto - Update immediately on change</option>
-                            <option value="batch">Batch - Save all changes at once</option>
-                        </select>
-                        <small>How parameter updates are handled</small>
-                    </div>
-                    
-                    <div class="setting-group">
-                        <label class="checkbox-label">
-                            <input type="checkbox" id="show-parameter-types" checked>
-                            <span class="checkmark"></span>
-                            Show Parameter Types
-                        </label>
-                        <small>Display parameter type information (string, int, bool, etc.)</small>
-                    </div>
-                    
-                    <div class="setting-group">
-                        <label class="checkbox-label">
-                            <input type="checkbox" id="confirm-parameter-changes" checked>
-                            <span class="checkmark"></span>
-                            Confirm Parameter Changes
-                        </label>
-                        <small>Show confirmation before updating critical parameters</small>
+                    <div class="card-body">
+                        <p class="text-muted mb-3">Configure what information to show when viewing node details</p>
+                        
+                        <div class="mb-3">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" id="show-subscribed-topics" checked>
+                                <label class="form-check-label" for="show-subscribed-topics">
+                                    <i class="bi bi-arrow-down-circle"></i> Show Subscribed Topics
+                                </label>
+                            </div>
+                            <div class="form-text">Display topics that the node subscribes to (📥)</div>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" id="show-published-topics" checked>
+                                <label class="form-check-label" for="show-published-topics">
+                                    <i class="bi bi-arrow-up-circle"></i> Show Published Topics
+                                </label>
+                            </div>
+                            <div class="form-text">Display topics that the node publishes to (📤)</div>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" id="show-services" checked>
+                                <label class="form-check-label" for="show-services">
+                                    <i class="bi bi-tools"></i> Show Services
+                                </label>
+                            </div>
+                            <div class="form-text">Display services provided by the node (⚙️)</div>
+                        </div>
+                        
+                        <div class="mb-0">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" id="show-parameters" checked>
+                                <label class="form-check-label" for="show-parameters">
+                                    <i class="bi bi-sliders"></i> Show Parameters
+                                </label>
+                            </div>
+                            <div class="form-text">Display editable parameters for the node (🔧)</div>
+                        </div>
                     </div>
                 </div>
-            </section>
+            </div>
         </div>
 
-        <footer class="settings-footer">
-            <div class="footer-actions">
-                <button id="reset-settings-btn" class="btn btn-warning">Reset to Defaults</button>
-                <button id="export-settings-btn" class="btn btn-secondary">Export Settings</button>
-                <button id="save-settings-btn" class="btn btn-success">Save Settings</button>
+        <div class="row">
+            <!-- Parameter Display Settings -->
+            <div class="col-lg-8 col-md-12 mb-4">
+                <div class="card shadow-sm">
+                    <div class="card-header bg-warning text-dark">
+                        <h5 class="card-title mb-0">
+                            <i class="bi bi-wrench"></i> Parameter Display Settings
+                        </h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label for="parameter-update-mode" class="form-label">Parameter Update Mode:</label>
+                                    <select id="parameter-update-mode" class="form-select">
+                                        <option value="manual">Manual - Click save button to update</option>
+                                        <option value="auto">Auto - Update immediately on change</option>
+                                        <option value="batch">Batch - Save all changes at once</option>
+                                    </select>
+                                    <div class="form-text">How parameter updates are handled</div>
+                                </div>
+                            </div>
+                            
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label for="max-parameters-display" class="form-label">Max Parameters to Display:</label>
+                                    <input type="number" id="max-parameters-display" class="form-control" value="50" min="10" max="200">
+                                    <div class="form-text">Limit number of parameters shown per node</div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <div class="form-check form-switch">
+                                        <input class="form-check-input" type="checkbox" id="show-parameter-types" checked>
+                                        <label class="form-check-label" for="show-parameter-types">
+                                            <i class="bi bi-tag"></i> Show Parameter Types
+                                        </label>
+                                    </div>
+                                    <div class="form-text">Display parameter type information (string, int, bool, etc.)</div>
+                                </div>
+                            </div>
+                            
+                            <div class="col-md-6">
+                                <div class="mb-0">
+                                    <div class="form-check form-switch">
+                                        <input class="form-check-input" type="checkbox" id="confirm-parameter-changes" checked>
+                                        <label class="form-check-label" for="confirm-parameter-changes">
+                                            <i class="bi bi-shield-check"></i> Confirm Parameter Changes
+                                        </label>
+                                    </div>
+                                    <div class="form-text">Show confirmation before updating critical parameters</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
             </div>
-        </footer>
+
+            <!-- Actions Panel -->
+            <div class="col-lg-4 col-md-12 mb-4">
+                <div class="card shadow-sm">
+                    <div class="card-header bg-secondary text-white">
+                        <h5 class="card-title mb-0">
+                            <i class="bi bi-lightning"></i> Actions
+                        </h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="d-grid gap-2">
+                            <button id="save-settings-btn" class="btn btn-success">
+                                <i class="bi bi-check-circle"></i> Save Settings
+                            </button>
+                            <button id="reset-settings-btn" class="btn btn-warning">
+                                <i class="bi bi-arrow-clockwise"></i> Reset to Defaults
+                            </button>
+                            <button id="export-settings-btn" class="btn btn-outline-secondary">
+                                <i class="bi bi-download"></i> Export Settings
+                            </button>
+                        </div>
+                        
+                        <hr>
+                        
+                        <div class="alert alert-info mb-0">
+                            <i class="bi bi-info-circle"></i>
+                            <strong>Tip:</strong> Settings are automatically saved to your browser's local storage.
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
     </div>
 
+    <!-- Bootstrap JS -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    
+    <!-- Custom Scripts -->
     <script src="/js/config.js"></script>
     <script src="/js/settings-page.js"></script>
 </body>
