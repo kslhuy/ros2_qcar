@@ -8,60 +8,9 @@ function setupEventListeners() {
     if (connectBtn) connectBtn.addEventListener('click', connectToRobot);
     if (disconnectBtn) disconnectBtn.addEventListener('click', disconnectFromRobot);
     
-    // Plot control event listeners
-    // setupPlotControlListeners();
-    
     // System info event listeners
     document.getElementById('refresh-nodes').addEventListener('click', refreshNodes);
-    document.getElementById('node-select').addEventListener('change', function() {
-        const selectedNode = this.value;
-        getNodeParameters(selectedNode);
-    });
 }
-
-// function setupPlotControlListeners() {
-//     document.getElementById('show-pose').addEventListener('change', function() {
-//         const plotCard = document.getElementById('pose-plot-card');
-//         if (this.checked) {
-//             plotCard.classList.remove('plot-card-hidden');
-//             if (isConnected) initializePosePlot();
-//         } else {
-//             plotCard.classList.add('plot-card-hidden');
-//             if (poseListener) {
-//                 poseListener.unsubscribe();
-//                 poseListener = null;
-//             }
-//         }
-//     });
-
-//     document.getElementById('show-lidar').addEventListener('change', function() {
-//         const plotCard = document.getElementById('lidar-plot-card');
-//         if (this.checked) {
-//             plotCard.classList.remove('plot-card-hidden');
-//             if (isConnected) initializeLidarPlot();
-//         } else {
-//             plotCard.classList.add('plot-card-hidden');
-//             if (scanListener) {
-//                 scanListener.unsubscribe();
-//                 scanListener = null;
-//             }
-//         }
-//     });
-
-//     document.getElementById('show-occupancy').addEventListener('change', function() {
-//         const plotCard = document.getElementById('occupancy-plot-card');
-//         if (this.checked) {
-//             plotCard.classList.remove('plot-card-hidden');
-//             if (isConnected) initializeOccupancyPlot();
-//         } else {
-//             plotCard.classList.add('plot-card-hidden');
-//             if (occupancyListener) {
-//                 occupancyListener.unsubscribe();
-//                 occupancyListener = null;
-//             }
-//         }
-//     });
-// }
 
 function updateConnectionStatus(text, color) {
     const statusElement = document.getElementById('connection-status');

@@ -112,11 +112,41 @@ button:hover {
     font-family: monospace;
     font-size: 0.9em;
     transition: all 0.2s ease;
+    cursor: pointer;
+    user-select: none;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
 }
 
 .node-item:hover {
     background: #e9ecef;
     transform: translateX(2px);
+    border-left-color: #0056b3;
+}
+
+.node-item:hover .bi-chevron-right {
+    transform: translateX(2px);
+}
+
+.node-item.active {
+    background: #d1ecf1;
+    border-left-color: #0c5460;
+    color: #0c5460;
+    font-weight: 600;
+}
+
+.node-item.active:hover {
+    background: #bee5eb;
+}
+
+.node-item .bi-chevron-right {
+    transition: transform 0.2s ease;
+    opacity: 0.6;
+}
+
+.node-item.active .bi-chevron-right {
+    opacity: 1;
 }
 
 .param-item {
