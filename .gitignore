@@ -8,8 +8,10 @@ __pycache__/
 # Log files
 *.log
 logs/
-Development/fleet_framwork/logs/
-Development/fleet_framwork/data_logs/
+
+Development/ros2/build/
+Development/ros2/install/
+Development/ros2/log/
 # docker/libraries/resources/pretrained_models
 docker/libraries/resources/pretrained_models/
 docker/libraries/resources/pretrained_models/yolov8s-seg.engine

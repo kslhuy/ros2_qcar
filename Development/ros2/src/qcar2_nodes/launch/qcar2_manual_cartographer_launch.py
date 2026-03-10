@@ -28,7 +28,7 @@ def generate_launch_description():
 
     qcar2_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([os.path.join(
-            get_package_share_directory('qcar2_nodes'), 'launch', 'qcar2_manual_drive.py')]
+            get_package_share_directory('qcar2_nodes'), 'launch', 'qcar2_manual_drive_launch.py')]
         )
     )
 
