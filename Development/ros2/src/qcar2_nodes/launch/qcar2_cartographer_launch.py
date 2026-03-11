@@ -7,6 +7,7 @@ from ament_index_python.packages import get_package_share_directory
 
 from launch import LaunchDescription
 from launch.actions import (IncludeLaunchDescription, DeclareLaunchArgument)
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import (PathJoinSubstitution, LaunchConfiguration)
 
@@ -15,6 +16,7 @@ from launch_ros.substitutions import FindPackageShare
 
 def generate_launch_description():    
     use_sim = LaunchConfiguration('use_sim')
+    provide_occupancy_grid = LaunchConfiguration('provide_occupancy_grid')
 
     cartographer_config_dir = PathJoinSubstitution(
         [
@@ -57,6 +59,11 @@ def generate_launch_description():
             default_value='1.0',
             description='Publishing period')
     
+    provide_occupancy_grid_la = DeclareLaunchArgument(
+            'provide_occupancy_grid',
+            default_value='true',
+            description='Whether to publish the cartographer occupancy grid map')
+    
     cartographer_node = Node(
             package='cartographer_ros',
             executable='cartographer_node',
@@ -69,6 +76,7 @@ def generate_launch_description():
             package='cartographer_ros',
             executable='cartographer_occupancy_grid_node',
             output='screen',
+            condition=IfCondition(provide_occupancy_grid),
             parameters=[{'use_sim_time': use_sim}],
             arguments=['-resolution', resolution, '-publish_period_sec', publish_period_sec])
     
@@ -78,6 +86,7 @@ def generate_launch_description():
         use_sim_la,
         resolution_la,
         publish_period_sec_la,
+        provide_occupancy_grid_la,
         cartographer_node,
         cartographer_occupancy_grid_node,
         qcar2_to_lidar_tf_node,

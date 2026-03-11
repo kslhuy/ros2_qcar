@@ -38,6 +38,7 @@ setup(
             'test_parameter_updates = ros2test.test_parameter_updates:main',
             'lidar_occupancy_node = ros2test.lidar_occupancy_node:main',
             'waypoint_alignment_helper = ros2test.waypoint_alignment_helper:main',
+            'vehicle_main_ros_qcar = ros2test.multi_vehicle_RealCar.vehicle_main_ros_qcar:main',
         ],
     },
 )

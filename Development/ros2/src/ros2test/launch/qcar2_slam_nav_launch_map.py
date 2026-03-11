@@ -19,12 +19,16 @@ def generate_launch_description():
     nav2_dir = get_package_share_directory('nav2_bringup')
     launch_dir = os.path.join(nav2_dir, 'launch')
 
-    # Include the qbot_platform cartographer launch files
+    # Cartographer always runs: it is the sole publisher of the odom->base_link TF
+    # (provide_odom_frame = true in qcar2_2d.lua).
+    # provide_occupancy_grid is tied to the slam flag: when slam=False the AMCL
+    # map_server loads the pre-built map, so we must NOT let Cartographer also
+    # publish a fresh /map or it will overwrite the saved map.
     qcar2_cartographer_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([os.path.join(
             get_package_share_directory('qcar2_nodes'), 'launch', 'qcar2_cartographer_launch.py')]
         ),
-        condition=IfCondition(LaunchConfiguration('slam'))
+        launch_arguments={'provide_occupancy_grid': LaunchConfiguration('slam')}.items()
     )
 
     # Create the launch configuration variables
@@ -158,9 +162,6 @@ def generate_launch_description():
     # Create the launch description and populate
     ld = LaunchDescription([qcar2_nav2_converter])
 
-    # Load the QBot Platform Cartographer launch file
-    ld.add_action(qcar2_cartographer_launch)
-
     # Set environment variables
     ld.add_action(stdout_linebuf_envvar)
 
@@ -175,6 +176,9 @@ def generate_launch_description():
     ld.add_action(declare_use_composition_cmd)
     ld.add_action(declare_use_respawn_cmd)
     ld.add_action(declare_log_level_cmd)
+
+    # Cartographer (always on) provides odom frame; add after declarations
+    ld.add_action(qcar2_cartographer_launch)
 
     # Add the actions to launch all of the navigation nodes
     ld.add_action(bringup_cmd_group)

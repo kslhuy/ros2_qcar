@@ -1,0 +1,59 @@
+# Local Estimator Configuration
+# Default parameters for the local state estimators used by VehicleObserver
+# Place this file under qcar/Observer/ and load it when starting observers.
+
+local_estimator_type: ekf # local_estimator_type: Which local estimator to use.
+                        # Options: 'ekf', 'luenberger', 'neural_luenberger'
+
+# Plotting configuration
+enable_plotting: false # enable_plotting: Controls real-time visualization.
+                        # true: Opens Matplotlib/MultiScope windows to show real-time plots of state, error, etc.
+                        # false: No windows are opened.
+enable_recording: false # enable_recording: Controls data logging to CSV.
+                        # true: Logs data to scope_recordings/ (e.g., local_V0_120000.csv).
+                        # false: No data is logged to these files.
+recording_overwrite: true # recording_overwrite:
+                        # true: Overwrites the file (e.g., locl_V0.csv)
+                        # false: Creates a new timestamped file every run (e.g., local_V0_123456.csv)
+plotting:
+  fps: 30 # fps: Refresh rate for the plots.
+  time_window: 20.0 # time_window: How much history (in seconds) to show on the moving plots.
+  save_only: true # save_only: If enable_plotting is true and this is true, it runs in "headless" mode (no window, but still processes the scope logic, useful if you wanted to save video frames or verify logic without GUI).
+
+
+# Local estimator defaults
+local:
+  # ---------------------------------------------------------------------
+  # EKF estimator defaults
+  # ---------------------------------------------------------------------
+  ekf:
+    use_qcar_ekf: true  # Whether to use QCarEKF (if available)
+
+  # ---------------------------------------------------------------------
+  # Luenberger estimator defaults
+  # ---------------------------------------------------------------------
+  luenberger:
+    observer_gain: 0.5  # Observer gain (0-1, higher = more aggressive correction)
+
+
+
+  # ---------------------------------------------------------------------
+  # Neural Luenberger estimator
+  # ---------------------------------------------------------------------
+  # Full configuration is in: LocalNeuralObs/2LayerObs/neural_obs_params.yaml
+  # Runtime overrides can be passed via estimator_params in initialize_local_estimator()
+  neural_luenberger: {}
+
+# Example override (when loading config into VehicleObserver):
+# vehicle_observer_config:
+#   observer:
+#     local_estimator_type: neural_luenberger
+#     local:
+#       neural_luenberger:
+#         learning_rate: 0.01
+#         batch_size: 5
+#         load_pretrained: true
+#         # Enable two-layer architecture with PI observer
+#         use_uio: true
+#         loss_type: 'composite_uio'
+#         uio_type: 'pi'  # Use PI observer from old system
