@@ -16,6 +16,7 @@ from nav2_common.launch import RewrittenYaml
 def generate_launch_description():
     # Get the launch directory
     bringup_dir = get_package_share_directory('qcar2_nodes')
+    ros2test_dir = get_package_share_directory('ros2test')
     nav2_dir = get_package_share_directory('nav2_bringup')
     launch_dir = os.path.join(nav2_dir, 'launch')
 
@@ -42,6 +43,12 @@ def generate_launch_description():
     use_composition = LaunchConfiguration('use_composition')
     use_respawn = LaunchConfiguration('use_respawn')
     log_level = LaunchConfiguration('log_level')
+    sdc_map_x = LaunchConfiguration('sdc_map_x')
+    sdc_map_y = LaunchConfiguration('sdc_map_y')
+    sdc_map_z = LaunchConfiguration('sdc_map_z')
+    sdc_map_yaw = LaunchConfiguration('sdc_map_yaw')
+    sdc_map_pitch = LaunchConfiguration('sdc_map_pitch')
+    sdc_map_roll = LaunchConfiguration('sdc_map_roll')
 
     remappings = [('/tf', 'tf'),
                   ('/tf_static', 'tf_static')]
@@ -86,7 +93,7 @@ def generate_launch_description():
 
     declare_map_yaml_file_cmd = DeclareLaunchArgument(
         'map',
-        default_value='/home/nvidia/bib_cran.yaml',
+        default_value=os.path.join(ros2test_dir, 'map', 'bib_cran.yaml'),
         description='Full path to map yaml file to load when slam is disabled')
 
     declare_autostart_cmd = DeclareLaunchArgument(
@@ -104,6 +111,37 @@ def generate_launch_description():
     declare_log_level_cmd = DeclareLaunchArgument(
         'log_level', default_value='info',
         description='log level')
+
+    declare_sdc_map_x_cmd = DeclareLaunchArgument(
+        'sdc_map_x', default_value='-1.6000',
+        description='Static TF translation x for SDCQcar -> map')
+    declare_sdc_map_y_cmd = DeclareLaunchArgument(
+        'sdc_map_y', default_value='0.1000',
+        description='Static TF translation y for SDCQcar -> map')
+    declare_sdc_map_z_cmd = DeclareLaunchArgument(
+        'sdc_map_z', default_value='0',
+        description='Static TF translation z for SDCQcar -> map')
+    declare_sdc_map_yaw_cmd = DeclareLaunchArgument(
+        'sdc_map_yaw', default_value='-1.5708',
+        description='Static TF yaw (rad) for SDCQcar -> map')
+    declare_sdc_map_pitch_cmd = DeclareLaunchArgument(
+        'sdc_map_pitch', default_value='0',
+        description='Static TF pitch (rad) for SDCQcar -> map')
+    declare_sdc_map_roll_cmd = DeclareLaunchArgument(
+        'sdc_map_roll', default_value='0',
+        description='Static TF roll (rad) for SDCQcar -> map')
+
+    sdcqcar_to_map = Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        name='sdcqcar_to_map',
+        arguments=[
+            sdc_map_x, sdc_map_y, sdc_map_z,
+            sdc_map_yaw, sdc_map_pitch, sdc_map_roll,
+            'SDCQcar', 'map',
+        ],
+        output='screen',
+    )
 
     # Specify the actions
     bringup_cmd_group = GroupAction([
@@ -176,6 +214,15 @@ def generate_launch_description():
     ld.add_action(declare_use_composition_cmd)
     ld.add_action(declare_use_respawn_cmd)
     ld.add_action(declare_log_level_cmd)
+    ld.add_action(declare_sdc_map_x_cmd)
+    ld.add_action(declare_sdc_map_y_cmd)
+    ld.add_action(declare_sdc_map_z_cmd)
+    ld.add_action(declare_sdc_map_yaw_cmd)
+    ld.add_action(declare_sdc_map_pitch_cmd)
+    ld.add_action(declare_sdc_map_roll_cmd)
+
+    # SDCQcar -> map static TF
+    ld.add_action(sdcqcar_to_map)
 
     # Cartographer (always on) provides odom frame; add after declarations
     ld.add_action(qcar2_cartographer_launch)

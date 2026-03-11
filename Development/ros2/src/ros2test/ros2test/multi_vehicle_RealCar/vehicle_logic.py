@@ -50,6 +50,7 @@ class VehicleLogic:
         # vehicle_id: Connection/network ID (used for Ground Station communication, file naming, etc.)
         self.vehicle_id = config.network.car_id
         self.vehicle_type = config.vehicle.vehicle_type
+        self.programme_type = config.vehicle.programme_type
         self.is_physical_qcar = IS_PHYSICAL_QCAR
 
         # self.Is_Limo_Car = config.network.car_id

@@ -16,7 +16,7 @@ Architecture reminder:
 
 Usage:
 1. Launch your map (AMCL or map_server) so /map is visible
-2. Run: ros2 run limo_nav_huy_test waypoint_alignment_helper
+2. Run: ros2 run ros2test waypoint_alignment_helper
 3. Open RViz, Fixed Frame = 'map', add /map and /waypoints_test
 4. Use keyboard to adjust until waypoints align with physical roads
 5. Press 'c' to get the static TF command for your launch file

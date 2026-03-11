@@ -112,6 +112,7 @@ class VehicleConfig:
     """Vehicle-specific configuration"""
 
     vehicle_type: str = "Qcar"  # "Qcar" or "Limo"
+    programme_type: str = "Ros"  # "Ros" or "Py"
     probing: bool = False  # Enable YOLO perception system
 
     def __post_init__(self):

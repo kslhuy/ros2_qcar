@@ -27,7 +27,14 @@ class ROSQCarAdapter:
         self._gyroscope = np.zeros(3)
         self._accelerometer = np.zeros(3)
         self.motorEncoder = []
-        self.CPS_TO_MPS = getattr(ros_node, "CPS_TO_MPS", 1.0)
+        
+        # Calculate default CPS to MPS conversion for physical QCar
+        ENCODER_COUNTS_PER_REV = getattr(ros_node, "ENCODER_COUNTS_PER_REV", 720.0)
+        WHEEL_RADIUS = getattr(ros_node, "WHEEL_RADIUS", 0.033)
+        PIN_TO_SPUR_RATIO = getattr(ros_node, "PIN_TO_SPUR_RATIO", 0.09536679536679536)
+        default_cps_to_mps = (1 / (ENCODER_COUNTS_PER_REV * 4) * PIN_TO_SPUR_RATIO * 2 * math.pi * WHEEL_RADIUS)
+        
+        self.CPS_TO_MPS = getattr(ros_node, "CPS_TO_MPS", default_cps_to_mps)
         self.motor_pub = ros_node.motor_pub
 
     def read(self):
@@ -63,7 +70,7 @@ class ROSQCarAdapter:
         
     def update_motor_tach(self, value):
         """Update motor tachometer (speed in m/s from ROS odometry)."""
-        self._motor_tach = float(value)
+        self._motor_tach = float(value) * self.CPS_TO_MPS
         self._last_update = time.time()
         
     def update_gyro(self, gyro_z):

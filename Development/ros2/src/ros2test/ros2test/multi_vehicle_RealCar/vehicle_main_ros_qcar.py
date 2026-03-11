@@ -18,16 +18,21 @@ import numpy as np
 from threading import Event
 import math
 import yaml
+from pathlib import Path
 
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import BatteryState, JointState, Imu
 from geometry_msgs.msg import PoseStamped
-from nav_msgs.msg import Path
+from nav_msgs.msg import Path as NavPath
 from qcar2_interfaces.msg import MotorCommands
 from std_msgs.msg import Float32MultiArray
 from tf2_ros import Buffer, TransformListener
 from scipy.spatial.transform import Rotation as R
+try:
+    from ament_index_python.packages import get_package_share_directory
+except Exception:
+    get_package_share_directory = None
 
 # ===== ADD PATH TO QCAR FOLDER =====
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -56,6 +61,32 @@ from command_types import CommandType
 from QcarAdaptRos.qcarRos import ROSQCarAdapter, ROSGPSAdapterQCar
 
 
+def _resolve_default_config_path():
+    """Return (config_path, source_hint) for default vehicle config discovery."""
+    module_dir = Path(current_dir).resolve()
+    candidates = [
+        ("fleet_config.yaml", module_dir / "fleet_config.yaml"),
+        ("config_vehicle_main.yaml", module_dir / "config_vehicle_main.yaml"),
+    ]
+
+    if get_package_share_directory is not None:
+        try:
+            share_dir = Path(get_package_share_directory("ros2test")).resolve()
+            candidates.extend([
+                ("share/config/fleet_config.yaml", share_dir / "config" / "fleet_config.yaml"),
+                ("share/config/config_vehicle_main.yaml", share_dir / "config" / "config_vehicle_main.yaml"),
+            ])
+        except Exception:
+            pass
+
+    for source_hint, path in candidates:
+        if path.exists():
+            return str(path), source_hint
+
+    # Keep previous fallback behavior.
+    return str(Path(qcar_path) / "qcar" / "config_vehicle_main.yaml"), "default fallback"
+
+
 # ===== MAIN ROS NODE (QCar Style) =====
 class VehicleControlFullSystemQCar(Node):
     """ROS 2 wrapper for complete VehicleLogic system - QCar coordinate style"""
@@ -75,7 +106,8 @@ class VehicleControlFullSystemQCar(Node):
             namespace='',
             parameters=[
                 ('car_id', 3),
-                ('vehicle_type', 'Limo'),
+                ('vehicle_type', 'Qcar'),
+                ('programme_type', 'Ros'),
                 ('v_ref', 0.6),
                 ('controller_rate', 100),
                 ('calibrate', False),
@@ -99,6 +131,7 @@ class VehicleControlFullSystemQCar(Node):
         
         car_id = self.get_parameter('car_id').value
         vehicle_type = self.get_parameter('vehicle_type').value
+        programme_type = self.get_parameter('programme_type').value
         v_ref = self.get_parameter('v_ref').value
         controller_rate = self.get_parameter('controller_rate').value
         calibrate = self.get_parameter('calibrate').value
@@ -178,7 +211,7 @@ class VehicleControlFullSystemQCar(Node):
         )
         # Subscribe to QCar-style path topic
         self.path_sub = self.create_subscription(
-            Path, '/plan_qcar', self._path_callback, 10
+            NavPath, '/plan_qcar', self._path_callback, 10
         )
 
         if enable_sdc_initialpose_listener:
@@ -201,15 +234,9 @@ class VehicleControlFullSystemQCar(Node):
         if config_file and config_file.strip():
             config_path = config_file.strip()
         else:
-            fleet_config_path = os.path.join(qcar_path, 'qcar', 'fleet_config.yaml')
-            local_config_path = os.path.join(qcar_path, 'qcar', 'config_vehicle_main.yaml')
-            if os.path.exists(fleet_config_path):
-                config_path = fleet_config_path
-                self.get_logger().info("No config_file provided; using fleet_config.yaml")
-            else:
-                config_path = local_config_path
-                self.get_logger().info(
-                    "No config_file provided; fleet_config.yaml not found, using config_vehicle_main.yaml")
+            config_path, config_source = _resolve_default_config_path()
+            self.get_logger().info(
+                f"No config_file provided; selected default config source: {config_source}")
         
         if os.path.exists(config_path):
             if config_path.endswith('.json'):
@@ -268,7 +295,7 @@ class VehicleControlFullSystemQCar(Node):
         self.vehicle_logic = VehicleLogic(config, self.kill_event)
         
         # Replace hardware interfaces with ROS adapters
-        self.vehicle_logic.qcar = self.qcar_adapter
+        # self.vehicle_logic.qcar = self.qcar_adapter
         self.vehicle_logic.gps = self.gps_adapter
         self.vehicle_logic.v_ref = v_ref
         
@@ -355,7 +382,7 @@ class VehicleControlFullSystemQCar(Node):
         self.qcar_adapter.update_gyro(gyro_z)
         self.qcar_adapter.update_accel(accel_x, msg.linear_acceleration.y, msg.linear_acceleration.z)
         
-    def _path_callback(self, msg: Path):
+    def _path_callback(self, msg: NavPath):
         """Receive path from waypoints_qcar node (in SDCQcar frame)"""
         if len(msg.poses) < 2:
             self.get_logger().warning("Received path with less than 2 waypoints, ignoring")
