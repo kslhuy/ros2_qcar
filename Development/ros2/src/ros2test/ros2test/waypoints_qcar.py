@@ -23,7 +23,7 @@ import numpy as np
 
 class WaypointsQCar(Node):
     def __init__(self):
-        super().__init__('waypoint_qcar')
+        super().__init__('waypoints_qcar')
 
         # Node sequence for SDCSRoadMap path generation
         self.declare_parameters(

@@ -295,7 +295,7 @@ class VehicleControlFullSystemQCar(Node):
         self.vehicle_logic = VehicleLogic(config, self.kill_event)
         
         # Replace hardware interfaces with ROS adapters
-        # self.vehicle_logic.qcar = self.qcar_adapter
+        self.vehicle_logic.qcar = self.qcar_adapter
         self.vehicle_logic.gps = self.gps_adapter
         self.vehicle_logic.v_ref = v_ref
         

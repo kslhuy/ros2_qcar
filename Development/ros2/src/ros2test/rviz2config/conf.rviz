@@ -11,7 +11,6 @@ Panels:
         - /Marker2
         - /Marker3
         - /LaserScan1
-        - /LaserScan1/Status1
         - /MarkerArray2
       Splitter Ratio: 0.5
     Tree Height: 549
@@ -164,7 +163,7 @@ Visualization Manager:
       Axis: Z
       Channel Name: intensity
       Class: rviz_default_plugins/LaserScan
-      Color: 0; 255; 0
+      Color: 239; 41; 41
       Color Transformer: FlatColor
       Decay Time: 0
       Enabled: true
@@ -177,7 +176,7 @@ Visualization Manager:
       Position Transformer: XYZ
       Selectable: true
       Size (Pixels): 3
-      Size (m): 0.009999999776482582
+      Size (m): 0.05000000074505806
       Style: Flat Squares
       Topic:
         Depth: 5
@@ -229,6 +228,34 @@ Visualization Manager:
         Reliability Policy: Reliable
         Value: /path_test
       Value: true
+    - Alpha: 1
+      Buffer Length: 1
+      Class: rviz_default_plugins/Path
+      Color: 25; 255; 0
+      Enabled: true
+      Head Diameter: 0.30000001192092896
+      Head Length: 0.20000000298023224
+      Length: 0.30000001192092896
+      Line Style: Lines
+      Line Width: 0.029999999329447746
+      Name: Path
+      Offset:
+        X: 0
+        Y: 0
+        Z: 0
+      Pose Color: 255; 85; 255
+      Pose Style: None
+      Radius: 0.029999999329447746
+      Shaft Diameter: 0.10000000149011612
+      Shaft Length: 0.10000000149011612
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        Filter size: 10
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /plan_qcar
+      Value: true
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48
@@ -275,16 +302,16 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 8.31734561920166
+      Distance: 15.717913627624512
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
       Focal Point:
-        X: 0.655606210231781
-        Y: -0.5306103229522705
-        Z: 0.032853372395038605
+        X: 0.29662784934043884
+        Y: 0.8179782629013062
+        Z: 0.0328533761203289
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false

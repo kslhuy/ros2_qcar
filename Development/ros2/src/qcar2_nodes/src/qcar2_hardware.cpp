@@ -73,6 +73,9 @@ public:
         param_desc.additional_constraints = "This parameter allows you to set the LEDs for the QCar2";
         this->declare_parameter("led_color_id", 0, param_desc);
 
+        param_desc.description = "Speed control mode: 'velocity' (PD) or 'throttle' (Raw PWM)";
+        param_desc.additional_constraints = "This parameter allows you to bypass the built-in PD speed controller.";
+        this->declare_parameter("speed_control_mode", "velocity", param_desc);
 
         // Parameters initialization
         try
@@ -87,6 +90,7 @@ public:
 
         // Actually get the parameters
         std::string device_type = this->get_parameter("device_type").as_string();
+        speed_control_mode_ = this->get_parameter("speed_control_mode").as_string();
         std::string uri_param;
         std::string LED_uri_param;
 
@@ -348,29 +352,41 @@ private:
         // method used for constructing a PD speed controller for QCar2
         //Convert desired linear speed to desired motor speed
 
-        if (desired_speed != 0)
-        {
-            measured_speed = (joint_speed_measured/(720.0*4.0))*((13.0*19.0)/(70.0*30.0))*(2.0*M_PI)*0.033;
-            speed_error = desired_speed-measured_speed;
-            motor_speed_cmd = motor_speed_cmd+ (speed_error*kp+((speed_error-prior_speed_error)/delta_time.seconds())*kd)*0.0047/battery_voltage;
-            prior_speed_error = speed_error;
+        if (speed_control_mode_ == "throttle") {
+            // Bypass PD controller completely
+            motor_speed_cmd = desired_speed; // desired_speed holds the raw PWM value from motor_command_callback
 
-            // clip pwm command to not exceed 0.3
-            if (motor_speed_cmd>0.3)
-                motor_speed_cmd =0.3;
-
-            // check for motor deadband at PWM ~|0.03|
-            if (motor_speed_cmd<0.01 && motor_speed_cmd >=0 && desired_speed > 0)
-                motor_speed_cmd =0.01+motor_speed_cmd;
-            if (motor_speed_cmd<0.0 && motor_speed_cmd >=-0.01&& desired_speed < 0)
-                motor_speed_cmd =-0.01+motor_speed_cmd;
-
-            if (motor_speed_cmd<-0.3)
+            // Still apply basic hardware limits (clip to +/- 0.3)
+            if (motor_speed_cmd > 0.3)
+                motor_speed_cmd = 0.3;
+            if (motor_speed_cmd < -0.3)
                 motor_speed_cmd = -0.3;
-        }
-        else
-        {
-            motor_speed_cmd = 0;
+        } else {
+            // Velocity mode (PD controller)
+            if (desired_speed != 0)
+            {
+                measured_speed = (joint_speed_measured/(720.0*4.0))*((13.0*19.0)/(70.0*30.0))*(2.0*M_PI)*0.033;
+                speed_error = desired_speed-measured_speed;
+                motor_speed_cmd = motor_speed_cmd+ (speed_error*kp+((speed_error-prior_speed_error)/delta_time.seconds())*kd)*0.0047/battery_voltage;
+                prior_speed_error = speed_error;
+
+                // clip pwm command to not exceed 0.3
+                if (motor_speed_cmd>0.3)
+                    motor_speed_cmd =0.3;
+
+                // check for motor deadband at PWM ~|0.03|
+                if (motor_speed_cmd<0.01 && motor_speed_cmd >=0 && desired_speed > 0)
+                    motor_speed_cmd =0.01+motor_speed_cmd;
+                if (motor_speed_cmd<0.0 && motor_speed_cmd >=-0.01&& desired_speed < 0)
+                    motor_speed_cmd =-0.01+motor_speed_cmd;
+
+                if (motor_speed_cmd<-0.3)
+                    motor_speed_cmd = -0.3;
+            }
+            else
+            {
+                motor_speed_cmd = 0;
+            }
         }
 
         // motor channel mapping
@@ -673,6 +689,11 @@ private:
                 LED_Set();
                 }
             }
+            else if (parameter.get_name().compare("speed_control_mode") == 0)
+            {
+                speed_control_mode_ = parameter.as_string();
+                RCLCPP_INFO(this->get_logger(), "Speed control mode changed to %s", speed_control_mode_.c_str());
+            }
             else
             {
                 result.successful = false;
@@ -748,6 +769,7 @@ private:
     t_double temp_bw = 4000;
     t_double steer_bias = 0.05;
     std::string device_type = "physical";
+    std::string speed_control_mode_ = "velocity";
 };
 
 int main(int argc, char * argv[])

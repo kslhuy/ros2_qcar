@@ -109,14 +109,14 @@ def generate_launch_description():
 
     # QCar-style Waypoints
     waypoints_qcar = Node(
-        package='limo_nav_huy_test',
+        package='ros2test',
         executable='waypoints_qcar',
         name='waypoints_qcar',
         parameters=[{
             'nodeSequence': [10, 2, 4, 6, 8, 10],
         }],
         output='screen'
-    ),
+    )
 
     map_server_node = LifecycleNode(
         package='nav2_map_server',
