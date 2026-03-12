@@ -43,6 +43,12 @@ ros2 run ros2test vehicle_main_ros_qcar --ros-args \
   -p vehicle_type:=Qcar
 ```
 
+Copy-safe one-line equivalent:
+
+```bash
+ros2 run ros2test vehicle_main_ros_qcar --ros-args -p car_id:=3 -p host:=192.168.137.1 -p v_ref:=0.6 -p vehicle_type:=Qcar
+```
+
 ## Option 2: Localization only with a `.pbstream` map
 
 Use this when you want Cartographer localization without the full Nav2 map launch.
@@ -68,7 +74,16 @@ ros2 run ros2test vehicle_main_ros_qcar --ros-args \
   -p vehicle_type:=Qcar
 ```
 
+Copy-safe one-line equivalent:
+
+```bash
+ros2 run ros2test vehicle_main_ros_qcar --ros-args -p car_id:=3 -p host:=192.168.137.1 -p v_ref:=0.6 -p vehicle_type:=Qcar
+```
+
 ## Notes
+
+- For multi-line shell commands, each trailing `\` must be the last character on the line.
+  Do not add spaces after `\`, or ROS may fail with `UnknownROSArgsError`.
 
 - Do not launch `qcar2_launch.py` separately when using either launch file above.
   Those launch files already include it.

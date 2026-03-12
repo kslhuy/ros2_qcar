@@ -16,6 +16,7 @@ def generate_launch_description():
     cartographer_config_dir = os.path.join(qcar2_share, 'config')
     rviz_config = os.path.join(ros2test_share, 'rviz2config', 'conf.rviz')
     default_map_yaml = os.path.join(ros2test_share, 'map', 'bib_cran.yaml')
+    default_pbstream = os.path.join(ros2test_share, 'map', 'qcar_map.pbstream')
 
     pbstream = LaunchConfiguration('pbstream')
     map_yaml = LaunchConfiguration('map_yaml')
@@ -153,8 +154,8 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument(
             'pbstream',
-            default_value='',
-            description='Path to Cartographer .pbstream map to load (empty string disables loading)',
+            default_value=default_pbstream,
+            description='Path to Cartographer .pbstream map to load (set empty string to disable loading)',
         ),
         DeclareLaunchArgument(
             'map_yaml',
