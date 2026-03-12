@@ -767,7 +767,7 @@ private:
     t_double accel_ord  = 3.0;
 
     t_double temp_bw = 4000;
-    t_double steer_bias = 0.05;
+    t_double steer_bias = -0.05;
     std::string device_type = "physical";
     std::string speed_control_mode_ = "velocity";
 };

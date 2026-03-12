@@ -29,7 +29,7 @@ setup(
     entry_points={
         'console_scripts': [
             "test = ros2test.test_node:main",
-            "keyboard = ros2test.keyboard:main",
+            "keyboard = ros2test.olds.keyboard:main",
             "lane_follower = ros2test.lane_follower:main",
             "nav_goal_sender = ros2test.nav_goal_sender:main",
             "odom = ros2test.odom:main",
