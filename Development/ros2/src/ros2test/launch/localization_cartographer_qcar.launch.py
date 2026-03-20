@@ -24,6 +24,10 @@ def generate_launch_description():
     publish_period_sec = LaunchConfiguration('publish_period_sec')
     resolution = LaunchConfiguration('resolution')
     run_rviz = LaunchConfiguration('run_rviz')
+    use_static_map_server = LaunchConfiguration('use_static_map_server')
+    cartographer_map_topic = LaunchConfiguration('cartographer_map_topic')
+    cartographer_min_log_level = LaunchConfiguration('cartographer_min_log_level')
+    rviz_log_level = LaunchConfiguration('rviz_log_level')
     sdc_map_x = LaunchConfiguration('sdc_map_x')
     sdc_map_y = LaunchConfiguration('sdc_map_y')
     sdc_map_z = LaunchConfiguration('sdc_map_z')
@@ -51,6 +55,7 @@ def generate_launch_description():
         executable='cartographer_node',
         name='cartographer_node',
         output='screen',
+        additional_env={'GLOG_minloglevel': cartographer_min_log_level},
         parameters=[{'use_sim_time': use_sim_time}],
         arguments=[
             '-configuration_directory', cartographer_config_dir,
@@ -68,6 +73,7 @@ def generate_launch_description():
         executable='cartographer_node',
         name='cartographer_node',
         output='screen',
+        additional_env={'GLOG_minloglevel': cartographer_min_log_level},
         parameters=[{'use_sim_time': use_sim_time}],
         arguments=[
             '-configuration_directory', cartographer_config_dir,
@@ -87,7 +93,7 @@ def generate_launch_description():
         parameters=[{'use_sim_time': use_sim_time}],
         arguments=['-resolution', resolution, '-publish_period_sec', publish_period_sec],
         remappings=[
-            ('map', '/cartographer_map'),
+            ('map', cartographer_map_topic),
         ],
     )
 
@@ -124,6 +130,7 @@ def generate_launch_description():
         executable='map_server',
         name='map_server',
         namespace='',
+        condition=IfCondition(use_static_map_server),
         output='screen',
         parameters=[{
             'yaml_filename': map_yaml,
@@ -135,6 +142,7 @@ def generate_launch_description():
         package='nav2_lifecycle_manager',
         executable='lifecycle_manager',
         name='lifecycle_manager_map',
+        condition=IfCondition(use_static_map_server),
         output='screen',
         parameters=[{
             'autostart': True,
@@ -148,7 +156,7 @@ def generate_launch_description():
         executable='rviz2',
         name='rviz2',
         output='screen',
-        arguments=['-d', rviz_config],
+        arguments=['-d', rviz_config, '--ros-args', '--log-level', rviz_log_level],
     )
 
     return LaunchDescription([
@@ -183,8 +191,28 @@ def generate_launch_description():
             description='Launch RViz if true',
         ),
         DeclareLaunchArgument(
+            'use_static_map_server',
+            default_value='false',
+            description='If true, start nav2 map_server from YAML. Keep false to use Cartographer as /map source.',
+        ),
+        DeclareLaunchArgument(
+            'cartographer_map_topic',
+            default_value='/map',
+            description='Topic name for Cartographer occupancy grid output (use /map for Nav2).',
+        ),
+        DeclareLaunchArgument(
+            'cartographer_min_log_level',
+            default_value='1',
+            description='Cartographer glog level: 0=INFO, 1=WARNING, 2=ERROR, 3=FATAL',
+        ),
+        DeclareLaunchArgument(
+            'rviz_log_level',
+            default_value='warn',
+            description='RViz ROS log level (debug, info, warn, error, fatal)',
+        ),
+        DeclareLaunchArgument(
             'sdc_map_x',
-            default_value='-1.6000',
+            default_value='-1.7000',
             description='Static TF translation x for SDCQcar -> map',
         ),
         DeclareLaunchArgument(
@@ -199,7 +227,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'sdc_map_yaw',
-            default_value='-1.5708',
+            default_value='1.9635',
             description='Static TF yaw (rad) for SDCQcar -> map',
         ),
         DeclareLaunchArgument(

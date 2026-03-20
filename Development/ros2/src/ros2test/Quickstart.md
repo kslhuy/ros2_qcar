@@ -8,6 +8,7 @@ The current package name is `ros2test`. Older examples that use
 ```bash
 cd /home/nvidia/Documents/qcar2/Development/ros2
 colcon build --packages-select qcar2_nodes 
+colcon build --packages-select ros2test 
 
 colcon build --packages-select ros2test --symlink-install
 source install/setup.bash
@@ -25,7 +26,6 @@ This launch file starts:
 
 ```bash
 cd /home/nvidia/Documents/qcar2/Development/ros2
-source install/setup.bash
 ros2 launch ros2test qcar2_slam_nav_launch_map.py
 ```
 
@@ -36,14 +36,8 @@ Run the vehicle controller separately:
 ```bash
 cd /home/nvidia/Documents/qcar2/Development/ros2
 source install/setup.bash
-ros2 run ros2test vehicle_main_ros_qcar --ros-args \
-  -p car_id:=3 \
-  -p host:=192.168.137.1 \
-  -p v_ref:=0.6 \
-  -p vehicle_type:=Qcar
-```
 
-Copy-safe one-line equivalent:
+```
 
 ```bash
 ros2 run ros2test vehicle_main_ros_qcar --ros-args -p car_id:=3 -p host:=192.168.137.1 -p v_ref:=0.6 -p vehicle_type:=Qcar
@@ -58,8 +52,8 @@ Use this when you want Cartographer localization without the full Nav2 map launc
 ```bash
 cd /home/nvidia/Documents/qcar2/Development/ros2
 source install/setup.bash
-ros2 launch ros2test localization_cartographer_qcar.launch.py \
-  pbstream:=/absolute/path/to/your_map.pbstream
+ros2 launch ros2test localization_cartographer_qcar.launch.py
+  # pbstream:=/absolute/path/to/your_map.pbstream
 ```
 
 ### Terminal 2
@@ -67,11 +61,7 @@ ros2 launch ros2test localization_cartographer_qcar.launch.py \
 ```bash
 cd /home/nvidia/Documents/qcar2/Development/ros2
 source install/setup.bash
-ros2 run ros2test vehicle_main_ros_qcar --ros-args \
-  -p car_id:=3 \
-  -p host:=192.168.137.1 \
-  -p v_ref:=0.6 \
-  -p vehicle_type:=Qcar
+
 ```
 
 Copy-safe one-line equivalent:
@@ -82,20 +72,14 @@ ros2 run ros2test vehicle_main_ros_qcar --ros-args -p car_id:=3 -p host:=192.168
 
 ## Notes
 
-- For multi-line shell commands, each trailing `\` must be the last character on the line.
-  Do not add spaces after `\`, or ROS may fail with `UnknownROSArgsError`.
 
-- Do not launch `qcar2_launch.py` separately when using either launch file above.
-  Those launch files already include it.
-- `vehicle_main_ros_qcar` is not part of the launch files, so it must be run in
-  a separate terminal.
-- If the `SDCQcar -> map` alignment is wrong, override these launch arguments in
-  `localization_cartographer_qcar.launch.py`:
-
+### Terminal 3 — Run the alignment helper
 ```bash
-sdc_map_x:=... sdc_map_y:=... sdc_map_z:=... \
-sdc_map_yaw:=... sdc_map_pitch:=... sdc_map_roll:=...
+colcon build --packages-select ros2test --symlink-install
+
+source install/setup.bash
+
+os2 run ros2test waypoint_alignment_helper --ros-args -p sdc_map_x:=-1.8000 -p sdc_map_y:=0.1000 -p sdc_map_z:=0 -p sdc_map_yaw:=1.7017 -p sdc_map_pitch:=0 -p sdc_map_roll:=0
+# ros2 run ros2test waypoint_alignment_helper
 ```
 
-- The default map for `qcar2_slam_nav_launch_map.py` is the packaged file
-  `ros2test/map/my_map.yaml`.

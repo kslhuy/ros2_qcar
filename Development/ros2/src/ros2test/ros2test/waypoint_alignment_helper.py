@@ -40,12 +40,39 @@ import termios
 class WaypointAlignmentHelper(Node):
     def __init__(self):
         super().__init__('waypoint_alignment_helper')
-        
-        # Current transformation parameters
-        self.translation_x = 0.0
-        self.translation_y = 0.0
-        self.rotation_deg = 90.0
+
+        # Accept launch-style TF parameters and convert to calibration format.
+        # TF inputs represent SDCQcar -> map static transform.
+        self.declare_parameter('sdc_map_x', -1.7000)
+        self.declare_parameter('sdc_map_y', 0.1000)
+        self.declare_parameter('sdc_map_z', 0.0)
+        self.declare_parameter('sdc_map_yaw', 1.9635)
+        self.declare_parameter('sdc_map_pitch', 0.0)
+        self.declare_parameter('sdc_map_roll', 0.0)
+
+        sdc_map_x = float(self.get_parameter('sdc_map_x').value)
+        sdc_map_y = float(self.get_parameter('sdc_map_y').value)
+        sdc_map_z = float(self.get_parameter('sdc_map_z').value)
+        sdc_map_yaw = float(self.get_parameter('sdc_map_yaw').value)
+        sdc_map_pitch = float(self.get_parameter('sdc_map_pitch').value)
+        sdc_map_roll = float(self.get_parameter('sdc_map_roll').value)
+
+        # Current transformation parameters (visual calibration convention)
+        self.translation_x = -sdc_map_x
+        self.translation_y = -sdc_map_y
+        self.rotation_deg = -np.degrees(sdc_map_yaw)
         self.scale = 1.0
+
+        # Keep the seeded pose for reset.
+        self.initial_translation_x = self.translation_x
+        self.initial_translation_y = self.translation_y
+        self.initial_rotation_deg = self.rotation_deg
+        self.initial_scale = self.scale
+
+        if abs(sdc_map_z) > 1e-6 or abs(sdc_map_pitch) > 1e-6 or abs(sdc_map_roll) > 1e-6:
+            self.get_logger().warn(
+                'sdc_map_z/pitch/roll are accepted for compatibility but ignored by 2D calibration.'
+            )
 
         # Adjustable step sizes (can be tuned live)
         self.translation_step = 0.1
@@ -55,7 +82,7 @@ class WaypointAlignmentHelper(Node):
         # SDCSRoadMap setup
         self.nodeSequence = [10, 2, 4, 6, 8, 10]
         self.roadmap = SDCSRoadMap(leftHandTraffic=False, useSmallMap=True)
-        self.waypointSequence = self.roadmap.generate_path(self.nodeSequence) * 0.975
+        self.waypointSequence = self.roadmap.generate_path(self.nodeSequence)
         self.waypoints_x = self.waypointSequence[0]
         self.waypoints_y = self.waypointSequence[1]
         
@@ -76,6 +103,9 @@ class WaypointAlignmentHelper(Node):
         print("\n" + "="*70)
         print("INTERACTIVE CONTROLS:")
         print("="*70)
+        print("Startup params (same names as launch file):")
+        print("  --ros-args -p sdc_map_x:=... -p sdc_map_y:=... -p sdc_map_yaw:=...")
+        print()
         print("Translation (move waypoints):")
         print("  w/s : Move Y +/- translation_step")
         print("  a/d : Move X -/+ translation_step")
@@ -174,14 +204,14 @@ class WaypointAlignmentHelper(Node):
         print("\n" + "="*70 + "\n")
     
     def reset_params(self):
-        self.translation_x = 0.0
-        self.translation_y = 0.0
-        self.rotation_deg = 90.0
-        self.scale = 1.0
+        self.translation_x = self.initial_translation_x
+        self.translation_y = self.initial_translation_y
+        self.rotation_deg = self.initial_rotation_deg
+        self.scale = self.initial_scale
         self.translation_step = 0.1
         self.rotation_step = 5.0
         self.scale_step = 0.05
-        self.get_logger().info("Parameters reset to defaults")
+        self.get_logger().info("Parameters reset to startup values")
         self.print_current_params()
     
     def publish_waypoints(self):

@@ -12,6 +12,7 @@ Panels:
         - /Marker3
         - /LaserScan1
         - /MarkerArray2
+        - /Path2
       Splitter Ratio: 0.5
     Tree Height: 549
   - Class: rviz_common/Selection
@@ -65,7 +66,7 @@ Visualization Manager:
         Filter size: 10
         History Policy: Keep Last
         Reliability Policy: Reliable
-        Value: /map
+        Value: /cartographer_map
       Update Topic:
         Depth: 5
         Durability Policy: Volatile
@@ -309,18 +310,18 @@ Visualization Manager:
         Swap Stereo Eyes: false
         Value: false
       Focal Point:
-        X: 0.29662784934043884
-        Y: 0.8179782629013062
-        Z: 0.0328533761203289
+        X: -0.21671321988105774
+        Y: -0.6460132002830505
+        Z: -0.024825291708111763
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 1.5047963857650757
+      Pitch: 1.5147963762283325
       Target Frame: <Fixed Frame>
       Value: Orbit (rviz)
-      Yaw: 3.4017484188079834
+      Yaw: 0.2517490088939667
     Saved: ~
 Window Geometry:
   Displays:
@@ -338,5 +339,5 @@ Window Geometry:
   Views:
     collapsed: false
   Width: 1200
-  X: 663
-  Y: 136
+  X: 720
+  Y: 112

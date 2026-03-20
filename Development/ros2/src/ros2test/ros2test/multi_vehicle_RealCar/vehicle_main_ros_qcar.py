@@ -408,8 +408,8 @@ class VehicleControlFullSystemQCar(Node):
 
     def _publish_pending_initial_pose_when_ready(self):
         """Publish queued /initialpose once AMCL subscriber is available."""
-        if self.pending_initial_pose_xyz_deg is None:
-            return
+        # if self.pending_initial_pose_xyz_deg is None:
+        #     return
 
         if len(self.get_subscriptions_info_by_topic('/initialpose')) == 0:
             if not self.pending_initial_pose_wait_logged:

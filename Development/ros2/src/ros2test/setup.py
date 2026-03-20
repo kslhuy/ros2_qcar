@@ -3,21 +3,33 @@ import os
 from glob import glob
 package_name = 'ros2test'
 
+
+# Function to recursively get all files in a directory
+def package_files(directory):
+    paths = []
+    for (path, directories, filenames) in os.walk(directory):
+        for filename in filenames:
+            paths.append(os.path.join('..', path, filename))
+    return paths
+
+# Get all files from multi_vehicle_RealCar directory
+extra_files = package_files('ros2test/multi_vehicle_RealCar')
+
 setup(
     name=package_name,
     version='0.0.0',
     packages=find_packages(exclude=['test']),
+    package_data={
+        package_name: ['multi_vehicle_RealCar/**/*', 'multi_vehicle_RealCar/**/**/*'],
+    },
     data_files=[
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
         (os.path.join('share', package_name, 'launch'), glob('launch/*.py')),
         (os.path.join('share', package_name, 'config'), glob('config/*.yaml')),
-        (os.path.join('share', package_name, 'config'),
-            glob('ros2test/multi_vehicle_RealCar/*.yaml')),
         (os.path.join('share', package_name, 'map'), glob('map/*')),
         (os.path.join('share', package_name, 'rviz2config'), glob('rviz2config/*')),
-        (os.path.join('share', package_name), ['Quickstart.md']),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
