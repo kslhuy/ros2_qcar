@@ -36,7 +36,6 @@ Run the vehicle controller separately:
 ```bash
 cd /home/nvidia/Documents/qcar2/Development/ros2
 source install/setup.bash
-
 ```
 
 ```bash
@@ -79,7 +78,7 @@ colcon build --packages-select ros2test --symlink-install
 
 source install/setup.bash
 
-os2 run ros2test waypoint_alignment_helper --ros-args -p sdc_map_x:=-1.8000 -p sdc_map_y:=0.1000 -p sdc_map_z:=0 -p sdc_map_yaw:=1.7017 -p sdc_map_pitch:=0 -p sdc_map_roll:=0
+ros2 run ros2test waypoint_alignment_helper --ros-args -p sdc_map_x:=-1.8000 -p sdc_map_y:=0.1000 -p sdc_map_z:=0.0 -p sdc_map_yaw:=1.7017 -p sdc_map_pitch:=0.0 -p sdc_map_roll:=0.0
 # ros2 run ros2test waypoint_alignment_helper
 ```
 

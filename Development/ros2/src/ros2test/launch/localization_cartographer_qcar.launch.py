@@ -15,8 +15,9 @@ def generate_launch_description():
 
     cartographer_config_dir = os.path.join(qcar2_share, 'config')
     rviz_config = os.path.join(ros2test_share, 'rviz2config', 'conf.rviz')
-    default_map_yaml = os.path.join(ros2test_share, 'map', 'bib_cran.yaml')
-    default_pbstream = os.path.join(ros2test_share, 'map', 'qcar_map.pbstream')
+    default_map_yaml = '/home/nvidia/Documents/qcar2/Development/ros2/src/ros2test/map/cran_lab.yaml'
+    default_pbstream = '/home/nvidia/Documents/qcar2/Development/ros2/src/ros2test/map/cran_lab.pbstream'
+    default_cartographer_config_basename = 'qcar2_2d_localization.lua'
 
     pbstream = LaunchConfiguration('pbstream')
     map_yaml = LaunchConfiguration('map_yaml')
@@ -27,7 +28,11 @@ def generate_launch_description():
     use_static_map_server = LaunchConfiguration('use_static_map_server')
     cartographer_map_topic = LaunchConfiguration('cartographer_map_topic')
     cartographer_min_log_level = LaunchConfiguration('cartographer_min_log_level')
+    cartographer_config_basename = LaunchConfiguration('cartographer_config_basename')
+    load_frozen_state = LaunchConfiguration('load_frozen_state')
     rviz_log_level = LaunchConfiguration('rviz_log_level')
+    publish_sdc_map_tf = LaunchConfiguration('publish_sdc_map_tf')
+    enable_external_waypoint_publisher = LaunchConfiguration('enable_external_waypoint_publisher')
     sdc_map_x = LaunchConfiguration('sdc_map_x')
     sdc_map_y = LaunchConfiguration('sdc_map_y')
     sdc_map_z = LaunchConfiguration('sdc_map_z')
@@ -36,7 +41,8 @@ def generate_launch_description():
     sdc_map_roll = LaunchConfiguration('sdc_map_roll')
 
     # ['-1.6000', '0.1000', '0', '-1.5708', '0', '0', 'SDCQcar', 'map'],
-
+    #   -1.0000 -0.7000 0 \
+    #   5.4716 0 0 \
     qcar2_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(qcar2_share, 'launch', 'qcar2_launch.py')
@@ -59,8 +65,9 @@ def generate_launch_description():
         parameters=[{'use_sim_time': use_sim_time}],
         arguments=[
             '-configuration_directory', cartographer_config_dir,
-            '-configuration_basename', 'qcar2_2d.lua',
+            '-configuration_basename', cartographer_config_basename,
             '-load_state_filename', pbstream,
+            '-load_frozen_state', load_frozen_state,
         ],
         remappings=[
             ('scan', '/scan'),
@@ -77,7 +84,7 @@ def generate_launch_description():
         parameters=[{'use_sim_time': use_sim_time}],
         arguments=[
             '-configuration_directory', cartographer_config_dir,
-            '-configuration_basename', 'qcar2_2d.lua',
+            '-configuration_basename', cartographer_config_basename,
         ],
         remappings=[
             ('scan', '/scan'),
@@ -90,6 +97,7 @@ def generate_launch_description():
         executable='cartographer_occupancy_grid_node',
         name='cartographer_occupancy_grid_node',
         output='screen',
+        condition=UnlessCondition(use_static_map_server),
         parameters=[{'use_sim_time': use_sim_time}],
         arguments=['-resolution', resolution, '-publish_period_sec', publish_period_sec],
         remappings=[
@@ -101,6 +109,7 @@ def generate_launch_description():
         package='tf2_ros',
         executable='static_transform_publisher',
         name='sdcqcar_to_map',
+        condition=IfCondition(publish_sdc_map_tf),
         arguments=[
             sdc_map_x,
             sdc_map_y,
@@ -114,16 +123,17 @@ def generate_launch_description():
         output='screen',
     )
 
-    # QCar-style Waypoints
-    waypoints_qcar = Node(
-        package='ros2test',
-        executable='waypoints_qcar',
-        name='waypoints_qcar',
-        parameters=[{
-            'nodeSequence': [10, 2, 4, 6, 8, 10],
-        }],
-        output='screen'
-    )
+    # # QCar-style Waypoints
+    # waypoints_qcar = Node(
+    #     package='ros2test',
+    #     executable='waypoints_qcar',
+    #     name='waypoints_qcar',
+    #     condition=IfCondition(enable_external_waypoint_publisher),
+    #     parameters=[{
+    #         'nodeSequence': [10, 2, 4, 6, 8, 10],
+    #     }],
+    #     output='screen'
+    # )
 
     map_server_node = LifecycleNode(
         package='nav2_map_server',
@@ -206,18 +216,38 @@ def generate_launch_description():
             description='Cartographer glog level: 0=INFO, 1=WARNING, 2=ERROR, 3=FATAL',
         ),
         DeclareLaunchArgument(
+            'cartographer_config_basename',
+            default_value=default_cartographer_config_basename,
+            description='Cartographer Lua config basename. Use qcar2_2d_localization.lua for localization, qcar2_2d.lua for mapping.',
+        ),
+        DeclareLaunchArgument(
+            'load_frozen_state',
+            default_value='true',
+            description='Keep loaded .pbstream trajectory frozen so Cartographer does not deform the saved map.',
+        ),
+        DeclareLaunchArgument(
             'rviz_log_level',
             default_value='warn',
             description='RViz ROS log level (debug, info, warn, error, fatal)',
         ),
         DeclareLaunchArgument(
+            'publish_sdc_map_tf',
+            default_value='false',
+            description='Fallback static SDCQcar->map TF publisher. Keep false when vehicle system publishes runtime SDCQcar->map TF.',
+        ),
+        DeclareLaunchArgument(
+            'enable_external_waypoint_publisher',
+            default_value='false',
+            description='Start external waypoints_qcar publisher. Keep false to use internal path generation in vehicle system.',
+        ),
+        DeclareLaunchArgument(
             'sdc_map_x',
-            default_value='-1.7000',
+            default_value='-1.0000',
             description='Static TF translation x for SDCQcar -> map',
         ),
         DeclareLaunchArgument(
             'sdc_map_y',
-            default_value='0.1000',
+            default_value='-0.7000',
             description='Static TF translation y for SDCQcar -> map',
         ),
         DeclareLaunchArgument(
@@ -227,7 +257,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'sdc_map_yaw',
-            default_value='1.9635',
+            default_value='5.4716',
             description='Static TF yaw (rad) for SDCQcar -> map',
         ),
         DeclareLaunchArgument(
@@ -248,6 +278,6 @@ def generate_launch_description():
         sdcqcar_to_map,
         map_server_node,
         lifecycle_manager,
-        waypoints_qcar,
+        # waypoints_qcar,
         rviz_node,
     ])

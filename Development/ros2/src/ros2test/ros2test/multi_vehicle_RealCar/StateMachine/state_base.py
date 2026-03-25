@@ -504,6 +504,12 @@ class StateBase:
                 self._handle_online_sysid_params(params)
                 return None
 
+            if category == "sdc_map_tf":
+                if not isinstance(params, dict):
+                    params = {}
+                self._handle_sdc_map_tf_params(params)
+                return None
+
             if category and params:
                 if self.logger:
                     self.logger.logger.info(
@@ -767,6 +773,30 @@ class StateBase:
             "Valid: start, stop, train, status, set_config, clear"
         )
         return False
+
+    def _handle_sdc_map_tf_params(self, params: Dict[str, Any]) -> bool:
+        """Handle runtime SDCQcar->map transform updates via SET_PARAMS."""
+        callback = getattr(self.vehicle_logic, "sdc_map_tf_update_callback", None)
+        if callback is None:
+            self.logger.log_warning(
+                "[CMD] Runtime SDCQcar->map TF update requested but no callback is registered"
+            )
+            return False
+
+        try:
+            success = bool(callback(params))
+            if success:
+                self.logger.logger.info(
+                    "[CMD] Runtime SDCQcar->map TF update accepted"
+                )
+            else:
+                self.logger.log_warning(
+                    "[CMD] Runtime SDCQcar->map TF update rejected"
+                )
+            return success
+        except Exception as e:
+            self.logger.log_error("[CMD] Failed to apply runtime SDCQcar->map TF", e)
+            return False
 
     def _send_platoon_setup_confirmation(
         self, my_vehicle_id: int, formation: Dict, leader_id: int

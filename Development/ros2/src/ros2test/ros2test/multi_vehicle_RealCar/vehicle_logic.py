@@ -196,6 +196,10 @@ class VehicleLogic:
         # It is created/activated only when commanded at runtime.
         self.online_sysid_zmq = None  # Separated ZMQ mode
 
+        # Optional ROS callback used for runtime SDCQcar->map TF updates.
+        # Set by ROS wrapper nodes (vehicle_main_ros_*.py) when available.
+        self.sdc_map_tf_update_callback = None
+
     def elapsed_time(self) -> float:
         """Get elapsed time since start"""
         return time.time() - self.start_time
