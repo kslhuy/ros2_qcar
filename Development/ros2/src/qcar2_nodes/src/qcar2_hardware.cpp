@@ -1,4 +1,5 @@
 #include <chrono>
+#include <cmath>
 #include <functional>
 #include <memory>
 #include <map>
@@ -500,17 +501,42 @@ private:
         battery_state_publisher_->publish(battery_state);
 
         /* Imu message */
-        auto imu = sensor_msgs::msg::Imu();
-        imu.linear_acceleration.x = OIBuffer[3];
-        imu.linear_acceleration.y = OIBuffer[4];
-        imu.linear_acceleration.z = OIBuffer[5];
-        imu.angular_velocity.x = OIBuffer[0];
-        imu.angular_velocity.y = OIBuffer[1];
-        imu.angular_velocity.z = OIBuffer[2];
+        const double wx = OIBuffer[0];
+        const double wy = OIBuffer[1];
+        const double wz = OIBuffer[2];
+        const double ax = OIBuffer[3];
+        const double ay = OIBuffer[4];
+        const double az = OIBuffer[5];
+        const bool finite_values = std::isfinite(wx) && std::isfinite(wy) && std::isfinite(wz) &&
+                                   std::isfinite(ax) && std::isfinite(ay) && std::isfinite(az);
+        const double accel_norm = std::sqrt(ax * ax + ay * ay + az * az);
+        const bool valid_accel_norm = std::isfinite(accel_norm) && accel_norm > 1e-3 && accel_norm < 100.0;
 
-        imu.header.stamp = hil_read_time;
-        imu.header.frame_id = "base_link";
-        imu_publisher_->publish(imu);
+        if (!finite_values || !valid_accel_norm)
+        {
+            imu_invalid_count_++;
+            RCLCPP_WARN_THROTTLE(
+                this->get_logger(),
+                *this->get_clock(),
+                2000,
+                "Dropping invalid IMU sample (count=%lu): gyro=[%.3f %.3f %.3f], accel=[%.3f %.3f %.3f], |a|=%.6f",
+                imu_invalid_count_, wx, wy, wz, ax, ay, az, accel_norm);
+        }
+        else
+        {
+            auto imu = sensor_msgs::msg::Imu();
+            imu.linear_acceleration.x = ax;
+            imu.linear_acceleration.y = ay;
+            imu.linear_acceleration.z = az;
+            imu.angular_velocity.x = wx;
+            imu.angular_velocity.y = wy;
+            imu.angular_velocity.z = wz;
+            imu.orientation_covariance[0] = -1.0;
+
+            imu.header.stamp = hil_read_time;
+            imu.header.frame_id = "base_link";
+            imu_publisher_->publish(imu);
+        }
 
         /* Joint State message */
         auto joint_state = sensor_msgs::msg::JointState();
@@ -731,6 +757,7 @@ private:
     rclcpp::Clock clock_;
     rclcpp::Time end_time_;
     rclcpp::TimerBase::SharedPtr timer_speed_control_;
+    uint64_t imu_invalid_count_ = 0;
 
     t_aaaf5050_mc_k12 led_strip;
 
