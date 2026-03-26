@@ -22,25 +22,7 @@ This launch file starts:
 - Nav2 localization / navigation
 - `nav2_qcar2_converter`
 
-### Terminal 1
 
-```bash
-cd /home/nvidia/Documents/qcar2/Development/ros2
-ros2 launch ros2test qcar2_slam_nav_launch_map.py
-```
-
-### Terminal 2
-
-Run the vehicle controller separately:
-
-```bash
-cd /home/nvidia/Documents/qcar2/Development/ros2
-source install/setup.bash
-```
-
-```bash
-ros2 run ros2test vehicle_main_ros_qcar --ros-args -p car_id:=3 -p host:=192.168.137.1 -p v_ref:=0.6 -p vehicle_type:=Qcar
-```
 
 ## Option 2: Localization only with a `.pbstream` map
 
@@ -66,7 +48,7 @@ source install/setup.bash
 Copy-safe one-line equivalent:
 
 ```bash
-ros2 run ros2test vehicle_main_ros_qcar --ros-args -p car_id:=3 -p host:=192.168.137.1 -p v_ref:=0.6 -p vehicle_type:=Qcar
+ros2 run ros2test vehicle_main_ros_qcar --ros-args -p car_id:=2 -p host:=192.168.2.200 -p v_ref:=0.6 -p vehicle_type:=Qcar
 ```
 
 ## Notes

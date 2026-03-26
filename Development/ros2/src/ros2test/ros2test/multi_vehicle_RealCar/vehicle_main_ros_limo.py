@@ -76,6 +76,7 @@ class VehicleControlFullSystemQCar(Node):
             parameters=[
                 ('car_id', 3),
                 ('vehicle_type', 'Limo'),
+                ('programme_type', 'Ros'),
                 ('v_ref', 0.6),
                 ('controller_rate', 100),
                 ('calibrate', False),
@@ -99,6 +100,7 @@ class VehicleControlFullSystemQCar(Node):
         
         car_id = self.get_parameter('car_id').value
         vehicle_type = self.get_parameter('vehicle_type').value
+        programme_type = self.get_parameter('programme_type').value
         v_ref = self.get_parameter('v_ref').value
         controller_rate = self.get_parameter('controller_rate').value
         calibrate = self.get_parameter('calibrate').value
@@ -241,8 +243,10 @@ class VehicleControlFullSystemQCar(Node):
         vehicle_type_normalized = str(vehicle_type).strip().lower()
         if vehicle_type_normalized == 'limo':
             config.vehicle.vehicle_type = 'Limo'
+            config.vehicle.programme_type = 'Ros'
         elif vehicle_type_normalized == 'qcar':
             config.vehicle.vehicle_type = 'Qcar'
+            config.vehicle.programme_type = 'Ros'
         else:
             self.get_logger().warning(
                 f"Unknown vehicle_type='{vehicle_type}', keeping config value '{config.vehicle.vehicle_type}'")

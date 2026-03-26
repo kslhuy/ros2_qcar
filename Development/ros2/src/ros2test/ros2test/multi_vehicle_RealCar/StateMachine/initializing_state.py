@@ -390,7 +390,7 @@ class InitializingState(StateBase):
         # Check if calibration was requested
         calibrate_gps = getattr(self.vehicle_logic, "calibration_requested", False)
         if calibrate_gps:
-            self.logger.logger.info(" GPS calibration requested - calibrating GPS")
+            self.logger.logger.info("📍 GPS calibration requested - calibrating GPS")
             self.vehicle_logic.calibration_requested = False  # Reset flag
 
         self.vehicle_logic.gps = QCarGPS(
@@ -403,26 +403,24 @@ class InitializingState(StateBase):
     def _initialize_physical_qcar(self):
         """Initialize physical QCar"""
 
-        
         self.vehicle_logic.qcar = QCar(
             readMode=1, frequency=self.config.timing.controller_update_rate
         )
         time.sleep(0.3)
 
-
-        # # Check if calibration was requested, otherwise use config setting
-        # calibrate_gps = getattr(
-        #     self.vehicle_logic, "calibration_requested", self.config.path.calibrate
-        # )
-        # if getattr(self.vehicle_logic, "calibration_requested", False):
-        #     self.logger.logger.info("GPS calibration requested - calibrating GPS")
-        #     self.vehicle_logic.calibration_requested = False  # Reset flag
-        # self.logger.logger.info(
-        #     f"Calibration pose: {self.config.path.calibration_pose}"
-        # )
+        # Check if calibration was requested, otherwise use config setting
+        calibrate_gps = getattr(
+            self.vehicle_logic, "calibration_requested", self.config.path.calibrate
+        )
+        if getattr(self.vehicle_logic, "calibration_requested", False):
+            self.logger.logger.info("GPS calibration requested - calibrating GPS")
+            self.vehicle_logic.calibration_requested = False  # Reset flag
+        self.logger.logger.info(
+            f"Calibration pose: {self.config.path.calibration_pose}"
+        )
 
         self.vehicle_logic.gps = QCarGPS(
-            initialPose=self.config.path.calibration_pose
+            initialPose=self.config.path.calibration_pose, calibrate=calibrate_gps
         )
         time.sleep(0.3)
 

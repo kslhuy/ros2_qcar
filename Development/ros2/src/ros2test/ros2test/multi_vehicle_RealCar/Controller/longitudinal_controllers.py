@@ -162,7 +162,7 @@ class PIDVelocityController(LongitudinalControllerBase):
             if v_ref < 0.05 and self.cmd_v < 0.1:
                 self.cmd_v = 0.0
                 
-            self.cmd_v = np.clip(self.cmd_v, 0.0, 1.2) # Absolute max speed limit for Limo
+            self.cmd_v = np.clip(self.cmd_v, 0.0, 3.0) # Absolute max speed limit for Limo increased to 3.0 to allow Gear scaling
             
             self.last_error = e
             return self.cmd_v
@@ -309,9 +309,8 @@ class CACCLongitudinalController(LongitudinalControllerBase):
             self.brake_smoothing = params.get('brake_smoothing', brake_smoothing)
             self.max_acc_rate = params.get('max_acc_rate', max_acc_rate)
             self.use_feedforward = params.get('use_feedforward', use_feedforward)
-            # read new weight; fallback to old gain key for backwards compat
             self.leader_acceleration_weight = params.get(
-                'leader_acceleration_weight', params.get('leader_acceleration_gain', 0.0)
+                'leader_acceleration_weight', leader_acceleration_weight
             )
             self.vehicle_type = kwargs.get("vehicle_type", params.get('vehicle_type', 'QCar'))
         else:
@@ -529,14 +528,23 @@ class CACCLongitudinalController(LongitudinalControllerBase):
 
     def _compute_limo_velocity_cmd(self, acc_desired: float, follower_state: Dict[str, float], leader_state: Dict[str, float], dt: float) -> float:
         """Compute the velocity command for the Limo robot."""
+        # Using our own velocity prevents relying on potentially attacked leader velocity data.
+        # We integrate the desired acceleration from our current actual velocity.
         v = follower_state["velocity"]
+        
+        # If cmd_v is vastly different from actual v (e.g., CACC just engaged or we were blocked),
+        # snap it to the current velocity so we don't get integral windup or cold starts.
+        if abs(self.cmd_v - v) > 0.5:
+            self.cmd_v = v
+             
+        # Integrate acceleration to get the new velocity command
         self.cmd_v += acc_desired * dt
         
-        throttle_raw = acc_desired * self.acc_to_throttle_gain
-        if throttle_raw < 0 and v < 0.05 and leader_state.get("velocity", 0.0) < 0.05:
-            self.cmd_v = 0.0  # Force stop if leader is stopped and we are slow
+        # Stop condition: if trying to slow down, and both vehicles are nearly stopped
+        if acc_desired < 0 and v < 0.05 and leader_state.get("velocity", 0.0) < 0.05:
+            self.cmd_v = 0.0  # Force stop
             
-        self.cmd_v = np.clip(self.cmd_v, 0.0, 1.2)  # Absolute limit
+        self.cmd_v = np.clip(self.cmd_v, 0.0, 3.0)  # Absolute limit increased to 3.0 to allow Gear scaling
         self.prev_throttle = self.cmd_v
         return float(self.cmd_v)
 
@@ -604,8 +612,8 @@ class CACCLongitudinalController(LongitudinalControllerBase):
             if hasattr(self, param):
                 if param == "K":
                     setattr(self, param, np.array(value))
-                elif param in ("leader_acceleration_gain", "leader_acceleration_weight"):
-                    # ensure float conversion; accept either key for compatibility
+                elif param == "leader_acceleration_weight":
+                    # Ensure numeric conversion for control calculations.
                     self.leader_acceleration_weight = float(value)
                 else:
                     setattr(self, param, value)

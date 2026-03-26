@@ -7,7 +7,7 @@ import time
 import os
 
 # import random
-# from typing import Optional
+from typing import Optional
 from threading import Event
 
 from pal.products.qcar import IS_PHYSICAL_QCAR
@@ -35,6 +35,20 @@ try:
 except Exception:
     OnlineSysIDZMQClient = None
 
+try:
+    from Calibration.online_calibration_zmq_client import (
+        OnlineCalibrationZMQClient,
+    )
+except Exception:
+    OnlineCalibrationZMQClient = None
+
+try:
+    from Observer.KalmaNet.Robust.robust_kalmannet_dataset import (
+        RobustKalmanNetDatasetRecorder,
+    )
+except Exception:
+    RobustKalmanNetDatasetRecorder = None
+
 # Note: Controllers (PIDVelocityController, StanleyController) are now imported
 # in state machine states, not here
 
@@ -52,6 +66,7 @@ class VehicleLogic:
         self.vehicle_type = config.vehicle.vehicle_type
         self.programme_type = config.vehicle.programme_type
         self.is_physical_qcar = IS_PHYSICAL_QCAR
+
 
         # self.Is_Limo_Car = config.network.car_id
 
@@ -196,9 +211,12 @@ class VehicleLogic:
         # It is created/activated only when commanded at runtime.
         self.online_sysid_zmq = None  # Separated ZMQ mode
 
-        # Optional ROS callback used for runtime SDCQcar->map TF updates.
-        # Set by ROS wrapper nodes (vehicle_main_ros_*.py) when available.
-        self.sdc_map_tf_update_callback = None
+        # Online Calibration (ZMQ mode) — passive data collection.
+        # Activated at runtime via ENABLE_ONLINE_CALIBRATION command.
+        self.online_calibration_zmq = None
+
+        # Robust KalmanNet offline dataset recorder.
+        self.robust_kalmannet_dataset = None
 
     def elapsed_time(self) -> float:
         """Get elapsed time since start"""
@@ -284,6 +302,150 @@ class VehicleLogic:
             status["zmq"] = self.online_sysid_zmq.get_status()
 
         return status
+
+    # ===== Online Calibration (passive data collection) =====
+    def enable_online_calibration_zmq(self, config: dict = None) -> bool:
+        """
+        Enable passive online calibration transport over ZMQ.
+        Creates sockets only when requested by command.
+        """
+        cfg = config or {}
+        if self.online_calibration_zmq is None:
+            if OnlineCalibrationZMQClient is None:
+                self.vehicle_logger.log_warning(
+                    "Online Calibration ZMQ client unavailable (import failed)"
+                )
+                return False
+
+            sample_port = int(cfg.get("sample_port", 18890))
+            control_port = int(cfg.get("control_port", 18891))
+            status_host = str(cfg.get("status_host", "127.0.0.1"))
+            status_port = int(cfg.get("status_port", 18892))
+            bind_ip = str(cfg.get("bind_ip", "*"))
+
+            self.online_calibration_zmq = OnlineCalibrationZMQClient(
+                logger=self.vehicle_logger,
+                vehicle_id=self.vehicle_id,
+                sample_port=sample_port,
+                control_port=control_port,
+                status_host=status_host,
+                status_port=status_port,
+                bind_ip=bind_ip,
+            )
+
+        started = self.online_calibration_zmq.start_collection()
+        if not started:
+            return False
+
+        self.vehicle_logger.logger.info(
+            "[OnlineCal] Passive calibration data collection ENABLED"
+        )
+        return True
+
+    def disable_online_calibration_zmq(self) -> None:
+        """Disable and close Online Calibration ZMQ transport."""
+        if self.online_calibration_zmq is not None:
+            try:
+                self.online_calibration_zmq.stop()
+            except Exception as e:
+                self.vehicle_logger.log_error(
+                    "Failed to stop Online Calibration ZMQ client", e
+                )
+            self.online_calibration_zmq = None
+            self.vehicle_logger.logger.info(
+                "[OnlineCal] Passive calibration data collection DISABLED"
+            )
+
+    def _get_online_calibration_status(self) -> dict:
+        """Collect status from the Online Calibration ZMQ backend."""
+        status = {"enabled": False}
+        if self.online_calibration_zmq is not None:
+            status["enabled"] = True
+            status["zmq"] = self.online_calibration_zmq.get_status()
+        return status
+
+    # ===== Robust KalmanNet offline dataset collection =====
+    def enable_robust_kalmannet_dataset(self, config: dict = None) -> bool:
+        """Enable local dataset recording for offline Robust KalmanNet training."""
+        cfg = config or {}
+        if RobustKalmanNetDatasetRecorder is None:
+            self.vehicle_logger.log_warning(
+                "Robust KalmanNet dataset recorder unavailable (import failed)"
+            )
+            return False
+
+        target_type = str(cfg.get("target_estimator_type", "ekf")).strip() or "ekf"
+        strict_target = bool(cfg.get("strict_target_type", True))
+        current_type = getattr(self.vehicle_observer, "local_estimator_type", "unknown")
+        if strict_target and current_type != target_type:
+            self.vehicle_logger.log_warning(
+                f"[RKNetDataset] Refusing to start: local observer is '{current_type}', expected '{target_type}'"
+            )
+            return False
+
+        if self.robust_kalmannet_dataset is None:
+            self.robust_kalmannet_dataset = RobustKalmanNetDatasetRecorder(
+                vehicle_id=self.vehicle_id,
+                logger=self.vehicle_logger,
+            )
+
+        return self.robust_kalmannet_dataset.start(cfg)
+
+    def disable_robust_kalmannet_dataset(self, save: bool = True) -> Optional[str]:
+        """Stop Robust KalmanNet dataset recording and optionally save it."""
+        if self.robust_kalmannet_dataset is None:
+            return None
+        return self.robust_kalmannet_dataset.stop(save=save)
+
+    def _get_robust_kalmannet_dataset_status(self) -> dict:
+        """Collect status from the Robust KalmanNet dataset recorder."""
+        status = {"enabled": False}
+        if self.robust_kalmannet_dataset is not None:
+            recorder_status = self.robust_kalmannet_dataset.get_status()
+            status["enabled"] = True
+            status.update(recorder_status)
+        return status
+
+    def _submit_robust_kalmannet_sample(self, timestamp: float) -> None:
+        """Submit one synchronized sample to the offline Robust KalmanNet recorder."""
+        recorder = self.robust_kalmannet_dataset
+        if recorder is None or not recorder.recording:
+            return
+        if self.vehicle_observer is None:
+            return
+        if self.vehicle_observer.get_local_estimator() is None:
+            return
+
+        try:
+            target_state = self.vehicle_observer.get_local_estimator().get_state()
+            sensor = self.vehicle_observer.sensor_data
+            gps_data = None
+            if sensor.get("gps_valid", False):
+                gps_pos = sensor.get("gps_position", np.zeros(3))
+                gps_data = {
+                    "x": float(gps_pos[0]),
+                    "y": float(gps_pos[1]),
+                    "theta": float(gps_pos[2]),
+                    "valid": True,
+                }
+
+            recorder.record_sample(
+                timestamp=timestamp,
+                motor_tach=float(sensor.get("motor_tach", 0.0)),
+                steering=float(getattr(self, "_last_steering", 0.0)),
+                throttle=float(getattr(self, "_last_u", 0.0)),
+                gyro_z=float(sensor.get("gyro_z", 0.0)),
+                acceleration=sensor.get("accelerometer", np.zeros(3)),
+                gps_data=gps_data,
+                target_state=target_state,
+                current_estimator_type=str(
+                    getattr(self.vehicle_observer, "local_estimator_type", "unknown")
+                ),
+            )
+        except Exception as e:
+            self.vehicle_logger.log_error(
+                "Failed to submit Robust KalmanNet dataset sample", e
+            )
 
     def run(self):
         """Main control loop"""
@@ -386,6 +548,25 @@ class VehicleLogic:
                 # Handle YOLO logic using YOLOManager (only if enabled)
                 if self.yolo_manager.yolo_enabled:
                     self.yolo_manager.update(self.loop_counter)
+                    if self.vehicle_observer is not None:
+                        target_id = int(self.vehicle_id) - 1
+                        if target_id >= 0:
+                            rel_meas = self.yolo_manager.get_relative_car_measurement()
+                            if rel_meas is not None:
+                                self.vehicle_observer.update_relative_measurement(
+                                    measurement=np.array(
+                                        [
+                                            rel_meas["distance"],
+                                            rel_meas["relative_velocity"],
+                                        ],
+                                        dtype=float,
+                                    ),
+                                    target_id=target_id,
+                                    source=str(rel_meas["source"]),
+                                    measurement_confidence=float(
+                                        rel_meas.get("confidence", float("nan"))
+                                    ),
+                                )
 
         except Exception as e:
             self.vehicle_logger.log_error("Sensor data update error", e)
@@ -416,6 +597,15 @@ class VehicleLogic:
                 if hasattr(self, "online_sysid_zmq") and self.online_sysid_zmq:
                     if self.online_sysid_zmq.is_collecting():
                         self.online_sysid_zmq.submit_sample(sample)
+
+            # Feed passive calibration with [v, throttle, steering, yaw_rate, ax, ay, az].
+            cal_sample = self.vehicle_observer.get_calibration_sample()
+            if cal_sample is not None:
+                if hasattr(self, "online_calibration_zmq") and self.online_calibration_zmq:
+                    if self.online_calibration_zmq.is_collecting():
+                        self.online_calibration_zmq.submit_sample(cal_sample)
+
+            self._submit_robust_kalmannet_sample(time.time())
 
             # Stream scope data to Ground Station (if streaming enabled)
             if (
@@ -813,6 +1003,7 @@ class VehicleLogic:
                 "node_sequence": getattr(self, "node_sequence", None),
                 "operational_status": self.get_operational_status(),
                 "online_sysid_status": self._get_online_sysid_status(),
+                "robust_kalmannet_dataset_status": self._get_robust_kalmannet_dataset_status(),
                 # Payload for the handler
                 "data": v2v_details,
             }
@@ -1062,6 +1253,14 @@ class VehicleLogic:
             except Exception as e:
                 self.vehicle_logger.logger.error(
                     f"Online SysID ZMQ shutdown error: {e}"
+                )
+
+        if hasattr(self, "robust_kalmannet_dataset") and self.robust_kalmannet_dataset:
+            try:
+                self.robust_kalmannet_dataset.stop(save=True)
+            except Exception as e:
+                self.vehicle_logger.logger.error(
+                    f"Robust KalmanNet dataset shutdown error: {e}"
                 )
 
         # Log final statistics

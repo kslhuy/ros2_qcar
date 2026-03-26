@@ -1270,7 +1270,7 @@ class FollowingPathState(StateBase):
             if yolo_gain < 1.0:
                 u = u * yolo_gain
 
-        # --- Center-box obstacle: person → full stop, cone → replanned above ---
+        # # --- Center-box obstacle: person → full stop, cone → replanned above ---
         yolo_data = sensor_data.get("yolo_data", None)
         if yolo_data and yolo_data.get("obstacle_in_path", False):
             obs_type = yolo_data.get("obstacle_type", 0.0)
@@ -1298,6 +1298,11 @@ class FollowingPathState(StateBase):
 
         gear = getattr(self.vehicle_logic, "gear", None)
         max_throttle = float(getattr(gear, "value", 0.1))
+        
+        if getattr(self.vehicle_logic, "vehicle_type", "") == "Limo":
+            gear_mult = getattr(self.vehicle_logic.config.vehicle, "limo_gear_multiplier", 3.0)
+            max_throttle *= gear_mult  # Limo velocity limits (m/s) based on gear with configurable gain
+
         if abs(u) > max_throttle:
             u = np.clip(u, -max_throttle, max_throttle)
 

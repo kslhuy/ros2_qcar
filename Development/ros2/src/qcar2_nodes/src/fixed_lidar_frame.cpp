@@ -5,9 +5,7 @@
 #include "geometry_msgs/msg/transform_stamped.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "tf2/LinearMath/Quaternion.h"
-#include "tf2_ros/transform_broadcaster.h"
-
-using namespace std::chrono_literals;
+#include "tf2_ros/static_transform_broadcaster.h"
 
 class FixedFrameBroadcaster : public rclcpp::Node
 {
@@ -15,18 +13,16 @@ public:
   FixedFrameBroadcaster()
   : Node("fixed_lidar_frame")
   {
-    tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(this);
-    timer_ = this->create_wall_timer(
-      100ms, std::bind(&FixedFrameBroadcaster::broadcast_timer_callback, this));
+    tf_broadcaster_ = std::make_shared<tf2_ros::StaticTransformBroadcaster>(this);
+    broadcast_transform();
   }
 
 private:
-  void broadcast_timer_callback()
+  void broadcast_transform()
   {
     geometry_msgs::msg::TransformStamped t;
 
     t.header.stamp = this->get_clock()->now();
-    //t.header.frame_id = "qbot_platform";
     t.header.frame_id = "base_link";
     t.child_frame_id = "base_scan";
     t.transform.translation.x = 0.1;
@@ -44,8 +40,7 @@ private:
     tf_broadcaster_->sendTransform(t);
   }
 
-rclcpp::TimerBase::SharedPtr timer_;
-  std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
+  std::shared_ptr<tf2_ros::StaticTransformBroadcaster> tf_broadcaster_;
 };
 
 int main(int argc, char * argv[])

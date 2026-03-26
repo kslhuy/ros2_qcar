@@ -237,7 +237,11 @@ class VehicleObserver:
             "gps_position": np.zeros(3),  # [x, y, theta]
             "relative_measurement": np.zeros(2),  # [delta, delta_dot] from YOLO etc.
             "relative_measurement_valid": False,
+            "relative_measurement_confidence": float("nan"),
+            "relative_measurements_by_target": {},
         }
+        # For derivative estimation when only distance is provided.
+        self._last_relative_distance_by_target: Dict[int, Tuple[float, float]] = {}
 
         # ===== Control and Dynamics Cache =====
         # self.last_velocity = 0.0
@@ -359,6 +363,16 @@ class VehicleObserver:
         # Only fallback to child type if parent omitted it.
         if "fleet_estimator_type" not in merged and "fleet_estimator_type" in trust_cfg:
             merged["fleet_estimator_type"] = trust_cfg["fleet_estimator_type"]
+
+        child_vehicle = trust_cfg.get("vehicle", {})
+        if isinstance(child_vehicle, dict):
+            self._deep_merge_dict(trust_consensus.setdefault("vehicle", {}), child_vehicle)
+            self._deep_merge_dict(trust_kalman.setdefault("vehicle", {}), child_vehicle)
+
+        child_logging = trust_cfg.get("logging", {})
+        if isinstance(child_logging, dict):
+            self._deep_merge_dict(trust_consensus.setdefault("logging", {}), child_logging)
+            self._deep_merge_dict(trust_kalman.setdefault("logging", {}), child_logging)
 
         return merged
 
@@ -624,6 +638,9 @@ class VehicleObserver:
         merged["fleet_observer_rate"] = cfg_dict.get(
             "fleet_observer_rate", merged["fleet_observer_rate"]
         )
+
+        if "camera_distance_offset" in cfg_dict:
+            merged["camera_distance_offset"] = cfg_dict.get("camera_distance_offset")
 
         return merged
 
@@ -950,6 +967,10 @@ class VehicleObserver:
             # For now, let's assume if it's enabled, we try to use cached data
             # Ideally this comes from vehicle_logic loop feeding update_sensor_data with new Yolo info
 
+            valid = bool(self.sensor_data.get("relative_measurement_valid", False))
+            if not valid:
+                return
+
             y_meas = self.sensor_data["relative_measurement"]
 
             # Preceding vehicle state (from V2V via fleet estimator)
@@ -978,15 +999,160 @@ class VehicleObserver:
         except Exception as e:
             self.vehicle_logger.log_error("Relative observer update error", e)
 
-    def update_relative_measurement(self, measurement: np.ndarray):
+    def update_relative_measurement(
+        self,
+        measurement: np.ndarray,
+        target_id: Optional[int] = None,
+        source: str = "external_sensor",
+        measurement_confidence: Optional[float] = None,
+    ):
         """
-        Update relative measurement (e.g. from YOLO).
+        Update relative measurement (e.g. from YOLO/radar).
+
         Args:
             measurement: [delta, delta_dot]
+            target_id: Vehicle ID this measurement refers to (defaults to predecessor)
+            source: Source label for logging/debugging
+            measurement_confidence: Optional source confidence in [0, 1]
         """
-        with self.lock:
-            self.sensor_data["relative_measurement"] = measurement
-            self.sensor_data["relative_measurement_valid"] = True
+        try:
+            arr = np.asarray(measurement, dtype=float).flatten()
+            if arr.size == 0:
+                return
+
+            rel_distance = float(arr[0])
+            if not np.isfinite(rel_distance) or rel_distance <= 0.0:
+                return
+
+            target = target_id
+            if target is None:
+                target = self.vehicle_id - 1 if self.vehicle_id > 0 else None
+
+            now_s = time.time()
+            source_name = str(source)
+            source_name_l = source_name.lower()
+
+            # Add camera-to-center offset to make YOLO distance comparable to GPS center-to-center distance
+            camera_offset = float(self.observer_config.get("camera_distance_offset", 0.40))
+            if "yolo" in source_name_l:
+                rel_distance += camera_offset
+
+            base_conf = float("nan")
+            if measurement_confidence is not None:
+                try:
+                    base_conf = float(measurement_confidence)
+                except Exception:
+                    base_conf = float("nan")
+            if not np.isfinite(base_conf):
+                base_conf = 1.0
+            base_conf = float(np.clip(base_conf, 0.0, 1.0))
+
+            rel_velocity = float("nan")
+            if arr.size > 1 and np.isfinite(arr[1]):
+                rel_velocity = float(arr[1])
+            elif target is not None:
+                prev = self._last_relative_distance_by_target.get(int(target))
+                if prev is not None:
+                    prev_distance, prev_time_s = prev
+                    dt = now_s - prev_time_s
+                    if dt > 1e-3:
+                        rel_velocity = (rel_distance - prev_distance) / dt
+
+            dynamic_conf = base_conf
+            if "yolo" in source_name_l:
+                distance_factor = float(
+                    np.exp(-max(rel_distance - 6.0, 0.0) / 4.0)
+                )
+                consistency_factor = 1.0
+                if target is not None:
+                    prev = self._last_relative_distance_by_target.get(int(target))
+                    if prev is not None:
+                        prev_distance, prev_time_s = prev
+                        dt = now_s - prev_time_s
+                        if dt > 1e-3:
+                            rel_velocity_from_distance = (rel_distance - prev_distance) / dt
+                            if np.isfinite(rel_velocity):
+                                consistency_error = abs(
+                                    rel_velocity - rel_velocity_from_distance
+                                )
+                                consistency_factor = float(
+                                    np.exp(-consistency_error / 1.5)
+                                )
+                            else:
+                                consistency_factor = 0.8
+
+                dynamic_conf = float(
+                    np.clip(
+                        0.60 * base_conf
+                        + 0.25 * distance_factor
+                        + 0.15 * consistency_factor,
+                        0.0,
+                        1.0,
+                    )
+                )
+                min_conf = float(
+                    self.observer_config.get("yolo_relative_min_confidence", 0.35)
+                )
+                if dynamic_conf < min_conf:
+                    with self.lock:
+                        self.sensor_data["relative_measurement_valid"] = False
+                        self.sensor_data["relative_measurement_confidence"] = dynamic_conf
+                    return
+
+            y_meas = np.array(
+                [rel_distance, rel_velocity if np.isfinite(rel_velocity) else 0.0],
+                dtype=float,
+            )
+
+            with self.lock:
+                self.sensor_data["relative_measurement"] = y_meas
+                self.sensor_data["relative_measurement_valid"] = True
+                self.sensor_data["relative_measurement_confidence"] = dynamic_conf
+
+                if target is not None:
+                    target_int = int(target)
+                    self._last_relative_distance_by_target[target_int] = (
+                        rel_distance,
+                        now_s,
+                    )
+                    self.sensor_data["relative_measurements_by_target"][target_int] = {
+                        "distance": rel_distance,
+                        "relative_velocity": rel_velocity,
+                        "confidence": dynamic_conf,
+                        "timestamp_ns": int(now_s * 1e9),
+                        "source": source_name,
+                    }
+
+            # Feed trust-based estimators when they support external measurements.
+            if (
+                target is not None
+                and self.fleet_estimator is not None
+                and hasattr(self.fleet_estimator, "set_external_relative_measurement")
+            ):
+                try:
+                    self.fleet_estimator.set_external_relative_measurement(
+                        target_id=int(target),
+                        distance=rel_distance,
+                        relative_velocity=(
+                            rel_velocity if np.isfinite(rel_velocity) else None
+                        ),
+                        timestamp_ns=int(now_s * 1e9),
+                        source=source_name,
+                        measurement_confidence=dynamic_conf,
+                    )
+                except TypeError:
+                    # Backward compatibility with estimators that don't support confidence yet.
+                    self.fleet_estimator.set_external_relative_measurement(
+                        target_id=int(target),
+                        distance=rel_distance,
+                        relative_velocity=(
+                            rel_velocity if np.isfinite(rel_velocity) else None
+                        ),
+                        timestamp_ns=int(now_s * 1e9),
+                        source=source_name,
+                    )
+        except Exception as e:
+            self.vehicle_logger.log_error("Update relative measurement error", e)
 
     def set_local_estimator(self, estimator: LocalStateEstimatorBase):
         """
@@ -996,6 +1162,17 @@ class VehicleObserver:
         Args:
             estimator: LocalStateEstimatorBase instance
         """
+        previous_estimator = getattr(self, "local_estimator", None)
+        if previous_estimator is not None and previous_estimator is not estimator:
+            try:
+                if hasattr(previous_estimator, "stop_recording"):
+                    previous_estimator.stop_recording()
+            except Exception as e:
+                if self.vehicle_logger:
+                    self.vehicle_logger.log_warning(
+                        f"Failed to stop previous local estimator recording: {e}"
+                    )
+
         self.local_estimator = estimator
         self.vehicle_logger.logger.info(
             f"Local estimator set for vehicle {self.vehicle_id}: {type(estimator).__name__}"
@@ -1404,6 +1581,33 @@ class VehicleObserver:
                 return None
             return sample
 
+    def get_calibration_sample(self) -> Optional[np.ndarray]:
+        """
+        Build one calibration sample [v, throttle, steering, yaw_rate, ax, ay, az].
+
+        Used by CalibratingState to record data during active calibration
+        sequences (throttle-velocity, steering-curvature, throttle-acceleration).
+        """
+        with self.lock:
+            v = (
+                float(self.local_state[3])
+                if len(self.local_state) > 3
+                else float(self.sensor_data.get("motor_tach", 0.0))
+            )
+            throttle = float(self.control_input.get("throttle", 0.0))
+            steering = float(self.control_input.get("steering", 0.0))
+            yaw_rate = float(self.sensor_data.get("gyro_z", 0.0))
+            accel = self.sensor_data.get("accelerometer", np.zeros(3))
+
+            sample = np.array(
+                [v, throttle, steering, yaw_rate,
+                 float(accel[0]), float(accel[1]), float(accel[2])],
+                dtype=np.float32,
+            )
+            if not np.all(np.isfinite(sample)):
+                return None
+            return sample
+
     def get_local_state_for_broadcast(self) -> dict:
         """
         Get local state information for V2V broadcasting.
@@ -1613,6 +1817,11 @@ class VehicleObserver:
             self.control_input = {"steering": 0.0, "throttle": 0.0}
             self._vy_estimate = 0.0
             self._vy_est_last_time = 0.0
+            self._last_relative_distance_by_target.clear()
+            self.sensor_data["relative_measurement"] = np.zeros(2)
+            self.sensor_data["relative_measurement_valid"] = False
+            self.sensor_data["relative_measurement_confidence"] = float("nan")
+            self.sensor_data["relative_measurements_by_target"] = {}
             if hasattr(self, "vy_ekf") and self.vy_ekf is not None:
                 self.vy_ekf = LateralVelocityEKF(dt=0.01)
 

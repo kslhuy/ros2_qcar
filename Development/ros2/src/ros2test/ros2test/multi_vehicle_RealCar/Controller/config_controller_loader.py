@@ -205,10 +205,9 @@ class ControllerConfig:
             "throttle_smoothing": cacc_config.get("throttle_smoothing", 0.7),
             "brake_smoothing": cacc_config.get("brake_smoothing", 0.5),
             "max_acc_rate": cacc_config.get("max_acc_rate", 2.0),
-            # New optional leader acceleration feedforward gain. Set to 0 to disable.
-            # legacy key kept for compatibility, semantics now represent an error weight
-            "leader_acceleration_weight": cacc_config.get("leader_acceleration_gain", 0.0),
-            "leader_acceleration_gain": cacc_config.get("leader_acceleration_gain", 0.0),  # alias for backward compat
+            "leader_acceleration_weight": cacc_config.get(
+                "leader_acceleration_weight", 0.0
+            ),
 
         }
 

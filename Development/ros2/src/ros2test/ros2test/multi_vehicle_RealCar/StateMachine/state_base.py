@@ -504,12 +504,16 @@ class StateBase:
                 self._handle_online_sysid_params(params)
                 return None
 
-            if category == "sdc_map_tf":
+            if category == "online_calibration":
                 if not isinstance(params, dict):
                     params = {}
-                self._handle_sdc_map_tf_params(params)
+                self._handle_online_calibration_params(params)
                 return None
-
+            if category == "robust_kalmannet_dataset":
+                if not isinstance(params, dict):
+                    params = {}
+                self._handle_robust_kalmannet_dataset_params(params)
+                return None
             if category and params:
                 if self.logger:
                     self.logger.logger.info(
@@ -578,6 +582,45 @@ class StateBase:
                     self.logger.log_error(f"[MANUAL] Invalid gear name: {gear_name}")
                 except ValueError:
                     self.logger.log_error(f"[MANUAL] Invalid gear value: {gear_name}")
+            return None
+
+        # Handle Online Calibration (passive data collection) enable/disable
+        elif command_type == CommandType.ENABLE_ONLINE_CALIBRATION:
+            self.logger.logger.info("[CMD] Enabling passive online calibration")
+            try:
+                cfg = data.get("config", {})
+                if hasattr(self.vehicle_logic, "enable_online_calibration_zmq"):
+                    success = self.vehicle_logic.enable_online_calibration_zmq(cfg)
+                    if success:
+                        self.logger.logger.info(
+                            "[CMD] Online calibration enabled successfully"
+                        )
+                    else:
+                        self.logger.log_error(
+                            "[CMD] Failed to enable online calibration"
+                        )
+                else:
+                    self.logger.log_warning(
+                        "[CMD] vehicle_logic does not expose enable_online_calibration_zmq"
+                    )
+            except Exception as e:
+                self.logger.log_error("[CMD] Error enabling online calibration", e)
+            return None
+
+        elif command_type == CommandType.DISABLE_ONLINE_CALIBRATION:
+            self.logger.logger.info("[CMD] Disabling passive online calibration")
+            try:
+                if hasattr(self.vehicle_logic, "disable_online_calibration_zmq"):
+                    self.vehicle_logic.disable_online_calibration_zmq()
+                    self.logger.logger.info(
+                        "[CMD] Online calibration disabled successfully"
+                    )
+                else:
+                    self.logger.log_warning(
+                        "[CMD] vehicle_logic does not expose disable_online_calibration_zmq"
+                    )
+            except Exception as e:
+                self.logger.log_error("[CMD] Error disabling online calibration", e)
             return None
 
         return None
@@ -774,29 +817,139 @@ class StateBase:
         )
         return False
 
-    def _handle_sdc_map_tf_params(self, params: Dict[str, Any]) -> bool:
-        """Handle runtime SDCQcar->map transform updates via SET_PARAMS."""
-        callback = getattr(self.vehicle_logic, "sdc_map_tf_update_callback", None)
-        if callback is None:
-            self.logger.log_warning(
-                "[CMD] Runtime SDCQcar->map TF update requested but no callback is registered"
-            )
+    def _handle_online_calibration_params(self, params: Dict[str, Any]) -> bool:
+        """
+        Handle SET_PARAMS category='online_calibration'.
+        action: 'analyse', 'clear', 'status'
+        calibration_type: 'throttle_velocity', 'steering_curvature', etc.
+        """
+        action = str(params.get("action", "status")).strip().lower()
+        client = getattr(self.vehicle_logic, "online_calibration_zmq", None)
+
+        if client is None:
+            self.logger.log_warning("[CMD] Online calibration client not available")
             return False
 
-        try:
-            success = bool(callback(params))
-            if success:
-                self.logger.logger.info(
-                    "[CMD] Runtime SDCQcar->map TF update accepted"
-                )
+        import time
+        if action in ("analyse", "trigger_analyse", "analyze"):
+            calibration_type = params.get("calibration_type")
+            if calibration_type:
+                client.trigger_analyse(calibration_type=calibration_type, options=params.get("options"))
+                self.logger.logger.info(f"[CMD] ZMQ Online Calibration analyse command sent for {calibration_type}")
+                return True
             else:
-                self.logger.log_warning(
-                    "[CMD] Runtime SDCQcar->map TF update rejected"
+                self.logger.log_warning("[CMD] Online calibration analyse requested but calibration_type missing")
+                return False
+
+        if action in ("clear", "reset_buffer"):
+            client.clear_buffer()
+            self.logger.logger.info("[CMD] ZMQ Online Calibration clear command sent")
+            return True
+
+        if action in ("status", "get_status"):
+            client.request_status()
+            status = client.get_status()
+            if (
+                hasattr(self.vehicle_logic, "client_Ground_Station")
+                and self.vehicle_logic.client_Ground_Station
+            ):
+                self.vehicle_logic.client_Ground_Station.queue_telemetry(
+                    {
+                        "type": "online_calibration_status",
+                        "timestamp": time.time(),
+                        "car_id": getattr(self.vehicle_logic, "vehicle_id", 0),
+                        "data": {"mode": "zmq", "status": status},
+                    }
                 )
-            return success
-        except Exception as e:
-            self.logger.log_error("[CMD] Failed to apply runtime SDCQcar->map TF", e)
+            return True
+
+        self.logger.log_warning(
+            f"[CMD] Unknown online_calibration action '{action}'. "
+            "Valid: analyse, status, clear"
+        )
+        return False
+
+    def _handle_robust_kalmannet_dataset_params(
+        self, params: Dict[str, Any]
+    ) -> bool:
+        """
+        Handle SET_PARAMS category='robust_kalmannet_dataset'.
+
+        actions:
+            - start: begin local dataset collection
+            - stop: stop and save dataset
+            - discard: stop without saving
+            - status: publish current recorder status
+        """
+        action = str(params.get("action", "status")).strip().lower()
+        cfg = params.get("config", {})
+        if not isinstance(cfg, dict):
+            cfg = {}
+
+        vehicle_logic = getattr(self, "vehicle_logic", None)
+        if vehicle_logic is None:
+            self.logger.log_warning("[CMD] vehicle_logic unavailable for RKNet dataset")
             return False
+
+        if action in ("start", "collect_on"):
+            if not hasattr(vehicle_logic, "enable_robust_kalmannet_dataset"):
+                self.logger.log_warning(
+                    "[CMD] vehicle_logic does not expose enable_robust_kalmannet_dataset"
+                )
+                return False
+            success = vehicle_logic.enable_robust_kalmannet_dataset(cfg)
+            if success:
+                self.logger.logger.info("[CMD] Robust KalmanNet dataset collection started")
+            else:
+                self.logger.log_warning("[CMD] Failed to start Robust KalmanNet dataset collection")
+            return success
+
+        if action in ("stop", "collect_off", "save"):
+            if not hasattr(vehicle_logic, "disable_robust_kalmannet_dataset"):
+                return False
+            saved_path = vehicle_logic.disable_robust_kalmannet_dataset(save=True)
+            if saved_path:
+                self.logger.logger.info(
+                    f"[CMD] Robust KalmanNet dataset saved to {saved_path}"
+                )
+                return True
+            self.logger.log_warning("[CMD] Robust KalmanNet dataset stop requested but nothing was saved")
+            return False
+
+        if action in ("discard", "reset"):
+            if not hasattr(vehicle_logic, "disable_robust_kalmannet_dataset"):
+                return False
+            vehicle_logic.disable_robust_kalmannet_dataset(save=False)
+            self.logger.logger.info(
+                "[CMD] Robust KalmanNet dataset collection stopped without saving"
+            )
+            return True
+
+        if action in ("status", "get_status"):
+            status = (
+                vehicle_logic._get_robust_kalmannet_dataset_status()
+                if hasattr(vehicle_logic, "_get_robust_kalmannet_dataset_status")
+                else {"enabled": False}
+            )
+            if (
+                hasattr(vehicle_logic, "client_Ground_Station")
+                and vehicle_logic.client_Ground_Station
+            ):
+                vehicle_logic.client_Ground_Station.queue_telemetry(
+                    {
+                        "type": "robust_kalmannet_dataset_status",
+                        "timestamp": time.time(),
+                        "car_id": getattr(vehicle_logic, "vehicle_id", 0),
+                        "robust_kalmannet_dataset_status": status,
+                    }
+                )
+            return True
+
+        self.logger.log_warning(
+            f"[CMD] Unknown robust_kalmannet_dataset action '{action}'. "
+            "Valid: start, stop, discard, status"
+        )
+        return False
 
     def _send_platoon_setup_confirmation(
         self, my_vehicle_id: int, formation: Dict, leader_id: int
@@ -1293,7 +1446,9 @@ class StateBase:
         Switch the local state estimator at runtime.
 
         Args:
-            observer_type: Type of local estimator ('ekf', 'luenberger', 'dead_reckoning', 'neural_luenberger')
+            observer_type: Type of local estimator
+                ('ekf', 'luenberger', 'dead_reckoning', 'neural_luenberger',
+                'robust_kalman_net')
 
         Returns:
             bool: True if successful
@@ -1301,7 +1456,13 @@ class StateBase:
         try:
             from Observer.local_state_estimators import LocalEstimatorFactory
 
-            valid_types = ["ekf", "luenberger", "dead_reckoning", "neural_luenberger"]
+            valid_types = [
+                "ekf",
+                "luenberger",
+                "dead_reckoning",
+                "neural_luenberger",
+                "robust_kalman_net",
+            ]
             if observer_type not in valid_types:
                 self.logger.log_error(
                     f"Invalid local observer type: {observer_type}. Valid: {valid_types}"
