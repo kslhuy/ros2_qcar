@@ -227,7 +227,7 @@ class SensorAttackAugmenter:
         self,
         raw: Dict[str, "torch.Tensor"],
         z_seq: "torch.Tensor",
-    ) -> Tuple[Dict[str, "torch.Tensor"], "torch.Tensor", "torch.Tensor"]:
+    ) -> Tuple[Dict[str, "torch.Tensor"], "torch.Tensor", "torch.Tensor", "torch.Tensor"]:
         """
         Apply random sensor attacks to a training batch.
 
@@ -241,7 +241,11 @@ class SensorAttackAugmenter:
             z_corrupted: Measurement tensor with optional attack applied
             attack_labels: [B, 3] binary tensor.
                            Column 0 = IMU attacked, 1 = Steer, 2 = Wheel.
-                           Use for optional supervised mask loss.
+                           Use for optional supervised prediction mask loss.
+            meas_attack_labels: [B, 5] binary tensor.
+                           Per-channel measurement attack indicator.
+                           [x, y, psi, v, w] — 1 if that channel was corrupted.
+                           Use for optional supervised measurement mask loss.
         """
         if not TORCH_AVAILABLE:
             raise ImportError("torch is required for sensor attack augmentation")
@@ -255,6 +259,8 @@ class SensorAttackAugmenter:
 
         # attack_labels[b, branch_idx] = 1 if that branch was attacked
         attack_labels = torch.zeros(B, len(BRANCH_NAMES), device=device)
+        # meas_attack_labels[b, channel] = 1 if that z channel was corrupted
+        meas_attack_labels = torch.zeros(B, 5, device=device)
 
         for b in range(B):
             if not self._should_attack():
@@ -281,14 +287,19 @@ class SensorAttackAugmenter:
                         z_out[b, :, MEAS_YAWRATE_INDEX:MEAS_YAWRATE_INDEX + 1].unsqueeze(0),
                         self.config,
                     ).squeeze(0).squeeze(-1)
+                    # Mark yaw rate (4) and psi (2) as attacked in measurement
+                    meas_attack_labels[b, MEAS_YAWRATE_INDEX] = 1.0
+                    meas_attack_labels[b, 2] = 1.0  # psi is derived from IMU
                 if "wheel" in branches:
                     # Attack velocity in measurement
                     z_out[b, :, MEAS_VELOCITY_INDEX] = attack_fn(
                         z_out[b, :, MEAS_VELOCITY_INDEX:MEAS_VELOCITY_INDEX + 1].unsqueeze(0),
                         self.config,
                     ).squeeze(0).squeeze(-1)
+                    # Mark velocity (3) as attacked in measurement
+                    meas_attack_labels[b, MEAS_VELOCITY_INDEX] = 1.0
 
-        return raw_out, z_out, attack_labels
+        return raw_out, z_out, attack_labels, meas_attack_labels
 
 
 # ============================================================

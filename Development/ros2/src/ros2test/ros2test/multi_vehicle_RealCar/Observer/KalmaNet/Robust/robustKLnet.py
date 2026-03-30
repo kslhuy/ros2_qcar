@@ -295,7 +295,10 @@ class LearnedKalmanUpdate(nn.Module):
     delta_zp = z_k - H x_{k|k-1}
     delta_z  = z_k - z_{k-1}
     then masking + GRU + MLP => K
-    then x_{k|k} = x_{k|k-1} + K(z_k - Hx_{k|k-1})
+    then x_{k|k} = x_{k|k-1} + K( meas_mask * (z_k - Hx_{k|k-1}) )
+
+    The measurement mask suppresses corrupted measurement channels
+    in the innovation so that attacked z values do not pollute x_upd.
     """
 
     def __init__(self, cfg: RSNConfig):
@@ -315,6 +318,13 @@ class LearnedKalmanUpdate(nn.Module):
             cfg.state_dim,
             cfg.meas_dim,
         )
+        # Measurement-level mask: learns to suppress corrupted z channels
+        self.meas_mask_net = nn.Sequential(
+            nn.Linear(feat_dim, cfg.mask_hidden),
+            nn.ReLU(),
+            nn.Linear(cfg.mask_hidden, cfg.meas_dim),
+            nn.Sigmoid(),
+        )
 
     def forward(
         self,
@@ -323,7 +333,7 @@ class LearnedKalmanUpdate(nn.Module):
         z_seq: torch.Tensor,
         z_prev_seq: torch.Tensor,
         hidden=None,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         device = x_pred_seq.device
         H = make_H(device=device, dtype=x_pred_seq.dtype)
 
@@ -336,11 +346,16 @@ class LearnedKalmanUpdate(nn.Module):
         mask = self.mask_net(feat)
         feat_masked = feat * mask
 
+        # Measurement-level mask: [B, T, meas_dim]
+        meas_mask = self.meas_mask_net(feat)
+
         gru_out, hidden = self.gru(feat_masked, hidden)
         K_seq = self.gain_head(gru_out)
 
-        innovation = (z_seq - Hx_pred).unsqueeze(-1)
-        corr = torch.matmul(K_seq, innovation).squeeze(-1)
+        # Apply measurement mask to innovation before correction
+        raw_innovation = z_seq - Hx_pred
+        masked_innovation = (raw_innovation * meas_mask).unsqueeze(-1)
+        corr = torch.matmul(K_seq, masked_innovation).squeeze(-1)
 
         x_upd = x_pred_seq + corr
         # Out-of-place angle wrapping to avoid breaking autograd
@@ -350,7 +365,7 @@ class LearnedKalmanUpdate(nn.Module):
             x_upd[..., 3:],
         ], dim=-1)
 
-        return x_upd, K_seq, hidden
+        return x_upd, K_seq, hidden, meas_mask
 
 
 # ============================================================
@@ -410,6 +425,7 @@ class RobustStateNet(nn.Module):
         motion_list = []
         K_list = []
         pred_mask_list = []
+        meas_mask_list = []
 
         x_prev_upd = x0
         z_prev = z_seq[:, 0, :]
@@ -440,7 +456,7 @@ class RobustStateNet(nn.Module):
             x_prev_upd_seq = x_prev_upd.unsqueeze(1)
             z_prev_seq = z_prev.unsqueeze(1)
 
-            x_upd_t, K_t, upd_hidden_local = self.updater(
+            x_upd_t, K_t, upd_hidden_local, meas_mask_t = self.updater(
                 x_pred_t,
                 x_prev_upd_seq,
                 z_t,
@@ -453,12 +469,14 @@ class RobustStateNet(nn.Module):
             motion_t = motion_t[:, 0, :]
             K_t = K_t[:, 0, :, :]
             mask_t = mask_t[:, 0, :]
+            meas_mask_t = meas_mask_t[:, 0, :]
 
             x_pred_list.append(x_pred_t)
             x_upd_list.append(x_upd_t)
             motion_list.append(motion_t)
             K_list.append(K_t)
             pred_mask_list.append(mask_t)
+            meas_mask_list.append(meas_mask_t)
 
             x_prev_upd = x_upd_t
             z_prev = z_t[:, 0, :]
@@ -469,6 +487,7 @@ class RobustStateNet(nn.Module):
             "motion": torch.stack(motion_list, dim=1),
             "K": torch.stack(K_list, dim=1),
             "pred_mask": torch.stack(pred_mask_list, dim=1),
+            "meas_mask": torch.stack(meas_mask_list, dim=1),
         }
 
 
@@ -1298,6 +1317,30 @@ def weighted_state_mse(
     return (err ** 2).mean()
 
 
+def meas_mask_supervision_loss(
+    meas_mask: torch.Tensor,
+    meas_attack_labels: torch.Tensor,
+) -> torch.Tensor:
+    """
+    Supervised loss encouraging the measurement mask to suppress
+    corrupted measurement channels in the innovation.
+
+    Args:
+        meas_mask: [B, T, 5] — learned per-channel mask on measurements
+        meas_attack_labels: [B, 5] — 1 if that measurement channel was attacked
+
+    Returns:
+        Scalar loss
+    """
+    # Target: 1 for clean channels, 0 for attacked channels
+    target = (1.0 - meas_attack_labels).unsqueeze(1).expand_as(meas_mask)
+    loss = torch.nn.functional.binary_cross_entropy(
+        meas_mask.clamp(1e-6, 1.0 - 1e-6),
+        target,
+        reduction="mean",
+    )
+    return loss
+
 
 def robuststatenet_loss(
     x_pred: torch.Tensor,
@@ -1309,14 +1352,22 @@ def robuststatenet_loss(
     pred_mask: Optional[torch.Tensor] = None,
     attack_labels: Optional[torch.Tensor] = None,
     lambda_mask: float = 0.1,
+    meas_mask: Optional[torch.Tensor] = None,
+    meas_attack_labels: Optional[torch.Tensor] = None,
+    lambda_meas_mask: float = 0.1,
 ):
     """
     Paper-style combined loss with optional mask supervision:
     L = lambda1 ||y_hat - y_u||^2 + lambda2 ||y_hat - y_p||^2
-      + lambda_mask * mask_supervision_loss
+      + lambda_mask * pred_mask_supervision_loss
+      + lambda_meas_mask * meas_mask_supervision_loss
 
     When pred_mask and attack_labels are provided, the mask supervision
     term encourages the prediction mask to suppress attacked branches.
+
+    When meas_mask and meas_attack_labels are provided, the measurement
+    mask supervision encourages the update mask to suppress corrupted
+    measurement channels in the innovation.
     """
     loss_upd = weighted_state_mse(x_upd, x_gt, weights)
     loss_pred = weighted_state_mse(x_pred, x_gt, weights)
@@ -1328,6 +1379,11 @@ def robuststatenet_loss(
         loss_mask = mask_supervision_loss(pred_mask, attack_labels)
         total = total + lambda_mask * loss_mask
         logs["loss_mask"] = loss_mask.item()
+
+    if meas_mask is not None and meas_attack_labels is not None and lambda_meas_mask > 0:
+        loss_meas = meas_mask_supervision_loss(meas_mask, meas_attack_labels)
+        total = total + lambda_meas_mask * loss_meas
+        logs["loss_meas_mask"] = loss_meas.item()
 
     return total, logs
 

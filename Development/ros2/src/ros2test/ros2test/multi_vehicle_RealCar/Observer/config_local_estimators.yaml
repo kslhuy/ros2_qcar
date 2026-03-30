@@ -52,7 +52,7 @@ local:
     load_pretrained: true       # Set true after training and saving a checkpoint.
     model_path: models/robust_kalmannet.pt # Relative to Observer/KalmaNet/Robust/
     allow_untrained_model: false # Keep false for runtime use; random weights are not useful.
-    use_fallback: true           # Use GPS-corrected kinematic fallback when no checkpoint is available.
+    use_fallback: false           # Use GPS-corrected kinematic fallback when no checkpoint is available.
     enable_ekf_comparator: true  # Run the standard EKF in parallel for online comparison.
     comparator_console_log: false # Keep console quiet during runtime.
     comparator_log_interval: 100  # If console logging is enabled, log every N updates.
