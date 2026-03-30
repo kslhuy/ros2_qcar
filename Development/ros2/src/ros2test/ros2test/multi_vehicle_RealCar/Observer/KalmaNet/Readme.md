@@ -1,135 +1,270 @@
-Implemented the offline data pipeline for Robust KalmanNet.
+# Robust KalmanNet: record, train, validate, run
+
+This folder contains the offline workflow for the QCar Robust KalmanNet estimator.
+
+The practical flow is:
+
+1. Record clean driving data while `ekf` is the active local estimator.
+2. Train `RobustStateNet` offline from the recorded `.npz` dataset files.
+3. Validate the learned model against the baseline fallback estimator.
+4. Enable `robust_kalman_net` in runtime and load the trained checkpoint.
 
 
+## Folder layout
 
-**Runtime Integration**
-- Vehicle starts/stops recorder here: [vehicle_logic.py](c:/Users/Quang%20Huy%20Nuyen/Desktop/PHD_paper/Simulation/QCAR/QCar2_Cran/Development/multi_vehicle_self_driving_RealQcar/qcar/vehicle_logic.py#L368)
-- One synchronized sample is recorded after each observer update here: [vehicle_logic.py](c:/Users/Quang%20Huy%20Nuyen/Desktop/PHD_paper/Simulation/QCAR/QCar2_Cran/Development/multi_vehicle_self_driving_RealQcar/qcar/vehicle_logic.py#L409) and [vehicle_logic.py](c:/Users/Quang%20Huy%20Nuyen/Desktop/PHD_paper/Simulation/QCAR/QCar2_Cran/Development/multi_vehicle_self_driving_RealQcar/qcar/vehicle_logic.py#L608)
-- Status is exposed in telemetry here: [vehicle_logic.py](c:/Users/Quang%20Huy%20Nuyen/Desktop/PHD_paper/Simulation/QCAR/QCar2_Cran/Development/multi_vehicle_self_driving_RealQcar/qcar/vehicle_logic.py#L1006)
-- Command handling for start/stop/discard/status is here: [state_base.py](c:/Users/Quang%20Huy%20Nuyen/Desktop/PHD_paper/Simulation/QCAR/QCar2_Cran/Development/multi_vehicle_self_driving_RealQcar/qcar/StateMachine/state_base.py#L872)
+- Dataset recorder output: `Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/KalmaNet/Robust/datasets/`
+- Training script: `Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/KalmaNet/Robust/train_robust_kalmannet.py`
+- Validation script: `Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/KalmaNet/Robust/validate_robust_kalmannet.py`
+- Runtime config: `Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/config_local_estimators.yaml`
 
-**GUI Trigger**
-- New panel/buttons: [calibration.py](c:/Users/Quang%20Huy%20Nuyen/Desktop/PHD_paper/Simulation/QCAR/QCar2_Cran/Development/multi_vehicle_self_driving_RealQcar/qcar/GUI/qcar_gui/widgets/car_components/calibration.py#L298)
-- Wired into car panel: [car_panel.py](c:/Users/Quang%20Huy%20Nuyen/Desktop/PHD_paper/Simulation/QCAR/QCar2_Cran/Development/multi_vehicle_self_driving_RealQcar/qcar/GUI/qcar_gui/widgets/car_panel.py)
-- Command sender: [vehicle_commands_mixin.py](c:/Users/Quang%20Huy%20Nuyen/Desktop/PHD_paper/Simulation/QCAR/QCar2_Cran/Development/multi_vehicle_self_driving_RealQcar/qcar/GUI/qcar_gui/app_components/vehicle_commands_mixin.py)
-- App callback/state wiring: [app.py](c:/Users/Quang%20Huy%20Nuyen/Desktop/PHD_paper/Simulation/QCAR/QCar2_Cran/Development/multi_vehicle_self_driving_RealQcar/qcar/GUI/qcar_gui/app.py)
 
-**How Collection Works**
-- Use `ekf` as the active local estimator during recording.
-- Recorded target `x_gt` is:
-  - `x, y, theta, v` from the active local estimator
-  - `w` from `gyro_z`
-- Recorded measurement `z` is:
-  - GPS `x, y, theta` if valid, otherwise target pose fallback
-  - `v` from motor tach
-  - `w` from gyro
-- Raw model inputs saved are:
-  - `ax, ay, wz, delta, vfl, vfr, vrl, vrr`
-  - wheel speeds currently use the same tach-based proxy as runtime
+## What is inside one dataset
 
-That keeps training and deployment consistent.
+Each recorded `.npz` file contains synchronized samples:
 
-**What You Should Do Now**
+- `x_gt`: target state `[x, y, theta, v, w]`
+- `z`: measurement vector `[x, y, theta, v, w]`
+- raw branches used by the network:
+  - `ax`, `ay`, `wz`, `delta`, `vfl`, `vfr`, `vrl`, `vrr`
+- metadata in the paired `.json` file
 
-1. Set local observer to `ekf` before collecting.
-   - Use GUI runtime switch, or set [config_local_estimators.yaml](c:/Users/Quang%20Huy%20Nuyen/Desktop/PHD_paper/Simulation/QCAR/QCar2_Cran/Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/config_local_estimators.yaml) back to `ekf`.
+Important:
 
-2. Start the vehicle normally.
+- For data collection, keep `local_estimator_type: ekf`.
+- The recorder is designed to use the trusted EKF output as the training target.
+- If you collect while `robust_kalman_net` is active, the dataset is not the intended clean target set.
 
-3. In the GUI, use the new `Offline RKNet Data` panel.
-   - `Start`: begin recording
-   - drive the car / run the scenario
-   - `Save`: stop and write dataset
-   - `Discard`: stop without saving
 
-4. Find the saved dataset under:
-   - `qcar/Observer/KalmaNet/Robust/datasets/`
-   - file format: `*.npz`
+## 1. Record a dataset
 
-5. Train offline with:
-```powershell
-python Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/KalmaNet/Robust/train_robust_kalmannet.py `
-  Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/KalmaNet/Robust/datasets/your_file.npz `
-  --output models/robust_kalmannet.pt `
-  --epochs 30 `
-  --batch-size 64 `
-  --sequence-length 20
+Before recording:
+
+- In `config_local_estimators.yaml`, set `local_estimator_type: ekf`
+- Start the vehicle and Ground Station normally
+
+In the GUI:
+
+- Open the `Offline RKNet Data` panel
+- Click `Start`
+- Drive the car through straights, turns, acceleration, braking, and mixed maneuvers
+- Click `Save` when finished
+
+Recorded files are saved under:
+
+```text
+Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/KalmaNet/Robust/datasets/
 ```
 
-6. Validate baseline vs learned model with:
+Example files already present:
+
+- `robust_kalmannet_dataset_V0_20260328_203148.npz`
+- `robust_kalmannet_dataset_V0_20260328_211545.npz`
+- `robust_kalmannet_dataset_V0_20260328_211604.npz`
+
+
+## 2. Train the model
+
+Recommended: run training from the `Robust` folder so relative output paths are obvious.
+
 ```powershell
-python Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/KalmaNet/Robust/validate_robust_kalmannet.py `
-  Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/KalmaNet/Robust/datasets/your_file.npz `
-  --checkpoint models/robust_kalmannet.pt `
+cd Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/KalmaNet/Robust
+python .\train_robust_kalmannet.py `
+  .\datasets\robust_kalmannet_dataset_V0_20260328_203148.npz `
+  --output models\robust_kalmannet.pt `
+  --epochs 30 `
+  --batch-size 64 `
+  --sequence-length 20 `
+  --val-split 0.2
+```
+
+You can also train on multiple datasets in one command:
+
+```powershell
+python .\train_robust_kalmannet.py `
+  .\datasets\robust_kalmannet_dataset_V0_20260328_203148.npz `
+  .\datasets\robust_kalmannet_dataset_V0_20260328_211545.npz `
+  .\datasets\robust_kalmannet_dataset_V0_20260328_211604.npz `
+  --output models\robust_kalmannet.pt `
+  --epochs 30 `
+  --batch-size 64 `
+  --sequence-length 20 `
+  --val-split 0.2
+```
+
+What the trainer does:
+
+- merges one or more recorded datasets
+- builds sliding windows of length `--sequence-length`
+- uses a chronological validation split to reduce leakage
+- applies sensor attack augmentation by default during training
+- saves the best checkpoint when validation loss improves
+
+To train on clean data only, disable augmentation explicitly:
+
+```powershell
+python .\train_robust_kalmannet.py `
+  .\datasets\robust_kalmannet_dataset_V0_20260328_211604.npz `
+  --output models\robust_kalmannet_clean.pt `
+  --epochs 30 `
+  --batch-size 64 `
+  --sequence-length 20 `
+  --val-split 0.2 `
+  --no-augmentation
+```
+
+With `--no-augmentation`, the trainer uses the recorded dataset as-is and does not inject attack corruption into the sensor branches during training.
+
+Training outputs:
+
+- checkpoint: `models\robust_kalmannet.pt`
+- training history: `models\robust_kalmannet.train_history.json`
+
+Useful options:
+
+- `--epochs 50`
+- `--batch-size 128`
+- `--sequence-length 30`
+- `--lr 1e-4`
+- `--device cpu`
+- `--device cuda`
+- `--no-augmentation`
+- `--attack-prob 0.5`
+- `--max-branches-attacked 1`
+
+Notes:
+
+- `--output` is resolved relative to the folder containing `train_robust_kalmannet.py`
+- the dataset must contain at least `sequence_length` samples
+- validation uses teacher forcing disabled, which is the realistic offline check
+
+
+## 3. Validate the trained checkpoint
+
+Run the validator on the same or a separate recorded dataset:
+
+```powershell
+cd Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/KalmaNet/Robust
+python .\validate_robust_kalmannet.py `
+  .\datasets\robust_kalmannet_dataset_V0_20260328_211604.npz `
+  --checkpoint .\models\robust_kalmannet.pt `
   --sequence-length 20 `
   --output validation_metrics.json
 ```
 
-7. After that, enable learned runtime inference:
-   - set `local_estimator_type: robust_kalman_net`
-   - in [config_local_estimators.yaml](c:/Users/Quang%20Huy%20Nuyen/Desktop/PHD_paper/Simulation/QCAR/QCar2_Cran/Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/config_local_estimators.yaml), set:
-```yaml
-load_pretrained: true
-model_path: models/robust_kalmannet.pt
-use_model: true
-use_fallback: true
+You can validate across multiple datasets too:
+
+```powershell
+python .\validate_robust_kalmannet.py `
+  .\datasets\robust_kalmannet_dataset_V0_20260328_203148.npz `
+  .\datasets\robust_kalmannet_dataset_V0_20260328_211545.npz `
+  .\datasets\robust_kalmannet_dataset_V0_20260328_211604.npz `
+  --checkpoint .\models\robust_kalmannet.pt `
+  --sequence-length 20 `
+  --output validation_metrics.json
 ```
 
-**Offline Comparison**
-The validator now compares two estimators separately:
-- baseline fallback estimator
-- learned Robust KalmanNet estimator
+The validator compares:
 
-Both are compared against the recorded EKF target dataset.
+- `baseline`: fallback estimator only
+- `learned`: trained Robust KalmanNet checkpoint
 
-**Validation I Ran**
-- syntax compile passed
-- dataset recorder smoke test passed
-- offline validator baseline-only smoke test passed
+Validation outputs:
 
-**Important**
-For collection, keep the active local estimator as `ekf`. If you leave it as `robust_kalman_net`, the recorder will refuse to start by default.
+- metrics JSON: `validation_metrics.json`
+- prediction arrays: `validation_metrics.predictions.npz`
 
-**Next Steps**
-1. Collect one real dataset and send me the file path; I can help tune the trainer command.
-2. If you want better training quality, I can next add plots for validation trajectories and per-state RMSE curves.
-3. If you want true wheel-speed training instead of tach proxy, I can patch the recorder/runtime input mapping next.
+Typical metric structure:
 
-┌────────────────────────────────────────────────────────────┐
-│  STEP 1: RECORD (on real QCar, via Ground Station GUI)     │
-│                                                            │
-│  You drive the car normally (no attacks).                  │
-│  RobustKalmanNetDatasetRecorder records:                   │
-│    • Raw sensors: ax, ay, wz, δ, wheel speeds              │
-│    • Measurements z: GPS x/y/θ, motor tach, gyro           │
-│    • Ground truth x_gt: from a trusted EKF estimator       │
-│  → Saved as .npz file                                      │
-└──────────────────────────┬─────────────────────────────────┘
-                           ▼
-┌────────────────────────────────────────────────────────────┐
-│  STEP 2: TRAIN (offline, on your PC)                       │
-│                                                            │
-│  python train_robust_kalmannet.py dataset.npz              │
-│                                                            │
-│  For each batch:                                           │
-│    1. Load clean windows from recorded data                │
-│    2. SensorAttackAugmenter randomly corrupts branches     │
-│       (bias, noise, freeze, ramp, scale, zero-out)         │
-│    3. Forward: model sees CORRUPTED sensors                │
-│    4. Loss: model output compared to CLEAN x_gt            │
-│    5. Mask learns: suppress corrupted branch → lower loss  │
-│  → Saved as .pt checkpoint                                 │
-└──────────────────────────┬─────────────────────────────────┘
-                           ▼
-┌────────────────────────────────────────────────────────────┐
-│  STEP 3: DEPLOY (back on QCar)                             │
-│                                                            │
-│  Load checkpoint into RobustKalmanNetStateEstimator        │
-│  Now the masks can detect & suppress real sensor attacks   │
-└────────────────────────────────────────────────────────────┘
- Summary: Data Collection Checklist
-#	Scenario	Duration	Speed	Key Motion
-1	Accel/decel straights	3 min	0→max→0	ax varies, wz≈0
-2	Circles/figure-8	3 min	Steady	Constant wz, ay
-3	Mixed path (turns + straights)	3 min	Varied	Transitions
-4	Aggressive/edge cases	2 min	Varied	Extremes
+```json
+{
+  "baseline": {
+    "rmse": [0.0, 0.0, 0.0, 0.0, 0.0],
+    "rmse_mean": 0.0
+  },
+  "learned": {
+    "rmse": [0.0, 0.0, 0.0, 0.0, 0.0],
+    "rmse_mean": 0.0
+  }
+}
+```
+
+How to read it:
+
+- smaller `rmse_mean` is better
+- compare `learned.rmse_mean` against `baseline.rmse_mean`
+- also inspect the five per-state RMSE values for `x`, `y`, `theta`, `v`, `w`
+
+
+## 4. Enable runtime inference on the vehicle
+
+After you have a checkpoint you trust, update:
+
+`Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/config_local_estimators.yaml`
+
+Set:
+
+```yaml
+local_estimator_type: robust_kalman_net
+
+local:
+  robust_kalman_net:
+    use_model: true
+    load_pretrained: true
+    model_path: models/robust_kalmannet.pt
+    use_fallback: true
+    sequence_length: 20
+    min_history: 5
+    device: auto
+```
+
+Important runtime path rule:
+
+- `model_path` is relative to `qcar/Observer/KalmaNet/Robust/`
+- so `models/robust_kalmannet.pt` means:
+  `Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/KalmaNet/Robust/models/robust_kalmannet.pt`
+
+Recommended runtime settings:
+
+- keep `use_fallback: true`
+- keep `load_pretrained: true`
+- keep `allow_untrained_model: false`
+
+
+## 5. Minimal end-to-end example
+
+```powershell
+cd Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/KalmaNet/Robust
+
+python .\train_robust_kalmannet.py `
+  .\datasets\robust_kalmannet_dataset_V0_20260328_211545.npz `
+  --output models\robust_kalmannet.pt `
+  --epochs 30 `
+  --batch-size 64 `
+  --sequence-length 20
+
+python .\validate_robust_kalmannet.py `
+  .\datasets\robust_kalmannet_dataset_V0_20260328_211604.npz `
+  --checkpoint .\models\robust_kalmannet.pt `
+  --sequence-length 20 `
+  --output validation_metrics.json
+```
+
+
+## 6. Common mistakes
+
+- Recording data while `robust_kalman_net` is active instead of `ekf`
+- Using too little data to form sequence windows
+- Forgetting that `--output` is relative to the training script folder
+- Forgetting that `model_path` in YAML is relative to `KalmaNet/Robust/`
+- Comparing only one state and ignoring full RMSE across all five states
+
+
+## 7. Practical recommendation
+
+For a first useful model:
+
+- collect several runs with different maneuvers
+- train on multiple `.npz` files together
+- keep `sequence_length: 20`
+- validate on one held-out run
+- only switch runtime to `robust_kalman_net` after the learned model beats the baseline offline
