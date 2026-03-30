@@ -48,8 +48,10 @@ source install/setup.bash
 Copy-safe one-line equivalent:
 
 ```bash
-ros2 run ros2test vehicle_main_ros_qcar --ros-args -p car_id:=2 -p host:=192.168.2.200 -p v_ref:=0.6 -p vehicle_type:=Qcar
+ros2 run ros2test vehicle_main_ros_qcar --ros-args -p car_id:=0 -p host:=192.168.2.200 -p v_ref:=0.6 -p vehicle_type:=Qcar
 ```
+
+ros2 run ros2test vehicle_main_ros_qcar --ros-args -p car_id:=1 -p host:=192.168.2.200 -p v_ref:=0.6 -p vehicle_type:=Qcar
 
 ## Notes
 

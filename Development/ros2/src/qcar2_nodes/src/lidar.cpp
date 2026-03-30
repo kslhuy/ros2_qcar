@@ -319,23 +319,36 @@ would not be sent on the /scan message.";
             RCLCPP_INFO(node->get_logger(), "lidar_read took %lf seconds", afterReadTime.seconds() - beforeReadTime.seconds());
             */
             
-            if (result >= 0 && ((t_uint32)result >= (num_scan_points - ((1 - scan_mode) * num_allowable_invalid_data))))
+            if (result >= 0 &&
+                result > 1 &&
+                ((t_uint32)result >= (num_scan_points - ((1 - scan_mode) * num_allowable_invalid_data))))
             {
                 msgs.header.frame_id = "base_scan";
                 msgs.range_min = min_distance;
                 msgs.range_max = max_distance;
 
                 currentScanTime = node->get_clock()->now();
-                
-                msgs.header.stamp = currentScanTime;
-                msgs.angle_min = measurements[0].heading;
-                msgs.angle_max = measurements[result - 1].heading;
-                msgs.angle_increment = msgs.angle_max / result;
-                msgs.time_increment = (1.0 / publish_rate) / result;
-                msgs.scan_time = currentScanTime.seconds() - previousScanTime.seconds();
+
+                const double scan_duration =
+                    previousScanTime.nanoseconds() > 0
+                    ? (currentScanTime - previousScanTime).seconds()
+                    : (1.0 / publish_rate);
+
+                // This timestamp is captured after reading the scan, so backdate it to the
+                // first ray to keep per-point timing monotonic for downstream consumers.
+                msgs.header.stamp = currentScanTime - rclcpp::Duration::from_seconds(scan_duration);
+
+                // Measurements are published in reverse order to match ROS' CCW LaserScan
+                // convention, so the corresponding angles must also be reversed and negated.
+                msgs.angle_min = -measurements[result - 1].heading;
+                msgs.angle_max = -measurements[0].heading;
+                msgs.angle_increment = (msgs.angle_max - msgs.angle_min) / (result - 1);
+                msgs.time_increment = scan_duration / (result - 1);
+                msgs.scan_time = scan_duration;
 
                 //RCLCPP_INFO(node->get_logger(), "Read %d measurements", result);
                 msgs.ranges.clear();
+                msgs.ranges.reserve(result);
                 // Fill msgs.ranges in reverse order to be compatible with the CCW convention
                 for (int i = (result - 1); i >= 0; --i)
                 {
