@@ -31,7 +31,7 @@ longitudinal_controller_type: 'pid'
 
 # CACC Controller Parameters
 cacc:
-  s0: 0.25                    # Minimum spacing (meters)
+  s0: 0.2                    # Minimum spacing (meters)
   h: 0.5                     # Time headway (seconds)
   K_spacing: 0.3             # Spacing error gain , High values make the car lurch forward aggressively if it falls slightly behind.
   K_velocity: 0.15           # Velocity error gain ,  Low values make the car ignore the leader's smooth speedometer and act purely based on the distance gap.
