@@ -14,6 +14,67 @@ colcon build --packages-select ros2test --symlink-install
 source install/setup.bash
 ```
 
+## Option 2: Localization only with a `.pbstream` map
+
+Use this when you want Cartographer localization without the full Nav2 map launch.
+
+### Terminal 1
+
+```bash
+cd /home/nvidia/Documents/qcar2/Development/ros2
+source install/setup.bash
+ros2 launch ros2test localization_cartographer_qcar.launch.py
+  # pbstream:=/absolute/path/to/your_map.pbstream
+```
+
+### Terminal 2
+
+```bash
+cd /home/nvidia/Documents/qcar2/Development/ros2
+source install/setup.bash
+
+```
+
+Copy-safe one-line equivalent:
+
+```bash
+ros2 run ros2test vehicle_main_ros_qcar --ros-args -p car_id:=0 -p host:=192.168.2.200 -p v_ref:=0.6 -p vehicle_type:=Qcar
+```
+
+ros2 run ros2test vehicle_main_ros_qcar --ros-args -p car_id:=1 -p host:=192.168.2.200 -p v_ref:=0.6 -p vehicle_type:=Qcar
+
+## Notes
+
+
+### Terminal 3 — Run the alignment helper
+```bash
+colcon build --packages-select ros2test --symlink-install
+
+source install/setup.bash
+
+ros2 run ros2test waypoint_alignment_helper --ros-args -p sdc_map_x:=0.1000 -p sdc_map_y:=-0.1000 -p sdc_map_z:=0.0 -p sdc_map_yaw:=1.5621 -p sdc_map_pitch:=0.0 -p sdc_map_roll:=0.0
+# ros2 run ros2test waypoint_alignment_helper
+```
+
+
+cd /home/nvidia/Documents/qcar2/Development/ros2
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 launch qcar2_nodes qcar2_manual_cartographer_launch.py
+
+
+
+ros2 service call /write_state cartographer_ros_msgs/srv/WriteState "{filename: '/home/nvidia/Documents/qcar2/Development/ros2/src/ros2test/map/my_new_map.pbstream', include_unfinished_submaps: true}"
+
+
+source /opt/ros/humble/setup.bash
+/opt/ros/humble/lib/cartographer_ros/cartographer_pbstream_to_ros_map \
+  -pbstream_filename /home/nvidia/Documents/qcar2/Development/ros2/src/ros2test/map/my_new_map.pbstream \
+  -map_filestem /home/nvidia/Documents/qcar2/Development/ros2/src/ros2test/map/my_new_map \
+  -resolution 0.05
+
+
+
 ## Option 0: Build a new map with Cartographer
 
 Use the manual Cartographer launch when you want to drive the QCar2 yourself and
@@ -90,62 +151,3 @@ This launch file starts:
 - `nav2_qcar2_converter`
 
 
-
-## Option 2: Localization only with a `.pbstream` map
-
-Use this when you want Cartographer localization without the full Nav2 map launch.
-
-### Terminal 1
-
-```bash
-cd /home/nvidia/Documents/qcar2/Development/ros2
-source install/setup.bash
-ros2 launch ros2test localization_cartographer_qcar.launch.py
-  # pbstream:=/absolute/path/to/your_map.pbstream
-```
-
-### Terminal 2
-
-```bash
-cd /home/nvidia/Documents/qcar2/Development/ros2
-source install/setup.bash
-
-```
-
-Copy-safe one-line equivalent:
-
-```bash
-ros2 run ros2test vehicle_main_ros_qcar --ros-args -p car_id:=0 -p host:=192.168.2.200 -p v_ref:=0.6 -p vehicle_type:=Qcar
-```
-
-ros2 run ros2test vehicle_main_ros_qcar --ros-args -p car_id:=1 -p host:=192.168.2.200 -p v_ref:=0.6 -p vehicle_type:=Qcar
-
-## Notes
-
-
-### Terminal 3 — Run the alignment helper
-```bash
-colcon build --packages-select ros2test --symlink-install
-
-source install/setup.bash
-
-ros2 run ros2test waypoint_alignment_helper --ros-args -p sdc_map_x:=0.1000 -p sdc_map_y:=-0.1000 -p sdc_map_z:=0.0 -p sdc_map_yaw:=1.5621 -p sdc_map_pitch:=0.0 -p sdc_map_roll:=0.0
-# ros2 run ros2test waypoint_alignment_helper
-```
-
-
-cd /home/nvidia/Documents/qcar2/Development/ros2
-source /opt/ros/humble/setup.bash
-source install/setup.bash
-ros2 launch qcar2_nodes qcar2_manual_cartographer_launch.py
-
-
-
-ros2 service call /write_state cartographer_ros_msgs/srv/WriteState "{filename: '/home/nvidia/Documents/qcar2/Development/ros2/src/ros2test/map/my_new_map.pbstream', include_unfinished_submaps: true}"
-
-
-source /opt/ros/humble/setup.bash
-/opt/ros/humble/lib/cartographer_ros/cartographer_pbstream_to_ros_map \
-  -pbstream_filename /home/nvidia/Documents/qcar2/Development/ros2/src/ros2test/map/my_new_map.pbstream \
-  -map_filestem /home/nvidia/Documents/qcar2/Development/ros2/src/ros2test/map/my_new_map \
-  -resolution 0.05

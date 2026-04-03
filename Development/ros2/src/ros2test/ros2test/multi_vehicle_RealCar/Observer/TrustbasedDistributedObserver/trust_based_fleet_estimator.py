@@ -337,7 +337,7 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             target_confidence: Dict[int, float] = {self.vehicle_id: 1.0}
             target_prediction_mode: Dict[int, bool] = {self.vehicle_id: False}
 
-            for target_id in range(self.fleet_size):
+            for target_id in trust_scores.keys():
                 if target_id == self.vehicle_id:
                     continue
 
@@ -452,12 +452,16 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         """Update trust scores for all known vehicles."""
         trust_scores: Dict[int, float] = {}
 
-        known_vehicle_ids = set(range(self.fleet_size))
+        known_vehicle_ids = set()
         known_vehicle_ids.update(self.received_local_states.keys())
         known_vehicle_ids.update(self.trust_model.get_all_trust_scores().keys())
         known_vehicle_ids.discard(self.vehicle_id)
 
         for vehicle_id in sorted(known_vehicle_ids):
+            # Ensure fleet_states can accommodate this vehicle_id
+            # (vehicle IDs may be non-contiguous, e.g. [0, 2])
+            self._ensure_fleet_capacity(vehicle_id)
+
             latest = self._get_latest_received_state_with_timestamp(
                 vehicle_id, current_time_ns
             )
