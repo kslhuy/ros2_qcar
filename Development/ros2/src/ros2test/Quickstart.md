@@ -14,6 +14,73 @@ colcon build --packages-select ros2test --symlink-install
 source install/setup.bash
 ```
 
+## Option 0: Build a new map with Cartographer
+
+Use the manual Cartographer launch when you want to drive the QCar2 yourself and
+record a fresh map.
+
+### Terminal 1 - Start mapping
+
+```bash
+cd /home/nvidia/Documents/qcar2/Development/ros2
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 launch qcar2_nodes qcar2_manual_cartographer_launch.py
+```
+
+This launch starts manual drive, LiDAR, hardware, Cartographer SLAM, and the
+occupancy grid publisher. The mapping config is `qcar2_2d.lua`.
+
+### Drive the car
+
+Drive slowly through the whole area you want to map and, if possible, return to
+your starting area once or twice so Cartographer can close loops cleanly.
+
+### Terminal 2 - Save the `.pbstream`
+
+After the map looks good in RViz:
+
+```bash
+cd /home/nvidia/Documents/qcar2/Development/ros2
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 service call /write_state cartographer_ros_msgs/srv/WriteState "{filename: '/home/nvidia/Documents/qcar2/Development/ros2/src/ros2test/map/my_new_map.pbstream', include_unfinished_submaps: true}"
+```
+
+### Export `.yaml` and `.pgm`
+
+Convert the saved Cartographer state into a standard ROS map:
+
+```bash
+source /opt/ros/humble/setup.bash
+/opt/ros/humble/lib/cartographer_ros/cartographer_pbstream_to_ros_map \
+  -pbstream_filename /home/nvidia/Documents/qcar2/Development/ros2/src/ros2test/map/my_new_map.pbstream \
+  -map_filestem /home/nvidia/Documents/qcar2/Development/ros2/src/ros2test/map/my_new_map \
+  -resolution 0.05
+```
+
+This creates:
+- `ros2/src/ros2test/map/my_new_map.pbstream`
+- `ros2/src/ros2test/map/my_new_map.yaml`
+- `ros2/src/ros2test/map/my_new_map.pgm`
+
+### Use the new map later
+
+For Cartographer localization with the saved `.pbstream`:
+
+```bash
+ros2 launch ros2test localization_cartographer_qcar.launch.py \
+  pbstream:=/home/nvidia/Documents/qcar2/Development/ros2/src/ros2test/map/my_new_map.pbstream
+```
+
+If you want Nav2 `map_server` to load the exported YAML instead:
+
+```bash
+ros2 launch ros2test localization_cartographer_qcar.launch.py \
+  use_static_map_server:=true \
+  map_yaml:=/home/nvidia/Documents/qcar2/Development/ros2/src/ros2test/map/my_new_map.yaml
+```
+
 ## Option 1: Full stack with Nav2 and a saved map
 
 This launch file starts:
@@ -62,7 +129,23 @@ colcon build --packages-select ros2test --symlink-install
 
 source install/setup.bash
 
-ros2 run ros2test waypoint_alignment_helper --ros-args -p sdc_map_x:=-1.8000 -p sdc_map_y:=0.1000 -p sdc_map_z:=0.0 -p sdc_map_yaw:=1.7017 -p sdc_map_pitch:=0.0 -p sdc_map_roll:=0.0
+ros2 run ros2test waypoint_alignment_helper --ros-args -p sdc_map_x:=0.1000 -p sdc_map_y:=-0.1000 -p sdc_map_z:=0.0 -p sdc_map_yaw:=1.5621 -p sdc_map_pitch:=0.0 -p sdc_map_roll:=0.0
 # ros2 run ros2test waypoint_alignment_helper
 ```
 
+
+cd /home/nvidia/Documents/qcar2/Development/ros2
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 launch qcar2_nodes qcar2_manual_cartographer_launch.py
+
+
+
+ros2 service call /write_state cartographer_ros_msgs/srv/WriteState "{filename: '/home/nvidia/Documents/qcar2/Development/ros2/src/ros2test/map/my_new_map.pbstream', include_unfinished_submaps: true}"
+
+
+source /opt/ros/humble/setup.bash
+/opt/ros/humble/lib/cartographer_ros/cartographer_pbstream_to_ros_map \
+  -pbstream_filename /home/nvidia/Documents/qcar2/Development/ros2/src/ros2test/map/my_new_map.pbstream \
+  -map_filestem /home/nvidia/Documents/qcar2/Development/ros2/src/ros2test/map/my_new_map \
+  -resolution 0.05

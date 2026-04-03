@@ -1,0 +1,6 @@
+image: /home/nvidia/Documents/qcar2/Development/ros2/src/ros2test/map/my_new_map.pgm
+resolution: 0.050000
+origin: [-3.256176, -4.202183, 0.0]
+negate: 0
+occupied_thresh: 0.65
+free_thresh: 0.196

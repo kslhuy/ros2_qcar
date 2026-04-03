@@ -15,8 +15,8 @@ def generate_launch_description():
 
     cartographer_config_dir = os.path.join(qcar2_share, 'config')
     rviz_config = os.path.join(ros2test_share, 'rviz2config', 'conf.rviz')
-    default_map_yaml = '/home/nvidia/Documents/qcar2/Development/ros2/src/ros2test/map/cran_lab.yaml'
-    default_pbstream = '/home/nvidia/Documents/qcar2/Development/ros2/src/ros2test/map/cran_lab.pbstream'
+    default_map_yaml = '/home/nvidia/Documents/qcar2/Development/ros2/src/ros2test/map/my_new_map.yaml'
+    default_pbstream = '/home/nvidia/Documents/qcar2/Development/ros2/src/ros2test/map/my_new_map.pbstream'
     default_cartographer_config_basename = 'qcar2_2d_localization.lua'
 
     pbstream = LaunchConfiguration('pbstream')
@@ -43,6 +43,11 @@ def generate_launch_description():
     # ['-1.6000', '0.1000', '0', '-1.5708', '0', '0', 'SDCQcar', 'map'],
     #   -1.0000 -0.7000 0 \
     #   5.4716 0 0 \
+
+#     ros2 run tf2_ros static_transform_publisher \
+#   0.1000 -0.1000 0 \
+#   1.5621 0 0 \
+#   SDCQcar map
     qcar2_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(qcar2_share, 'launch', 'qcar2_launch.py')
@@ -244,12 +249,12 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'sdc_map_x',
-            default_value='-1.0000',
+            default_value='0.1000',
             description='Static TF translation x for SDCQcar -> map',
         ),
         DeclareLaunchArgument(
             'sdc_map_y',
-            default_value='-0.7000',
+            default_value='-0.1000',
             description='Static TF translation y for SDCQcar -> map',
         ),
         DeclareLaunchArgument(
@@ -259,7 +264,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'sdc_map_yaw',
-            default_value='5.4716',
+            default_value='1.5621',
             description='Static TF yaw (rad) for SDCQcar -> map',
         ),
         DeclareLaunchArgument(
@@ -277,7 +282,7 @@ def generate_launch_description():
         cartographer_node_with_pbstream,
         cartographer_node_without_pbstream,
         cartographer_occupancy_grid_node,
-        sdcqcar_to_map,
+        # sdcqcar_to_map,
         map_server_node,
         lifecycle_manager,
         # waypoints_qcar,
