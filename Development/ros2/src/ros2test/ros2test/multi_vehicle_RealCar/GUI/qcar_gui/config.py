@@ -154,7 +154,7 @@ TELEMETRY_FIELDS = [
     ("position", "Pos:", "(0.0, 0.0)", 9),
     ("velocity", "Vel:", "0.00", 4),
     ("heading", "Heading:", "0.00", 4),
-    ("state", "State:", "Unknown", 10),
+    ("state", "State:", "Unknown", 15),
     ("path_long_ctrl", "Path Long Ctrl:", "unk", 6),
     ("path_lat_ctrl", "Path Lat Ctrl:", "unk", 8),
     ("leader_long_ctrl", "Leader Long Ctrl:", "unk", 6),

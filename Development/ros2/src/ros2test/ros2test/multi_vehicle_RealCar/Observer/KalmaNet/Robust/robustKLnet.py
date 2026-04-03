@@ -63,6 +63,13 @@ class RSNConfig:
     use_hard_mask: bool = False
     dt: float = 0.02
 
+    # ── Modular prediction step ──────────────────────────────────────────
+    # "nn"        → RobustMotionPredictor (tri-LSTM, learnable, default)
+    # "kinematic" → KinematicPredictor   (unicycle model, no parameters)
+    predictor_mode: str = "kinematic"
+    # LPF alpha for velocity in the kinematic predictor
+    kin_v_lpf_alpha: float = 0.25
+
 
 # ============================================================
 # HELPERS
@@ -122,6 +129,7 @@ def hard_sigmoid_st(mask_logits: torch.Tensor) -> torch.Tensor:
 class SensorLSTM(nn.Module):
     def __init__(self, in_dim: int, hidden_dim: int):
         super().__init__()
+        self.norm = nn.LayerNorm(in_dim)
         self.lstm = nn.LSTM(
             input_size=in_dim,
             hidden_size=hidden_dim,
@@ -136,7 +144,8 @@ class SensorLSTM(nn.Module):
             y: [B, T, hidden_dim]
             hidden: LSTM hidden
         """
-        y, hidden = self.lstm(x, hidden)
+        x_norm = self.norm(x)
+        y, hidden = self.lstm(x_norm, hidden)
         return y, hidden
 
 
@@ -203,6 +212,7 @@ class RobustMotionPredictor(nn.Module):
         wheel_seq: torch.Tensor,
         prev_state_seq: torch.Tensor,
         hidden_dict: Optional[Dict] = None,
+        dt: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, Dict, torch.Tensor]:
         """
         returns:
@@ -255,74 +265,120 @@ class RobustMotionPredictor(nn.Module):
 
 
 # ============================================================
+# KINEMATIC PREDICTOR (parameter-free alternative)
+# ============================================================
+
+class KinematicPredictor(nn.Module):
+    """
+    Parameter-free unicycle-model prediction step.
+
+    Accepts the exact same forward() signature as RobustMotionPredictor so that
+    RobustStateNet.forward() requires zero structural changes.
+
+    Kinematic equations (local body frame → global):
+        dxE   =  v_prev * dt          (forward motion; no lateral slip)
+        dyE   =  0
+        dpsi  =  wz * dt             (yaw integration)
+        v_next = alpha * motor_tach + (1 - alpha) * v_prev   (LPF)
+        w_next = wz
+
+    Signals are extracted from existing branch-input tensors:
+        wz         ← imu_seq[..., 4]    layout: [v, psi, ax, ay, wz]
+        motor_tach ← wheel_seq[..., 2]  layout: [v, psi, vfl, vfr, vrl, vrr]
+    """
+
+    def __init__(self, cfg: RSNConfig):
+        super().__init__()
+        self.dt = cfg.dt
+        self.alpha = float(cfg.kin_v_lpf_alpha)
+
+    def forward(
+        self,
+        imu_seq: torch.Tensor,       # [B, 1, 5]  [v, psi, ax, ay, wz]
+        steer_seq: torch.Tensor,     # [B, 1, 3]  [v, psi, delta]  (unused)
+        wheel_seq: torch.Tensor,     # [B, 1, 6]  [v, psi, vfl, vfr, vrl, vrr]
+        prev_state_seq: torch.Tensor,  # [B, 1, 5]  x_{k-1|k-1}
+        hidden_dict: Optional[Dict] = None,
+        dt: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor, Dict, None]:
+        """
+        Returns:
+            x_pred   : [B, 1, 5]
+            motion   : [B, 1, 5]  [dxE, dyE, dpsi, v_next, w_next]
+            {}       : empty hidden dict (stateless)
+            None     : no feature mask
+        """
+        # ── extract signals ──────────────────────────────────────────────
+        v_prev     = prev_state_seq[..., 3:4]   # [B, 1, 1]
+        wz         = imu_seq[..., 4:5]          # [B, 1, 1]
+        motor_tach = wheel_seq[..., 2:3]        # [B, 1, 1]  use vfl as representative
+
+        # ── kinematic model ──────────────────────────────────────────────
+        v_next = self.alpha * motor_tach + (1.0 - self.alpha) * v_prev
+        w_next = wz
+        active_dt = dt if dt is not None else self.dt
+        dxE    = v_prev * active_dt
+        dyE    = torch.zeros_like(dxE)
+        dpsi   = wz * active_dt
+
+        motion = torch.cat([dxE, dyE, dpsi, v_next, w_next], dim=-1)  # [B, 1, 5]
+        x_pred = RobustMotionPredictor.motion_to_state(prev_state_seq, motion)
+
+        return x_pred, motion, {}, None
+
+
+# ============================================================
 # UPDATE MODULE
 # ============================================================
 
-class UpdateMaskNet(nn.Module):
-    def __init__(self, feat_dim: int, hidden_dim: int):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(feat_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, feat_dim),
-            nn.Sigmoid(),
-        )
-
-    def forward(self, feat: torch.Tensor) -> torch.Tensor:
-        return self.net(feat)
-
-
-class GainHead(nn.Module):
-    def __init__(self, in_dim: int, hidden_dim: int, state_dim: int, meas_dim: int):
-        super().__init__()
-        self.state_dim = state_dim
-        self.meas_dim = meas_dim
-        self.net = nn.Sequential(
-            nn.Linear(in_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, state_dim * meas_dim),
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        out = self.net(x)
-        return out.view(*out.shape[:-1], self.state_dim, self.meas_dim)
-
-
 class LearnedKalmanUpdate(nn.Module):
     """
-    Features from paper:
-    delta_x  = x_{k|k-1} - x_{k-1|k-1}
-    delta_zp = z_k - H x_{k|k-1}
-    delta_z  = z_k - z_{k-1}
-    then masking + GRU + MLP => K
-    then x_{k|k} = x_{k|k-1} + K( meas_mask * (z_k - Hx_{k|k-1}) )
-
-    The measurement mask suppresses corrupted measurement channels
-    in the innovation so that attacked z values do not pollute x_upd.
+    Features from original KalmanNet:
+    obs_diff       = z_k - z_{k-1}
+    obs_innov_diff = z_k - Hx_{k|k-1}
+    fw_evol_diff   = x_{k-1|k-1} - x_{k-2|k-2}
+    fw_update_diff = x_{k-1|k-1} - x_{k-1|k-2}
+    
+    Uses 3 cascaded GRUs (Q, Sigma, S) and backward flow to update h_Sigma.
     """
 
     def __init__(self, cfg: RSNConfig):
         super().__init__()
         self.cfg = cfg
-        feat_dim = cfg.state_dim + cfg.meas_dim + cfg.meas_dim
-        self.mask_net = UpdateMaskNet(feat_dim, cfg.mask_hidden)
-        self.gru = nn.GRU(
-            input_size=feat_dim,
-            hidden_size=cfg.upd_hidden,
-            num_layers=1,
-            batch_first=True,
-        )
-        self.gain_head = GainHead(
-            cfg.upd_hidden,
-            cfg.gain_hidden,
-            cfg.state_dim,
-            cfg.meas_dim,
-        )
-        # Measurement-level mask: learns to suppress corrupted z channels
-        self.meas_mask_net = nn.Sequential(
-            nn.Linear(feat_dim, cfg.mask_hidden),
+        self.m = cfg.state_dim
+        self.n = cfg.meas_dim
+        self.d_h = cfg.upd_hidden
+
+        # 1. Q-GRU (Process Noise)
+        self.fc5 = nn.Sequential(nn.Linear(self.m, self.d_h), nn.ReLU())
+        self.gru_q = nn.GRU(input_size=self.d_h, hidden_size=self.d_h, batch_first=True)
+
+        # 2. Sigma-GRU (State Uncertainty)
+        self.fc6 = nn.Sequential(nn.Linear(self.m, self.d_h), nn.ReLU())
+        self.gru_sigma = nn.GRU(input_size=self.d_h * 2, hidden_size=self.d_h, batch_first=True)
+
+        # 3. S-GRU (Measurement Uncertainty / Innovation)
+        self.fc1 = nn.Sequential(nn.Linear(self.d_h, self.d_h), nn.ReLU())
+        self.fc7 = nn.Sequential(nn.Linear(self.n * 2, self.d_h), nn.ReLU())
+        self.gru_s = nn.GRU(input_size=self.d_h * 2, hidden_size=self.d_h, batch_first=True)
+
+        # 4. Kalman Gain Intermediate
+        self.fc2 = nn.Sequential(
+            nn.Linear(self.d_h * 2, cfg.gain_hidden),
             nn.ReLU(),
-            nn.Linear(cfg.mask_hidden, cfg.meas_dim),
+            nn.Linear(cfg.gain_hidden, self.m * self.n)
+        )
+
+        # 5. Backward Flow for Sigma
+        self.fc3 = nn.Sequential(nn.Linear(self.d_h + self.m * self.n, self.d_h), nn.ReLU())
+        self.fc4 = nn.Sequential(nn.Linear(self.d_h * 2, self.d_h), nn.ReLU())
+
+        # Measurement-level mask: learns to suppress corrupted z channels
+        feat_dim_all = self.m * 2 + self.n * 2
+        self.meas_mask_net = nn.Sequential(
+            nn.Linear(feat_dim_all, cfg.mask_hidden),
+            nn.ReLU(),
+            nn.Linear(cfg.mask_hidden, self.n),
             nn.Sigmoid(),
         )
 
@@ -330,27 +386,71 @@ class LearnedKalmanUpdate(nn.Module):
         self,
         x_pred_seq: torch.Tensor,
         x_prev_upd_seq: torch.Tensor,
+        x_prev_pred_seq: torch.Tensor,
+        x_prev_prev_upd_seq: torch.Tensor,
         z_seq: torch.Tensor,
         z_prev_seq: torch.Tensor,
-        hidden=None,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        hidden: Optional[Dict[str, torch.Tensor]] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor], torch.Tensor]:
         device = x_pred_seq.device
+        B, T, _ = z_seq.shape
         H = make_H(device=device, dtype=x_pred_seq.dtype)
-
         Hx_pred = torch.matmul(x_pred_seq, H.T)
-        delta_x = x_pred_seq - x_prev_upd_seq
-        delta_zp = z_seq - Hx_pred
-        delta_z = z_seq - z_prev_seq
 
-        feat = torch.cat([delta_x, delta_zp, delta_z], dim=-1)
-        mask = self.mask_net(feat)
-        feat_masked = feat * mask
+        # Differences
+        # DO NOT use L2 normalization across features here! 
+        # Normalizing these vectors destroys magnitude information. If the 
+        # vehicle is stopped, noise becomes a unit vector, making the model 
+        # think there is movement.
+        obs_diff = z_seq - z_prev_seq
+        obs_innov_diff = z_seq - Hx_pred
+        fw_evol_diff = x_prev_upd_seq - x_prev_prev_upd_seq
+        fw_update_diff = x_prev_upd_seq - x_prev_pred_seq
 
-        # Measurement-level mask: [B, T, meas_dim]
-        meas_mask = self.meas_mask_net(feat)
+        # Meas mask extraction
+        feat_all = torch.cat([fw_evol_diff, fw_update_diff, obs_innov_diff, obs_diff], dim=-1)
+        meas_mask = self.meas_mask_net(feat_all)
 
-        gru_out, hidden = self.gru(feat_masked, hidden)
-        K_seq = self.gain_head(gru_out)
+        if hidden is None:
+            hidden = {}
+        h_q = hidden.get("q", torch.zeros(1, B, self.d_h, device=device))
+        h_sig = hidden.get("sig", torch.zeros(1, B, self.d_h, device=device))
+        h_s = hidden.get("s", torch.zeros(1, B, self.d_h, device=device))
+
+        K_list = []
+        for t in range(T):
+            o_d = obs_diff[:, t:t+1, :]
+            oi_d = obs_innov_diff[:, t:t+1, :]
+            fe_d = fw_evol_diff[:, t:t+1, :]
+            fu_d = fw_update_diff[:, t:t+1, :]
+
+            # Flow
+            out_fc5 = self.fc5(fu_d)
+            out_q, h_q = self.gru_q(out_fc5, h_q)
+
+            out_fc6 = self.fc6(fe_d)
+            in_sig = torch.cat([out_q, out_fc6], dim=-1)
+            out_sig, h_sig = self.gru_sigma(in_sig, h_sig)
+
+            out_fc1 = self.fc1(out_sig)
+            out_fc7 = self.fc7(torch.cat([o_d, oi_d], dim=-1))
+            in_s = torch.cat([out_fc1, out_fc7], dim=-1)
+            out_s, h_s = self.gru_s(in_s, h_s)
+
+            # Gain
+            in_fc2 = torch.cat([out_sig, out_s], dim=-1)
+            out_fc2 = self.fc2(in_fc2)
+            K_t = out_fc2.view(-1, 1, self.m, self.n)
+            K_list.append(K_t)
+
+            # Backward flow for next step
+            in_fc3 = torch.cat([out_s, out_fc2], dim=-1)
+            out_fc3 = self.fc3(in_fc3)
+            in_fc4 = torch.cat([out_sig, out_fc3], dim=-1)
+            h_sig = self.fc4(in_fc4).transpose(0, 1)
+
+        K_seq = torch.cat(K_list, dim=1)
+        hidden_out = {"q": h_q, "sig": h_sig, "s": h_s}
 
         # Apply measurement mask to innovation before correction
         raw_innovation = z_seq - Hx_pred
@@ -358,14 +458,13 @@ class LearnedKalmanUpdate(nn.Module):
         corr = torch.matmul(K_seq, masked_innovation).squeeze(-1)
 
         x_upd = x_pred_seq + corr
-        # Out-of-place angle wrapping to avoid breaking autograd
         x_upd = torch.cat([
             x_upd[..., :2],
             wrap_angle(x_upd[..., 2:3]),
             x_upd[..., 3:],
         ], dim=-1)
 
-        return x_upd, K_seq, hidden, meas_mask
+        return x_upd, K_seq, hidden_out, meas_mask
 
 
 # ============================================================
@@ -376,7 +475,11 @@ class RobustStateNet(nn.Module):
     def __init__(self, cfg: RSNConfig):
         super().__init__()
         self.cfg = cfg
-        self.predictor = RobustMotionPredictor(cfg)
+        # ── modular predictor selection ───────────────────────────────────
+        if cfg.predictor_mode == "kinematic":
+            self.predictor: nn.Module = KinematicPredictor(cfg)
+        else:
+            self.predictor = RobustMotionPredictor(cfg)
         self.updater = LearnedKalmanUpdate(cfg)
 
     def build_branch_inputs(
@@ -412,6 +515,7 @@ class RobustStateNet(nn.Module):
         teacher_forcing_state: Optional[torch.Tensor] = None,
         pred_hidden: Optional[Dict] = None,
         upd_hidden=None,
+        dt_seq: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
         """
         teacher_forcing_state:
@@ -428,6 +532,8 @@ class RobustStateNet(nn.Module):
         meas_mask_list = []
 
         x_prev_upd = x0
+        x_prev_prev_upd = x0
+        x_prev_pred = x0
         z_prev = z_seq[:, 0, :]
 
         pred_hidden_local = pred_hidden
@@ -444,21 +550,27 @@ class RobustStateNet(nn.Module):
             imu_t, steer_t, wheel_t = self.build_branch_inputs(raw_t, state_input_t_seq)
 
             prev_state_seq = x_prev_upd.unsqueeze(1)
+            dt_t = dt_seq[:, t : t + 1, :] if dt_seq is not None else None
             x_pred_t, motion_t, pred_hidden_local, mask_t = self.predictor(
                 imu_t,
                 steer_t,
                 wheel_t,
                 prev_state_seq,
                 pred_hidden_local,
+                dt=dt_t,
             )
             z_t = z_seq[:, t : t + 1, :]
 
             x_prev_upd_seq = x_prev_upd.unsqueeze(1)
+            x_prev_pred_seq = x_prev_pred.unsqueeze(1)
+            x_prev_prev_upd_seq = x_prev_prev_upd.unsqueeze(1)
             z_prev_seq = z_prev.unsqueeze(1)
 
             x_upd_t, K_t, upd_hidden_local, meas_mask_t = self.updater(
                 x_pred_t,
                 x_prev_upd_seq,
+                x_prev_pred_seq,
+                x_prev_prev_upd_seq,
                 z_t,
                 z_prev_seq,
                 upd_hidden_local,
@@ -468,7 +580,8 @@ class RobustStateNet(nn.Module):
             x_upd_t = x_upd_t[:, 0, :]
             motion_t = motion_t[:, 0, :]
             K_t = K_t[:, 0, :, :]
-            mask_t = mask_t[:, 0, :]
+            # mask_t is None when using KinematicPredictor (no learned mask)
+            mask_t = mask_t[:, 0, :] if mask_t is not None else None
             meas_mask_t = meas_mask_t[:, 0, :]
 
             x_pred_list.append(x_pred_t)
@@ -478,15 +591,23 @@ class RobustStateNet(nn.Module):
             pred_mask_list.append(mask_t)
             meas_mask_list.append(meas_mask_t)
 
+            x_prev_prev_upd = x_prev_upd
+            x_prev_pred = x_pred_t
             x_prev_upd = x_upd_t
             z_prev = z_t[:, 0, :]
 
+        # pred_mask is None for kinematic predictor (no learnable mask)
+        pred_mask_out = (
+            torch.stack(pred_mask_list, dim=1)
+            if pred_mask_list and pred_mask_list[0] is not None
+            else None
+        )
         return {
             "x_pred": torch.stack(x_pred_list, dim=1),
             "x_upd": torch.stack(x_upd_list, dim=1),
             "motion": torch.stack(motion_list, dim=1),
             "K": torch.stack(K_list, dim=1),
-            "pred_mask": torch.stack(pred_mask_list, dim=1),
+            "pred_mask": pred_mask_out,
             "meas_mask": torch.stack(meas_mask_list, dim=1),
         }
 
@@ -580,12 +701,19 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
             mask_hidden=int(self.config.get("mask_hidden", 64)),
             use_hard_mask=bool(self.config.get("use_hard_mask", False)),
             dt=float(self.config.get("dt", 0.02)),
+            predictor_mode=str(self.config.get("predictor_mode", "kinematic")),
+            kin_v_lpf_alpha=float(self.config.get("kin_v_lpf_alpha", 0.25)),
         )
 
         self.model = None
         if TORCH_AVAILABLE:
             self.model = RobustStateNet(self.model_cfg).to(self.device)
             self.model.eval()
+            self._log_info(
+                f"Robust KalmanNet predictor_mode='{self.model_cfg.predictor_mode}'"
+                + (f" (kin_v_lpf_alpha={self.model_cfg.kin_v_lpf_alpha})"
+                   if self.model_cfg.predictor_mode == "kinematic" else "")
+            )
         self.model_path = self._resolve_model_path(self.config.get("model_path"))
         self.model_ready = False
         self.last_update_used_model = False
@@ -607,6 +735,7 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
             key: deque(maxlen=self.sequence_length) for key in self.RAW_KEYS
         }
         self.measurement_history = deque(maxlen=self.sequence_length)
+        self.dt_history = deque(maxlen=self.sequence_length)
 
         self.internal_state = np.zeros(5, dtype=np.float32)
         if initial_pose is not None:
@@ -919,12 +1048,13 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
         except Exception as exc:
             self._log_error("Failed to write RKNet comparator log row", exc)
 
-    def _append_sample(self, raw_sample: Dict[str, float], measurement: np.ndarray) -> None:
+    def _append_sample(self, raw_sample: Dict[str, float], measurement: np.ndarray, dt: float) -> None:
         for key, value in raw_sample.items():
             self.raw_history[key].append(float(value))
         self.measurement_history.append(np.asarray(measurement, dtype=np.float32))
+        self.dt_history.append(float(dt))
 
-    def _build_model_inputs(self) -> Tuple[Dict[str, torch.Tensor], torch.Tensor, torch.Tensor]:
+    def _build_model_inputs(self) -> Tuple[Dict[str, torch.Tensor], torch.Tensor, torch.Tensor, torch.Tensor]:
         if not TORCH_AVAILABLE:
             raise ImportError("torch is required for Robust KalmanNet inference")
         history_len = len(self.measurement_history)
@@ -947,7 +1077,15 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
         z_arr = np.stack(padded_measurements[-self.sequence_length :], axis=0).astype(np.float32)
         z_seq = torch.as_tensor(z_arr.reshape(1, self.sequence_length, 5), device=self.device)
         x0 = torch.as_tensor(z_arr[0].reshape(1, 5), device=self.device)
-        return raw_tensors, z_seq, x0
+
+        dts = list(self.dt_history)
+        if not dts:
+            dts = [self.model_cfg.dt]
+        padded_dts = [dts[0]] * pad_count + dts
+        dt_arr = np.asarray(padded_dts[-self.sequence_length :], dtype=np.float32).reshape(1, self.sequence_length, 1)
+        dt_seq = torch.as_tensor(dt_arr, device=self.device)
+
+        return raw_tensors, z_seq, x0, dt_seq
 
     def _summarize_pred_mask(self, pred_mask: np.ndarray) -> Dict[str, Any]:
         mask = np.asarray(pred_mask, dtype=np.float64).reshape(-1)
@@ -1000,9 +1138,9 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
         ):
             return None
 
-        raw, z_seq, x0 = self._build_model_inputs()
+        raw, z_seq, x0, dt_seq = self._build_model_inputs()
         with torch.no_grad():
-            out = self.model(raw=raw, z_seq=z_seq, x0=x0, teacher_forcing_state=None)
+            out = self.model(raw=raw, z_seq=z_seq, x0=x0, teacher_forcing_state=None, dt_seq=dt_seq)
 
         x_upd = out["x_upd"][0, -1].detach().cpu().numpy().astype(np.float64)
         if not np.all(np.isfinite(x_upd)):
@@ -1199,7 +1337,7 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
             self.update_count += 1
             measurement = self._measurement_from_inputs(motor_tach, gyro_z, gps_data)
             raw_sample = self._raw_sample_from_inputs(motor_tach, steering, gyro_z, acceleration)
-            self._append_sample(raw_sample, measurement)
+            self._append_sample(raw_sample, measurement, dt)
 
             estimate = None
             self.last_update_used_model = False
@@ -1265,6 +1403,7 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
             key: deque(maxlen=self.sequence_length) for key in self.RAW_KEYS
         }
         self.measurement_history = deque(maxlen=self.sequence_length)
+        self.dt_history = deque(maxlen=self.sequence_length)
         self.internal_state = np.zeros(5, dtype=np.float32)
         if initial_pose is not None:
             self.internal_state[0] = float(initial_pose[0])

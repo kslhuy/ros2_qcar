@@ -250,6 +250,34 @@ python .\validate_robust_kalmannet.py `
 ```
 
 
+ How the 2-Phase Training Adapts
+The training script continues to use a two-phase approach (P1-TF and P2-E2E):
+
+Phase 1: Teacher Forcing (Epochs 1-50)
+What happens: The network is fed the Ground Truth state $x_{k-1}$ as the input to step $k$.
+With Kinematic Mode: The kinematic model uses the ground truth previous state to predict pure physics. The difference between this physics prediction and the next ground truth state is passed to the 3-cascaded GRU.
+Goal: This forces the $Q, \Sigma, S$ GRUs to learn how to perfectly calculate the Kalman Gain without having to worry about compounding errors from previous bad predictions.
+Phase 2: End-to-End (Epochs 51-100)
+What happens: Teacher forcing is disabled. The network uses its own past outputs $x_{k-1|k-1}$ for the next step.
+With Kinematic Mode: The Cascaded GRUs learn to stabilize the physics model over rolling horizons.
+💻 How to Run the Training
+Ensure you are in the Robust directory inside your conda environment, and simply run the script.
+
+To train the new Kinematic setup:
+
+bash
+python train_robust_kalmannet.py "C:\Users\Quang Huy Nugyen\Desktop\PHD_paper\Simulation\QCAR\QCar2_Cran\Development\multi_vehicle_self_driving_RealQcar\qcar\Observer\KalmaNet\Dataset_100ms.npz" --predictor-mode kinematic
+(Note: Replace Dataset_100ms.npz with your actual dataset file name)
+
+To train the original NN Predictor setup (it still works!):
+
+bash
+python train_robust_kalmannet.py "C:\Users\Quang Huy Nugyen\Desktop\PHD_paper\Simulation\QCAR\QCar2_Cran\Development\multi_vehicle_self_driving_RealQcar\qcar\Observer\KalmaNet\Dataset_100ms.npz"
+Useful flags:
+--epochs <number>: Adjust total epochs (default 100).
+--attack-prob <float>: Adjust how frequently sensor attacks are injected during training (default 0.3).
+--batch-size <number>: Lower this if you run into CUDA Out-Of-Memory errors due to the 3-GRU setup (default 64).
+
 ## 6. Common mistakes
 
 - Recording data while `robust_kalman_net` is active instead of `ekf`
@@ -268,3 +296,17 @@ For a first useful model:
 - keep `sequence_length: 20`
 - validate on one held-out run
 - only switch runtime to `robust_kalman_net` after the learned model beats the baseline offline
+
+
+# VALIDATION 
+cd Development\multi_vehicle_self_driving_RealQcar\qcar\Observer\KalmaNet\Robust
+
+python validate_robust_kalmannet.py `
+  datasets\robust_kalmannet_dataset_V0_20260401_170829.npz `
+  --checkpoint models\robust_kalmannet.pt `
+  --output validation_metrics_best.json
+
+python validate_robust_kalmannet.py `
+  datasets\robust_kalmannet_dataset_V0_20260401_170829.npz `
+  --checkpoint models\robust_kalmannet.phase2_final.pt `
+  --output validation_metrics_phase2_final.json

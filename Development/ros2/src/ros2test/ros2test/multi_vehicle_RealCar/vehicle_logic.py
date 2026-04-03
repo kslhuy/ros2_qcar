@@ -141,7 +141,11 @@ class VehicleLogic:
         platoon_config = PlatoonConfig()
         self.platoon_controller = PlatoonController(platoon_config, self.vehicle_logger)
         # Controller Manager - centralized tracking of active controllers
-        self.controller_manager = ControllerManager(logger=self.vehicle_logger, vehicle_type=self.vehicle_type)
+        self.controller_manager = ControllerManager(
+            logger=self.vehicle_logger,
+            vehicle_type=self.vehicle_type,
+            vehicle_geometry=getattr(config, "vehicle_geometry", None),
+        )
 
         pid_params = self.controller_manager.config._get_pid_params()
         self.v_ref = pid_params.get("v_ref", 0.6)
@@ -397,6 +401,11 @@ class VehicleLogic:
             return None
         return self.robust_kalmannet_dataset.stop(save=save)
 
+    def clear_robust_kalmannet_dataset(self) -> None:
+        """Clear the Robust KalmanNet dataset buffer."""
+        if self.robust_kalmannet_dataset is not None:
+            self.robust_kalmannet_dataset.clear()
+
     def _get_robust_kalmannet_dataset_status(self) -> dict:
         """Collect status from the Robust KalmanNet dataset recorder."""
         status = {"enabled": False}
@@ -623,6 +632,16 @@ class VehicleLogic:
                     stream_data["y_gps"] = sensor_data["gps_position"][1]
                     stream_data["theta_gps"] = sensor_data["gps_position"][2]
 
+                accel = np.asarray(
+                    sensor_data.get("accelerometer", np.zeros(3)), dtype=float
+                ).reshape(-1)
+                if accel.size < 3:
+                    accel = np.pad(accel, (0, 3 - accel.size), mode="constant")
+                accel = accel[:3]
+                stream_data["accel_magnitude"] = float(
+                    sensor_data.get("accel_magnitude", np.linalg.norm(accel))
+                )
+
                 # Add control signals
                 stream_data["v_ref"] = self.v_ref * self.yolo_manager.get_yolo_gain()
                 stream_data["v_ref_actual"] = getattr(self, "v_ref_actual", stream_data["v_ref"])
@@ -826,6 +845,8 @@ class VehicleLogic:
         return {
             "timestamp": time.time(),
             "time": self.elapsed_time(),
+            "vehicle_type": self.vehicle_type,
+            "programme_type": self.programme_type,
             "x": float(state_info["x"]),
             "y": float(state_info["y"]),
             "th": float(state_info["theta"]),
@@ -966,6 +987,8 @@ class VehicleLogic:
                 "type": "v2v_status",  # Triggers V2V handler in GS
                 "timestamp": current_time,
                 "car_id": self.vehicle_id,
+                "vehicle_type": self.vehicle_type,
+                "programme_type": self.programme_type,
                 # Top-level fields (will be merged into car state by GS)
                 **v2v_status,
                 **platoon_status,
