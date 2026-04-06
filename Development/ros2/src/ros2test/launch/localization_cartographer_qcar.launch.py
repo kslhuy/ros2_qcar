@@ -17,7 +17,7 @@ def generate_launch_description():
     rviz_config = os.path.join(ros2test_share, 'rviz2config', 'conf.rviz')
     default_map_yaml = '/home/nvidia/Documents/qcar2/Development/ros2/src/ros2test/map/my_new_map.yaml'
     default_pbstream = '/home/nvidia/Documents/qcar2/Development/ros2/src/ros2test/map/my_new_map.pbstream'
-    default_cartographer_config_basename = 'qcar2_2d_localization.lua'
+    default_cartographer_config_basename = 'qcar2_2d_localization_stable.lua'
 
     pbstream = LaunchConfiguration('pbstream')
     map_yaml = LaunchConfiguration('map_yaml')
@@ -225,7 +225,7 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'cartographer_config_basename',
             default_value=default_cartographer_config_basename,
-            description='Cartographer Lua config basename. Use qcar2_2d_localization.lua for localization, qcar2_2d.lua for mapping.',
+            description='Cartographer Lua config basename. Default is the stability-first qcar2_2d_localization_stable.lua; use qcar2_2d_localization.lua to try pure localization, or qcar2_2d.lua for mapping.',
         ),
         DeclareLaunchArgument(
             'load_frozen_state',

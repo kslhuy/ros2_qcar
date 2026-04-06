@@ -165,6 +165,7 @@ class TrustWeightLogger:
             self.file = open(filepath, "w", newline="", buffering=8192)
             self.writer = csv.DictWriter(self.file, fieldnames=self.columns)
             self.writer.writeheader()
+            self.file.flush()
 
             self.recording = True
             self.thread = threading.Thread(target=self._write_loop, daemon=True)
@@ -531,7 +532,7 @@ class TrustWeightLogger:
             except queue.Empty:
                 continue
             except Exception as e:
-                pass
+                print(f"[TrustLogger] Write error: {e}")
 
     def stop(self):
         self.recording = False

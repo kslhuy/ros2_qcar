@@ -31,6 +31,8 @@ from std_msgs.msg import Float32MultiArray
 from tf2_ros import Buffer, TransformListener, TransformBroadcaster
 from visualization_msgs.msg import Marker, MarkerArray
 from builtin_interfaces.msg import Duration
+from rcl_interfaces.srv import SetParameters
+from rcl_interfaces.msg import Parameter, ParameterValue, ParameterType
 from scipy.spatial.transform import Rotation as R
 try:
     from ament_index_python.packages import get_package_share_directory
@@ -194,6 +196,11 @@ class VehicleControlFullSystemQCar(Node):
         port = self.get_parameter('port').value
         
         self.get_logger().info(f"QCar Style - Car ID: {car_id}, v_ref: {v_ref}, rate: {controller_rate} Hz")
+        
+        # Delay LED setup briefly so the hardware parameter service has time to come up.
+        self._hardware_led_car_id = int(car_id)
+        self._hardware_led_timer = self.create_timer(
+            1.0, self._set_hardware_led_color_when_ready)
         
         # ===== INITIALIZE DATA STORAGE =====
         self.latest_imu = None
@@ -915,7 +922,34 @@ class VehicleControlFullSystemQCar(Node):
         self.vehicle_logic._ros_mode = True
         self.vehicle_logic._ros_topics_ready = False
         self.get_logger().info("✓ ROS-specific initialization mode enabled")
+
+    def _set_hardware_led_color_when_ready(self):
+        """One-shot delayed LED setup for ROS 2 versions without timer kwargs."""
+        if getattr(self, '_hardware_led_timer', None) is not None:
+            self._hardware_led_timer.cancel()
+            self.destroy_timer(self._hardware_led_timer)
+            self._hardware_led_timer = None
+
+        self._set_hardware_led_color(self._hardware_led_car_id)
     
+    def _set_hardware_led_color(self, car_id):
+        """Set the LED strip color on the /qcar2_hardware node based on Car ID."""
+        client = self.create_client(SetParameters, '/qcar2_hardware/set_parameters')
+        
+        if not client.wait_for_service(timeout_sec=5.0):
+            self.get_logger().error('Service /qcar2_hardware/set_parameters not available, skipping LED color setup.')
+            return
+
+        req = SetParameters.Request()
+        param = Parameter()
+        param.name = 'led_color_id'
+        param.value.type = ParameterType.PARAMETER_INTEGER
+        param.value.integer_value = int(car_id) % 6  # Cycles 0-5
+        req.parameters.append(param)
+
+        self.get_logger().info(f"Requesting hardware LED color ID {param.value.integer_value} for car_id {car_id}")
+        client.call_async(req)
+
     def destroy_node(self):
         """Clean shutdown"""
         self.get_logger().info("Shutting down VehicleControlFullSystemQCar...")

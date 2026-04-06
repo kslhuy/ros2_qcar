@@ -27,6 +27,7 @@ import sys
 import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from Observer.fleet_state_estimators import (
     FleetStateEstimatorBase,
@@ -34,6 +35,7 @@ from Observer.fleet_state_estimators import (
     _state_dict_to_array,
     STATE_FIELDS,
 )
+from runtime_paths import get_preferred_trust_log_dir
 
 # Import trust components
 from Observer.TrustbasedDistributedObserver.trust_model import (
@@ -209,7 +211,7 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
 
         # Initialize specialized logger for trusts & weights
         self.trust_weight_logger = TrustWeightLogger(
-            output_dir=os.path.dirname(os.path.abspath(__file__)),
+            output_dir=str(get_preferred_trust_log_dir(__file__)),
             max_vehicles=max(10, fleet_size),
         )
         self.trust_weight_logger.start(vehicle_id)

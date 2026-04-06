@@ -29,9 +29,11 @@ from std_msgs.msg import String, Float32MultiArray
 from tf2_ros import Buffer, TransformListener
 from scipy.spatial.transform import Rotation as R
 
+from runtime_paths import get_preferred_package_root
+
 # ===== ADD PATH TO QCAR FOLDER =====
 current_dir = os.path.dirname(os.path.abspath(__file__))
-qcar_path = os.path.dirname(current_dir)
+qcar_path = str(get_preferred_package_root(__file__))
 qcar_module_path = current_dir
 
 if os.path.exists(qcar_path):

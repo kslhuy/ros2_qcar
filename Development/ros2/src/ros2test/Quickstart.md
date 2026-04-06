@@ -18,6 +18,10 @@ source install/setup.bash
 
 Use this when you want Cartographer localization without the full Nav2 map launch.
 
+The default launch now uses `qcar2_2d_localization_stable.lua`, which avoids
+the pure-localization trimmer path that has been observed to crash on this
+QCar2 Humble setup with `free(): invalid pointer`.
+
 ### Terminal 1
 
 ```bash
@@ -25,6 +29,7 @@ cd /home/nvidia/Documents/qcar2/Development/ros2
 source install/setup.bash
 ros2 launch ros2test localization_cartographer_qcar.launch.py
   # pbstream:=/absolute/path/to/your_map.pbstream
+  # cartographer_config_basename:=qcar2_2d_localization.lua  # optional: old pure-localization profile
 ```
 
 ### Terminal 2
@@ -134,6 +139,14 @@ ros2 launch ros2test localization_cartographer_qcar.launch.py \
   pbstream:=/home/nvidia/Documents/qcar2/Development/ros2/src/ros2test/map/my_new_map.pbstream
 ```
 
+If you want to try the older pure-localization profile anyway:
+
+```bash
+ros2 launch ros2test localization_cartographer_qcar.launch.py \
+  pbstream:=/home/nvidia/Documents/qcar2/Development/ros2/src/ros2test/map/my_new_map.pbstream \
+  cartographer_config_basename:=qcar2_2d_localization.lua
+```
+
 If you want Nav2 `map_server` to load the exported YAML instead:
 
 ```bash
@@ -149,5 +162,4 @@ This launch file starts:
 - Cartographer
 - Nav2 localization / navigation
 - `nav2_qcar2_converter`
-
 
