@@ -21,6 +21,9 @@ Use this when you want Cartographer localization without the full Nav2 map launc
 The default launch now uses `qcar2_2d_localization_stable.lua`, which avoids
 the pure-localization trimmer path that has been observed to crash on this
 QCar2 Humble setup with `free(): invalid pointer`.
+It also defaults to `nav2_map_server` serving the exported `.yaml` so
+Cartographer does not need to publish a live occupancy grid during
+saved-map localization.
 
 ### Terminal 1
 
@@ -29,6 +32,7 @@ cd /home/nvidia/Documents/qcar2/Development/ros2
 source install/setup.bash
 ros2 launch ros2test localization_cartographer_qcar.launch.py
   # pbstream:=/absolute/path/to/your_map.pbstream
+  # use_static_map_server:=false  # optional: let Cartographer publish /map instead
   # cartographer_config_basename:=qcar2_2d_localization.lua  # optional: old pure-localization profile
 ```
 
@@ -139,6 +143,9 @@ ros2 launch ros2test localization_cartographer_qcar.launch.py \
   pbstream:=/home/nvidia/Documents/qcar2/Development/ros2/src/ros2test/map/my_new_map.pbstream
 ```
 
+The default command above uses the exported `.yaml` via `nav2_map_server` for
+`/map`, while Cartographer still loads the `.pbstream` for localization.
+
 If you want to try the older pure-localization profile anyway:
 
 ```bash
@@ -155,6 +162,14 @@ ros2 launch ros2test localization_cartographer_qcar.launch.py \
   map_yaml:=/home/nvidia/Documents/qcar2/Development/ros2/src/ros2test/map/my_new_map.yaml
 ```
 
+If you specifically want Cartographer to publish the occupancy-grid map instead:
+
+```bash
+ros2 launch ros2test localization_cartographer_qcar.launch.py \
+  use_static_map_server:=false \
+  pbstream:=/home/nvidia/Documents/qcar2/Development/ros2/src/ros2test/map/my_new_map.pbstream
+```
+
 ## Option 1: Full stack with Nav2 and a saved map
 
 This launch file starts:
@@ -162,4 +177,3 @@ This launch file starts:
 - Cartographer
 - Nav2 localization / navigation
 - `nav2_qcar2_converter`
-

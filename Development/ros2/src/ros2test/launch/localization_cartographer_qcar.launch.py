@@ -209,8 +209,8 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'use_static_map_server',
-            default_value='false',
-            description='If true, start nav2 map_server from YAML. Keep false to use Cartographer as /map source.',
+            default_value='true',
+            description='If true, start nav2 map_server from YAML. Default is true for saved-map localization stability; set false to use Cartographer as /map source.',
         ),
         DeclareLaunchArgument(
             'cartographer_map_topic',
