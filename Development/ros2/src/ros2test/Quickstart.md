@@ -73,12 +73,12 @@ ros2 launch qcar2_nodes qcar2_manual_cartographer_launch.py
 
 
 
-ros2 service call /write_state cartographer_ros_msgs/srv/WriteState "{filename: '/home/nvidia/Documents/qcar2/Development/ros2/src/ros2test/map/my_new_map.pbstream', include_unfinished_submaps: true}"
+ros2 service call /write_state cartographer_ros_msgs/srv/WriteState "{filename: '/home/nvidia/Documents/qcar2/Development/ros2/src/ros2test/map/my_new_map2.pbstream', include_unfinished_submaps: false}"
 
 
 source /opt/ros/humble/setup.bash
 /opt/ros/humble/lib/cartographer_ros/cartographer_pbstream_to_ros_map \
-  -pbstream_filename /home/nvidia/Documents/qcar2/Development/ros2/src/ros2test/map/my_new_map.pbstream \
+  -pbstream_filename /home/nvidia/Documents/qcar2/Development/ros2/src/ros2test/map/my_new_map2.pbstream \
   -map_filestem /home/nvidia/Documents/qcar2/Development/ros2/src/ros2test/map/my_new_map \
   -resolution 0.05
 
@@ -95,7 +95,7 @@ record a fresh map.
 cd /home/nvidia/Documents/qcar2/Development/ros2
 source /opt/ros/humble/setup.bash
 source install/setup.bash
-ros2 launch qcar2_nodes qcar2_manual_cartographer_launch.py
+ros2 launch qcar2_nodes qcar2_cartographer_launch.py
 ```
 
 This launch starts manual drive, LiDAR, hardware, Cartographer SLAM, and the
@@ -114,7 +114,7 @@ After the map looks good in RViz:
 cd /home/nvidia/Documents/qcar2/Development/ros2
 source /opt/ros/humble/setup.bash
 source install/setup.bash
-ros2 service call /write_state cartographer_ros_msgs/srv/WriteState "{filename: '/home/nvidia/Documents/qcar2/Development/ros2/src/ros2test/map/my_new_map.pbstream', include_unfinished_submaps: true}"
+ros2 service call /write_state cartographer_ros_msgs/srv/WriteState "{filename: '/home/nvidia/Documents/qcar2/Development/ros2/src/ros2test/map/my_new_map.pbstream', include_unfinished_submaps: false}"
 ```
 
 ### Export `.yaml` and `.pgm`
@@ -124,7 +124,7 @@ Convert the saved Cartographer state into a standard ROS map:
 ```bash
 source /opt/ros/humble/setup.bash
 /opt/ros/humble/lib/cartographer_ros/cartographer_pbstream_to_ros_map \
-  -pbstream_filename /home/nvidia/Documents/qcar2/Development/ros2/src/ros2test/map/my_new_map.pbstream \
+  -pbstream_filename /home/nvidia/Documents/qcar2/Development/ros2/src/ros2test/map/my_new_map2.pbstream \
   -map_filestem /home/nvidia/Documents/qcar2/Development/ros2/src/ros2test/map/my_new_map \
   -resolution 0.05
 ```

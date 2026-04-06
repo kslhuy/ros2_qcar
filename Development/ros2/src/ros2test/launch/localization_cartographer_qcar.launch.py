@@ -15,8 +15,8 @@ def generate_launch_description():
 
     cartographer_config_dir = os.path.join(qcar2_share, 'config')
     rviz_config = os.path.join(ros2test_share, 'rviz2config', 'conf.rviz')
-    default_map_yaml = '/home/nvidia/Documents/qcar2/Development/ros2/src/ros2test/map/my_new_map.yaml'
-    default_pbstream = '/home/nvidia/Documents/qcar2/Development/ros2/src/ros2test/map/my_new_map.pbstream'
+    default_map_yaml = '/home/nvidia/Documents/qcar2/Development/ros2/src/ros2test/map/my_new_map2.yaml'
+    default_pbstream = '/home/nvidia/Documents/qcar2/Development/ros2/src/ros2test/map/my_new_map2.pbstream'
     default_cartographer_config_basename = 'qcar2_2d_localization_stable.lua'
 
     pbstream = LaunchConfiguration('pbstream')
@@ -112,23 +112,23 @@ def generate_launch_description():
         ],
     )
 
-    sdcqcar_to_map = Node(
-        package='tf2_ros',
-        executable='static_transform_publisher',
-        name='sdcqcar_to_map',
-        condition=IfCondition(publish_sdc_map_tf),
-        arguments=[
-            sdc_map_x,
-            sdc_map_y,
-            sdc_map_z,
-            sdc_map_yaw,
-            sdc_map_pitch,
-            sdc_map_roll,
-            'SDCQcar',
-            'map',
-        ],
-        output='screen',
-    )
+    # sdcqcar_to_map = Node(
+    #     package='tf2_ros',
+    #     executable='static_transform_publisher',
+    #     name='sdcqcar_to_map',
+    #     condition=IfCondition(publish_sdc_map_tf),
+    #     arguments=[
+    #         sdc_map_x,
+    #         sdc_map_y,
+    #         sdc_map_z,
+    #         sdc_map_yaw,
+    #         sdc_map_pitch,
+    #         sdc_map_roll,
+    #         'SDCQcar',
+    #         'map',
+    #     ],
+    #     output='screen',
+    # )
 
     # # QCar-style Waypoints
     # waypoints_qcar = Node(

@@ -131,7 +131,7 @@ class VehicleControlFullSystemQCar(Node):
                 ('enable_sdc_map_tf_broadcaster', True),
                 ('sdc_map_update_topic', '/sdc_map_tf_update'),
                 ('sdc_map_tf_publish_rate', 20.0),
-                ('sdc_map_x', 0.04000),
+                ('sdc_map_x', 0.03000),
                 ('sdc_map_y', -0.1000),
                 ('sdc_map_z', 0.0),
                 ('sdc_map_yaw', 1.5621),
