@@ -106,7 +106,7 @@ pp_map:
   sample_ds: 0.02                 # [m] path resampling spacing for rich trajectory
   desired_speed: 0.55              # [m/s] design cruise speed used to build base speed profile
   min_speed: 0.4                  # [m/s] lower speed floor in profile generation
-  kappa_speed_gain: 0.9           # Curvature->speed reduction gain (higher = slower in turns)
+  kappa_speed_gain: 1           # Curvature->speed reduction gain (higher = slower in turns)
   max_speed: 0.65                 # [m/s] upper bound of profile speed
   hard_turn_kappa: 0.60           # [1/m] curvature threshold for "hard-turn" speed cap
   hard_turn_speed: 0.36           # [m/s] cap applied when |curvature| >= hard_turn_kappa
@@ -114,7 +114,7 @@ pp_map:
   t_clip_max: 1.0                 # [m] maximum L1 lookahead distance
   m_l1: 0.50                      # L1 slope: lookahead contribution per m/s (L1 = q_l1 + m_l1*v)
   q_l1: 0.2                      # [m] L1 base offset at low speed
-  speed_lookahead: 0.22            # [s] forward prediction horizon for selecting speed waypoint
+  speed_lookahead: 0.2            # [s] forward prediction horizon for selecting speed waypoint
   lat_err_coeff: 0.15             # [0..1] speed downscale sensitivity to lateral error
   acc_scaler_for_steer: 1.0       # Steering scale when accelerating (acc_now >= +1 m/s^2)
   dec_scaler_for_steer: 1.0       # Steering scale when decelerating (acc_now <= -1 m/s^2)

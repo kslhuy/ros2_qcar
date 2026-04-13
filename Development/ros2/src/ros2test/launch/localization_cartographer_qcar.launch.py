@@ -76,7 +76,7 @@ def generate_launch_description():
         ],
         remappings=[
             ('scan', '/scan'),
-            # ('imu', '/qcar2_imu'),
+            ('imu', '/qcar2_imu'),
         ],
         condition=IfCondition(PythonExpression(["'", pbstream, "' != ''"])),
     )
@@ -94,7 +94,7 @@ def generate_launch_description():
         ],
         remappings=[
             ('scan', '/scan'),
-            # ('imu', '/qcar2_imu'),
+            ('imu', '/qcar2_imu'),
         ],
         condition=UnlessCondition(PythonExpression(["'", pbstream, "' != ''"])),
     )

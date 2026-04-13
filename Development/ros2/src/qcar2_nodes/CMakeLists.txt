@@ -45,6 +45,10 @@ add_executable(qcar2_hardware src/qcar2_hardware.cpp)
 target_link_libraries(qcar2_hardware -lhil -lquanser_devices -lquanser_runtime -lquanser_common)
 ament_target_dependencies(qcar2_hardware rclcpp std_msgs geometry_msgs sensor_msgs control_msgs qcar2_interfaces)
 
+add_executable(qcar2_ledTrip src/qcar2_ledTrip.cpp)
+target_link_libraries(qcar2_ledTrip -lquanser_devices -lquanser_runtime -lquanser_common)
+ament_target_dependencies(qcar2_ledTrip rclcpp)
+
 add_executable(rgbd src/rgbd.cpp)
 # Orin has OpenCV 4 installed, and put it under the /usr/include/opencv4 directory
 # So we need to add this directory to the include directory list for the node to
@@ -86,6 +90,9 @@ ament_target_dependencies(nav2_qcar2_converter rclcpp geometry_msgs qcar2_interf
 #install(TARGETS qcar2_driver_interface
 #  DESTINATION lib/${PROJECT_NAME})
 install(TARGETS qcar2_hardware
+  DESTINATION lib/${PROJECT_NAME})
+
+install(TARGETS qcar2_ledTrip
   DESTINATION lib/${PROJECT_NAME})
 
 install(TARGETS rgbd

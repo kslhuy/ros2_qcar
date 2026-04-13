@@ -177,3 +177,9 @@ This launch file starts:
 - Cartographer
 - Nav2 localization / navigation
 - `nav2_qcar2_converter`
+
+
+## RUN ALONE LED TRIP 
+ros2 launch qcar2_nodes qcar2_led_trip_launch.py
+ros2 param set /qcar2_led_trip led_color_id 3
+
