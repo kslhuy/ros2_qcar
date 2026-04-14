@@ -1,3 +1,5 @@
+#include <chrono>
+
 #include "rclcpp/rclcpp.hpp"
 
 #include "quanser/quanser_messages.h"
@@ -284,8 +286,9 @@ would not be sent on the /scan message.";
     if (result >= 0)
     {
         sensor_msgs::msg::LaserScan msgs;
-        rclcpp::Time currentScanTime;
-        rclcpp::Time previousScanTime;
+        rclcpp::Time previousScanStamp;
+        std::chrono::steady_clock::time_point previousReadTime;
+        bool have_previous_scan = false;
 
         t_double max_interpolated_distance;
         t_double max_interpolated_angle;
@@ -327,16 +330,35 @@ would not be sent on the /scan message.";
                 msgs.range_min = min_distance;
                 msgs.range_max = max_distance;
 
-                currentScanTime = node->get_clock()->now();
+                const auto currentReadTime = std::chrono::steady_clock::now();
+                constexpr double max_duration_scale = 3.0;
+                const double default_scan_duration = 1.0 / publish_rate;
+                double scan_duration = default_scan_duration;
 
-                const double scan_duration =
-                    previousScanTime.nanoseconds() > 0
-                    ? (currentScanTime - previousScanTime).seconds()
-                    : (1.0 / publish_rate);
+                if (have_previous_scan)
+                {
+                    scan_duration = std::chrono::duration<double>(currentReadTime - previousReadTime).count();
+                }
+
+                if ((scan_duration <= 0.0) || (scan_duration > (default_scan_duration * max_duration_scale)))
+                {
+                    // Fall back to the nominal scan duration if the wall clock jumps
+                    // or the read loop stalls long enough to make per-ray timing invalid.
+                    scan_duration = default_scan_duration;
+                }
+
+                rclcpp::Time scanStamp =
+                    node->get_clock()->now() - rclcpp::Duration::from_seconds(scan_duration);
+
+                if (have_previous_scan && (scanStamp <= previousScanStamp))
+                {
+                    // Cartographer expects scan timestamps to be strictly monotonic.
+                    scanStamp = previousScanStamp + rclcpp::Duration::from_nanoseconds(1);
+                }
 
                 // This timestamp is captured after reading the scan, so backdate it to the
                 // first ray to keep per-point timing monotonic for downstream consumers.
-                msgs.header.stamp = currentScanTime - rclcpp::Duration::from_seconds(scan_duration);
+                msgs.header.stamp = scanStamp;
 
                 // Measurements are published in reverse order to match ROS' CCW LaserScan
                 // convention, so the corresponding angles must also be reversed and negated.
@@ -358,7 +380,9 @@ would not be sent on the /scan message.";
                 scan_publisher->publish(msgs);
                 //RCLCPP_INFO(node->get_logger(), "Publishing scan with %ld number of data", msgs.ranges.size());
 
-                previousScanTime = currentScanTime;
+                previousScanStamp = scanStamp;
+                previousReadTime = currentReadTime;
+                have_previous_scan = true;
 
             }
             else

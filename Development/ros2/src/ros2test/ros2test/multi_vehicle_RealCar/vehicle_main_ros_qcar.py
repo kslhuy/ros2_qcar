@@ -115,6 +115,7 @@ class VehicleControlFullSystemQCar(Node):
                 ('programme_type', 'Ros'),
                 ('v_ref', 0.6),
                 ('controller_rate', 100),
+                ('tf_pose_update_rate', 30.0),
                 ('calibrate', False),
                 ('path_number', 0),
                 ('no_steering', False),
@@ -153,6 +154,7 @@ class VehicleControlFullSystemQCar(Node):
         programme_type = self.get_parameter('programme_type').value
         v_ref = self.get_parameter('v_ref').value
         controller_rate = self.get_parameter('controller_rate').value
+        tf_pose_update_rate = self.get_parameter('tf_pose_update_rate').value
         calibrate = self.get_parameter('calibrate').value
         path_number = self.get_parameter('path_number').value
         no_steering = self.get_parameter('no_steering').value
@@ -452,7 +454,15 @@ class VehicleControlFullSystemQCar(Node):
         self._optional_path_notice_logged = False
         
         self.init_check_timer = self.create_timer(0.1, self._check_initialization)
-        self.tf_update_timer = self.create_timer(0.05, self._update_gps_from_tf)
+        self.tf_pose_update_rate = max(float(tf_pose_update_rate), 1.0)
+        self.tf_update_timer = self.create_timer(
+            1.0 / self.tf_pose_update_rate,
+            self._update_gps_from_tf,
+        )
+        self.get_logger().info(
+            "TF pose refresh for observer/GPS adapter enabled at "
+            f"{self.tf_pose_update_rate:.1f} Hz"
+        )
         
         self.get_logger().info("="*70)
         self.get_logger().info("Full Vehicle Control System Ready! (QCar Coordinate Style)")
