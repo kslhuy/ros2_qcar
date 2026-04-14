@@ -1,0 +1,18 @@
+[console_scripts]
+ekf = ros2test.ekf:main
+keyboard = ros2test.olds.keyboard:main
+lane_follower = ros2test.lane_follower:main
+lidar_occupancy_node = ros2test.lidar_occupancy_node:main
+lidar_sub = ros2test.lidar_sub:main
+nav_goal_sender = ros2test.nav_goal_sender:main
+odom = ros2test.odom:main
+pure_pursuit = ros2test.pure_pursuit:main
+qcar2_bridge = ros2test.qcar2_bridge:main
+test = ros2test.test_node:main
+test_parameter_updates = ros2test.test_parameter_updates:main
+vehicle_control_ros = ros2test.vehicle_control_ros:main
+vehicle_control_ros_bridge = ros2test.vehicle_control_ros_bridge:main
+vehicle_main_ros_qcar = ros2test.multi_vehicle_RealCar.vehicle_main_ros_qcar:main
+waypoint_alignment_helper = ros2test.waypoint_alignment_helper:main
+waypoints = ros2test.waypoints:main
+waypoints_qcar = ros2test.waypoints_qcar:main

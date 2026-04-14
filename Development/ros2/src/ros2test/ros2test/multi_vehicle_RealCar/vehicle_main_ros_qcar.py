@@ -452,7 +452,7 @@ class VehicleControlFullSystemQCar(Node):
         self._optional_path_notice_logged = False
         
         self.init_check_timer = self.create_timer(0.1, self._check_initialization)
-        self.tf_update_timer = self.create_timer(0.2, self._update_gps_from_tf)
+        self.tf_update_timer = self.create_timer(0.05, self._update_gps_from_tf)
         
         self.get_logger().info("="*70)
         self.get_logger().info("Full Vehicle Control System Ready! (QCar Coordinate Style)")
@@ -754,8 +754,10 @@ class VehicleControlFullSystemQCar(Node):
 
     def _publish_pending_initial_pose_when_ready(self):
         """Publish queued /initialpose once AMCL subscriber is available."""
-        # if self.pending_initial_pose_xyz_deg is None:
-        #     return
+        pending_pose = self.pending_initial_pose_xyz_deg
+        if pending_pose is None:
+            self.pending_initial_pose_wait_logged = False
+            return
 
         if len(self.get_subscriptions_info_by_topic('/initialpose')) == 0:
             if not self.pending_initial_pose_wait_logged:
@@ -764,7 +766,7 @@ class VehicleControlFullSystemQCar(Node):
                 self.pending_initial_pose_wait_logged = True
             return
 
-        x, y, yaw_deg = self.pending_initial_pose_xyz_deg
+        x, y, yaw_deg = pending_pose
         self.gps_adapter.send_initial_pose(x, y, yaw_deg)
         self.get_logger().info(
             f"Published initial pose to AMCL ({self.pending_initial_pose_source}): "

@@ -2,7 +2,7 @@ include "qcar2_2d.lua"
 
 -- Keep only a small rolling set of live submaps during localization.
 TRAJECTORY_BUILDER.pure_localization_trimmer = {
-  max_submaps_to_keep = 3,
+  max_submaps_to_keep = 2,
 }
 
 -- Lower optimization frequency for smoother runtime localization updates.

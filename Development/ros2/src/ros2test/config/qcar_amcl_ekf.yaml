@@ -1,0 +1,16 @@
+ekf_filter_node:
+  ros__parameters:
+    use_sim_time: false
+    odom_frame_id: odom
+    base_frame_id: base_link
+    wheel_odom_topic: /odom/wheel
+    rf2o_odom_topic: /odom/rf2o
+    odom_topic: /odom
+    publish_tf: true
+    publish_rate: 40.0
+    stale_data_timeout: 0.5
+    process_noise_diag: [0.02, 0.02, 0.01, 0.08, 0.04]
+    initial_covariance_diag: [1.0, 1.0, 0.3, 0.5, 0.3]
+    wheel_twist_noise_diag: [0.08, 0.05]
+    rf2o_pose_noise_diag: [0.03, 0.03, 0.02]
+    rf2o_twist_noise_diag: [0.06, 0.04]

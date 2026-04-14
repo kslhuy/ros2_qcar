@@ -41,6 +41,7 @@ setup(
     entry_points={
         'console_scripts': [
             "test = ros2test.test_node:main",
+            'amcl_initial_pose_publisher = ros2test.amcl_initial_pose_publisher:main',
             "keyboard = ros2test.olds.keyboard:main",
             "lane_follower = ros2test.lane_follower:main",
             "nav_goal_sender = ros2test.nav_goal_sender:main",
@@ -56,6 +57,8 @@ setup(
             'lidar_occupancy_node = ros2test.lidar_occupancy_node:main',
             'waypoint_alignment_helper = ros2test.waypoint_alignment_helper:main',
             'waypoints_qcar = ros2test.waypoints_qcar:main',
+            'qcar_dead_reckoning_odom = ros2test.qcar_dead_reckoning_odom:main',
+            'qcar_ekf_odom_fusion = ros2test.qcar_ekf_odom_fusion:main',
             'vehicle_main_ros_qcar = ros2test.multi_vehicle_RealCar.vehicle_main_ros_qcar:main',
         ],
     },

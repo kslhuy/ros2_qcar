@@ -66,13 +66,13 @@ Visualization Manager:
         Filter size: 10
         History Policy: Keep Last
         Reliability Policy: Reliable
-        Value: /cartographer_map
+        Value: /map
       Update Topic:
         Depth: 5
         Durability Policy: Volatile
         History Policy: Keep Last
         Reliability Policy: Reliable
-        Value: /cartographer_map_updates
+        Value: /map_updates
       Use Timestamp: false
       Value: true
     - Class: rviz_default_plugins/MarkerArray
@@ -92,8 +92,6 @@ Visualization Manager:
       Frame Timeout: 15
       Frames:
         All Enabled: true
-        SDCQcar:
-          Value: true
         base_link:
           Value: true
         base_scan:
@@ -108,12 +106,11 @@ Visualization Manager:
       Show Axes: true
       Show Names: false
       Tree:
-        SDCQcar:
-          map:
-            odom:
-              base_link:
-                base_scan:
-                  {}
+        map:
+          odom:
+            base_link:
+              base_scan:
+                {}
       Update Interval: 0
       Value: true
     - Class: rviz_default_plugins/Marker
