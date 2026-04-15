@@ -577,7 +577,7 @@ class FollowingLeaderState(StateBase):
         elif self.lateral_controller_type in ("fusion", "fusion_lateral"):
             # Fusion mode: combines path steering with leader tracking
             delta = self._compute_fusion_steering(
-                x, y, theta, velocity, leader_state, dt
+                follower_state, leader_state, dt
             )
         else:
             # Leader-following mode: use lateral controller to follow leader position
@@ -607,16 +607,12 @@ class FollowingLeaderState(StateBase):
         ):
             return 0.0
 
-        # Use look-ahead point (0.2m forward from vehicle center)
-        p = np.array([x, y]) + np.array([np.cos(theta), np.sin(theta)]) * 0.2
+        p = np.array([x, y])
         return self.steering_controller.update(p, theta, max(velocity, 0.1))
 
     def _compute_fusion_steering(
         self,
-        x: float,
-        y: float,
-        theta: float,
-        velocity: float,
+        follower_state: Dict[str, Any],
         leader_state: Dict[str, float],
         dt: float,
     ) -> float:
@@ -628,9 +624,7 @@ class FollowingLeaderState(StateBase):
         trajectory while the leader position provides deviation corrections.
 
         Args:
-            x, y: Current position
-            theta: Current heading
-            velocity: Current velocity
+            follower_state: Current vehicle state, including turn/path context
             leader_state: Leader position and heading from V2V
             dt: Time step
 
@@ -638,13 +632,14 @@ class FollowingLeaderState(StateBase):
             Fused steering command in radians
         """
         # Get path-based steering (primary reference)
-        path_steering = self._compute_path_steering(x, y, theta, velocity)
+        path_steering = self._compute_path_steering(
+            follower_state["x"],
+            follower_state["y"],
+            follower_state["theta"],
+            follower_state["velocity"],
+        )
 
         if self.lateral_controller is not None:
-            follower_state = {"x": x, "y": y, "theta": theta, "velocity": velocity}
-            if hasattr(self.vehicle_logic, "current_state_data"):
-                follower_state.update(self.vehicle_logic.current_state_data)
-
             return self.lateral_controller.compute_steering(
                 follower_state, leader_state, dt, path_steering=path_steering
             )

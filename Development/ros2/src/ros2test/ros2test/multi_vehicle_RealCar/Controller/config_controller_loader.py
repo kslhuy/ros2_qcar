@@ -343,6 +343,10 @@ class ControllerConfig:
             "k_e": stanley_config.get("k_e", 0.5),
             "k_soft": stanley_config.get("k_soft", 1.0),
             "max_steering": stanley_config.get("max_steering", 0.5),
+            "lookahead_distance": stanley_config.get("lookahead_distance", 0.0),
+            "position_lookahead_offset": stanley_config.get(
+                "position_lookahead_offset", 0.2
+            ),
         }
 
     def _get_pp_map_params(self) -> Dict[str, Any]:

@@ -116,14 +116,14 @@ lateral_controller_type: 'pp_map'  # legacy fallback
 
 # Pure Pursuit Controller Parameters
 pure_pursuit:
-  lookahead_distance: 0.25    # Base lookahead distance (meters)
-  k_steering: 0.5            # Proportional steering gain
+  lookahead_distance: 0.2    # Base lookahead distance (meters). Shorter lookahead turns in more decisively when leader tracking falls behind in corners.
+  k_steering: 0.5            # Proportional steering gain. Higher gain reduces the "lazy" steering feel when the follower lags the leader heading in a bend.
   max_steering: 0.5         # Maximum steering angle (radians)
   adaptive_lookahead: true   # Enable adaptive lookahead based on distance
   # Turning section parameters (for corner-cutting prevention)
   curvature_threshold: 0.15   # Lane curvature threshold for turn detection
-  turn_lookahead_offset: 0.2 # Lateral offset in turns (meters) , Push the target point wider in turns to prevent corner cutting
-  turn_lookahead_gain: 1.5   # Lookahead distance multiplier in turns , Extend lookahead distance even further when in a turn
+  turn_lookahead_offset: 0.05 # Lateral offset in turns (meters). Smaller offset avoids pushing the follower too far to the outside of the corner.
+  turn_lookahead_gain: 0.9   # Lookahead distance multiplier in turns. Below 1.0 makes turn tracking tighter instead of widening the arc.
 
 # Map-based PP_Controller mode parameters (used when lateral_controller_type: 'pp_map')
 pp_map:
@@ -134,8 +134,8 @@ pp_map:
   max_speed: 0.65                 # [m/s] Maximum speed allowed by the profile. Up = higher straight-line speed. Down = lower overall cap.
   hard_turn_kappa: 0.60           # [1/m] Curvature threshold for a very sharp turn. Up = fewer turns treated as hard. Down = more turns treated as hard.
   hard_turn_speed: 0.36           # [m/s] Speed cap used once a turn is classified as hard. Up = faster through hairpins. Down = safer/slower hairpins.
-  t_clip_min: 0.5                 # [m] Minimum L1 lookahead. Up = smoother, less twitchy, but weaker correction. Down = more aggressive correction.
-  t_clip_max: 1.0                 # [m] Maximum L1 lookahead. Up = smoother/wider steering. Down = tighter/more local steering.
+  t_clip_min: 0.4                 # [m] Minimum L1 lookahead. Up = smoother, less twitchy, but weaker correction. Down = more aggressive correction.
+  t_clip_max: 0.9                 # [m] Maximum L1 lookahead. Up = smoother/wider steering. Down = tighter/more local steering.
   m_l1: 0.50                      # L1 lookahead increase with speed: L1 = q_l1 + m_l1*v. Up = more preview at speed. Down = more reactive at speed.
   q_l1: 0.2                       # [m] Base L1 lookahead at low speed. Up = smoother but slower response. Down = sharper but more oscillation risk.
   speed_lookahead: 0.2            # [s] How far ahead the controller samples path speed. Up = slows earlier before corners. Down = reacts later.
@@ -195,8 +195,11 @@ mpc:
 # Stanley Controller Parameters
 stanley:
   k_e: 0.2                   # Cross-track error gain
-  k_soft: 2.0                # Softening gain to prevent division by zero
+  k_soft: 0.1                # Softening gain to prevent division by zero
   max_steering: 0.5         # Maximum steering angle (radians)
+  lookahead_distance: 0.15   # [m] Preview distance along the global path segment. Up = smoother/more anticipatory. Down = tighter/more local tracking.
+  position_lookahead_offset: 0.18  # [m] Forward offset of the vehicle point sent into Stanley. 0.2 keeps the old state behavior.
+
 
 # Lookahead Controller Parameters
 lookahead:
@@ -211,12 +214,12 @@ lookahead:
 
 # Fusion Lateral Controller Parameters (combines path + leader tracking)
 fusion_lateral:
-  mode: 'leader_primary'       # 'path_primary', 'leader_primary', 'adaptive' , ''
-  path_weight: 0.2           # Weight for path reference (0-1)
-  leader_weight: 0.8         # Weight for leader adjustment (0-1)
+  mode: 'path_primary'       # Use the map/path as the main cornering reference and let the leader act as a correction term.
+  path_weight: 0.7           # Weight for path reference (0-1)
+  leader_weight: 0.3         # Weight for leader adjustment (0-1)
   deviation_threshold: 0.4   # Max leader deviation before override (radians)
   smoothing_factor: 0.8      # Output smoothing (0-1, higher = smoother , 0 = raw output)
-  max_steering: 0.5         # Maximum steering angle (radians)
+  max_steering: 0.55         # Maximum steering angle (radians)
 
 # ============================================================================
 # VEHICLE PARAMETERS (for all controllers)

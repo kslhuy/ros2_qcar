@@ -263,6 +263,11 @@ class VehicleLogic:
         # Robust KalmanNet offline dataset recorder.
         self.robust_kalmannet_dataset = None
 
+        # Opponent detection & tracking (from LiDAR tracker)
+        self.opponent_data = []           # List of tracked opponent dicts
+        self._last_opponent_update = 0.0  # Timestamp of last opponent data
+        self.opponent_timeout = 1.0       # seconds before data is considered stale
+
     def elapsed_time(self) -> float:
         """Get elapsed time since start"""
         return time.time() - self.start_time
@@ -271,6 +276,52 @@ class VehicleLogic:
     def logger(self):
         """Backward compatibility property for accessing the vehicle logger"""
         return self.vehicle_logger
+
+    # ===== Opponent Detection & Tracking =====
+
+    def update_opponent_data(self, raw_data: list):
+        """Parse tracked opponent Float32MultiArray into structured dicts.
+
+        Each opponent is encoded as 10 floats:
+            [id, x, y, size, vx, vy, is_static, is_visible, distance, confidence]
+        """
+        FIELDS_PER_OPPONENT = 10
+        opponents = []
+        if len(raw_data) >= FIELDS_PER_OPPONENT:
+            n = len(raw_data) // FIELDS_PER_OPPONENT
+            for i in range(n):
+                offset = i * FIELDS_PER_OPPONENT
+                opponents.append({
+                    'id': int(raw_data[offset]),
+                    'x': float(raw_data[offset + 1]),
+                    'y': float(raw_data[offset + 2]),
+                    'size': float(raw_data[offset + 3]),
+                    'vx': float(raw_data[offset + 4]),
+                    'vy': float(raw_data[offset + 5]),
+                    'is_static': raw_data[offset + 6] >= 0.5,
+                    'is_visible': raw_data[offset + 7] >= 0.5,
+                    'distance': float(raw_data[offset + 8]),
+                    'confidence': float(raw_data[offset + 9]),
+                })
+        self.opponent_data = opponents
+        self._last_opponent_update = time.time()
+
+    def get_nearest_opponent(self) -> Optional[dict]:
+        """Get the closest dynamic opponent, or None if no opponents detected or data is stale."""
+        if time.time() - self._last_opponent_update > self.opponent_timeout:
+            return None
+        dynamic_opps = [o for o in self.opponent_data if not o['is_static']]
+        if not dynamic_opps:
+            return None
+        return min(dynamic_opps, key=lambda o: o['distance'])
+
+    def get_all_opponents(self) -> list:
+        """Get all tracked opponents (both static and dynamic), or empty list if stale."""
+        if time.time() - self._last_opponent_update > self.opponent_timeout:
+            return []
+        return list(self.opponent_data)
+
+    # ===== Attack V2V sim Module  =====
 
     def enable_attack_module(self):
         """Enable V2V attack injection if available."""
@@ -1048,6 +1099,9 @@ class VehicleLogic:
         
         self._telemetry_state["state"] = self.state_machine.state.name if hasattr(self.state_machine, "state") and self.state_machine.state else "UNKNOWN"
         self._telemetry_state["gps_valid"] = bool(state_info.get("gps_valid", False))
+
+        # Include opponent tracking data in telemetry
+        self._telemetry_state["opponents"] = self.opponent_data
 
         return self._telemetry_state
 

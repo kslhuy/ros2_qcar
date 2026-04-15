@@ -280,6 +280,17 @@ class VehicleControlFullSystemQCar(Node):
         self.yolo_sub = self.create_subscription(
             Float32MultiArray, '/limo/yolo_detections', self._yolo_callback, 10
         )
+        
+        # Subscribe to LiDAR opponent tracker
+        self.opponent_sub = self.create_subscription(
+            Float32MultiArray, '/perception/tracked_opponents',
+            self._opponent_callback, 10
+        )
+        
+        # Publish waypoints for opponent detector track filtering
+        self.waypoint_pub_for_tracker = self.create_publisher(
+            Float32MultiArray, '/qcar/waypoints_xy', 10
+        )
         self.enable_external_path_subscriber = bool(enable_external_path_subscriber)
         self.external_path_topic = str(external_path_topic).strip() or '/plan_qcar'
         self.publish_internal_path_for_rviz = bool(publish_internal_path_for_rviz)
@@ -661,6 +672,14 @@ class VehicleControlFullSystemQCar(Node):
                     )
         except Exception as e:
             self.get_logger().error(f"Failed to parse YOLO detection: {e}")
+
+    def _opponent_callback(self, msg: Float32MultiArray):
+        """Handle tracked opponent data from LiDAR-based tracker."""
+        try:
+            if hasattr(self, 'vehicle_logic') and self.vehicle_logic is not None:
+                self.vehicle_logic.update_opponent_data(list(msg.data))
+        except Exception as e:
+            self.get_logger().error(f"Opponent callback error: {e}")
             
     def _imu_callback(self, msg: Imu):
         """Update gyroscope data"""
@@ -759,6 +778,12 @@ class VehicleControlFullSystemQCar(Node):
             self.get_logger().info(
                 f"Published internal path to RViz: {point_count} waypoints on {self.internal_path_topic}"
             )
+
+        # Publish waypoints for opponent detector track filtering
+        if hasattr(self, 'waypoint_pub_for_tracker'):
+            wp_msg = Float32MultiArray()
+            wp_msg.data = [float(v) for v in x_values] + [float(v) for v in y_values]
+            self.waypoint_pub_for_tracker.publish(wp_msg)
     
     # ===== INITIALIZATION CHECK =====
 

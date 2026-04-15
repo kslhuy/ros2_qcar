@@ -192,8 +192,10 @@ mpc:
 # Stanley Controller Parameters
 stanley:
   k_e: 0.3                   # Cross-track error gain
-  k_soft: 1.0                # Softening gain to prevent division by zero
+  k_soft: 0.1                # Softening gain to prevent division by zero
   max_steering: 0.5         # Maximum steering angle (radians)
+  lookahead_distance: 0.15   # [m] Preview distance along the global path segment. Up = smoother/more anticipatory. Down = tighter/more local tracking.
+  position_lookahead_offset: 0.18  # [m] Forward offset of the vehicle point sent into Stanley. 0.2 keeps the old state behavior.
 
 # Lookahead Controller Parameters
 lookahead:
