@@ -209,13 +209,13 @@ class FleetStateEstimatorBase(ABC):
         if vehicle_id not in self.received_local_states:
             if self.logger:
                 #TODO: Better fall out the distributed estimator when its happen too much. 
-                self.logger.logger.debug(f"vehicle_id {vehicle_id} not in self.received_local_states")
+                self.logger.logger.warning(f"vehicle_id {vehicle_id} not in self.received_local_states")
             return None
 
         states_list = self.received_local_states[vehicle_id]
         if not states_list:
             if self.logger:
-                self.logger.logger.debug(f"states_list for vehicle_id {vehicle_id} is empty")
+                self.logger.logger.warning(f"states_list for vehicle_id {vehicle_id} is empty")
             return None
 
         # Iterate backwards (newest first) and return first valid entry
@@ -363,12 +363,7 @@ class ConsensusFleetEstimator(FleetStateEstimatorBase):
             self.fleet_states[:, self.vehicle_id] = local_state.copy()
             
             # 2. Update estimates for every other vehicle in the fleet
-            known_vehicle_ids = set(self.received_local_states.keys())
-            for history in self.received_fleet_states.values():
-                if history:
-                    known_vehicle_ids.update(history[-1][1].keys())
-            
-            for target_id in known_vehicle_ids:
+            for target_id in range(self.fleet_size):
                 if target_id == self.vehicle_id:
                     continue  # Skip self
                 

@@ -27,7 +27,6 @@ import sys
 import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from Observer.fleet_state_estimators import (
     FleetStateEstimatorBase,
@@ -35,7 +34,6 @@ from Observer.fleet_state_estimators import (
     _state_dict_to_array,
     STATE_FIELDS,
 )
-from runtime_paths import get_preferred_trust_log_dir
 
 # Import trust components
 from Observer.TrustbasedDistributedObserver.trust_model import (
@@ -195,6 +193,10 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
 
         # ---- Motor model for dynamics prediction ----
         vehicle_config = self.config.get("vehicle", {})
+        accel_lag_cfg = vehicle_config.get("accel_lag_model", {})
+        self.accel_lag_enabled = bool(accel_lag_cfg.get("enabled", False))
+        self.accel_lag_tau = max(float(accel_lag_cfg.get("tau", 0.318)), 1e-6)
+        self.accel_lag_gain = float(accel_lag_cfg.get("input_gain", 1.0))
         motor_cfg_dict = vehicle_config.get("motor_model", {})
         self.motor_model_config = MotorModelConfig.from_dict(motor_cfg_dict)
         self.motor_model = AccelDragMotorModel(self.motor_model_config)
@@ -205,17 +207,22 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
 
         if self.logger:
             self.logger.logger.info(
+                f"Acceleration lag model {'ENABLED' if self.accel_lag_enabled else 'DISABLED'}"
+                f" (tau={self.accel_lag_tau}, gain={self.accel_lag_gain})"
+            )
+            self.logger.logger.info(
                 f"Motor model {'ENABLED' if self.motor_model_config.enabled else 'DISABLED'}"
                 f" (tau={self.motor_model_config.tau}, k_th={self.motor_model_config.k_th})"
             )
 
         # Initialize specialized logger for trusts & weights
         self.trust_weight_logger = TrustWeightLogger(
-            output_dir=str(get_preferred_trust_log_dir(__file__)),
+            output_dir=os.path.dirname(os.path.abspath(__file__)),
             max_vehicles=max(10, fleet_size),
         )
         self.trust_weight_logger.start(vehicle_id)
         self._init_time = time.time()
+        self._time_reference: Optional[Dict[str, object]] = None
 
     # ------------------------------------------------------------------
     # Override add_received_local_state to also cache control_input
@@ -232,6 +239,44 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                     "throttle": float(ctrl.get("throttle", 0.0)),
                 }
         return super().add_received_local_state(sender_id, state, timestamp_ns)
+
+    def set_time_reference(
+        self, time_reference: Optional[Dict[str, object]]
+    ) -> Optional[Dict[str, object]]:
+        """Store shared V2V timing metadata for trust logging/alignment."""
+        if not isinstance(time_reference, dict):
+            self._time_reference = None
+            return None
+
+        raw_reference_ns = time_reference.get(
+            "reference_time_ns", time_reference.get("epoch_time_ns")
+        )
+        try:
+            reference_time_ns = (
+                int(raw_reference_ns) if raw_reference_ns is not None else None
+            )
+        except (TypeError, ValueError):
+            reference_time_ns = None
+
+        source = str(time_reference.get("source", "local")).strip() or "local"
+        normalized: Dict[str, object] = {
+            "source": source,
+            "reference_time_ns": reference_time_ns,
+        }
+        for key in ("reference_vehicle_id", "leader_id"):
+            if key not in time_reference or time_reference.get(key) is None:
+                continue
+            try:
+                normalized[key] = int(time_reference[key])
+            except (TypeError, ValueError):
+                continue
+
+        self._time_reference = normalized
+        return dict(normalized)
+
+    def _get_log_time_s(self, current_time_ns: int) -> float:
+        """Return trust-log time directly in the active V2V time domain."""
+        return max(float(current_time_ns), 0.0) / 1e9
 
     # ------------------------------------------------------------------
     # External relative measurement delegation
@@ -422,6 +467,7 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             self._log_update(
                 trust_scores, weight_result, control,
                 target_confidence, target_prediction_mode,
+                current_time_ns=current_time_ns,
             )
 
             # 6. Contamination rollback
@@ -463,7 +509,7 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             # Ensure fleet_states can accommodate this vehicle_id
             # (vehicle IDs may be non-contiguous, e.g. [0, 2])
             self._ensure_fleet_capacity(vehicle_id)
-
+            
             latest = self._get_latest_received_state_with_timestamp(
                 vehicle_id, current_time_ns
             )
@@ -765,7 +811,13 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         theta_new = theta + (v * np.tan(steering) / L) * dt
 
         # Velocity / acceleration prediction
-        if self.motor_model_config.enabled and dt > 0:
+        if self.accel_lag_enabled and dt > 0:
+            a_new = a + dt * (
+                -(1.0 / self.accel_lag_tau) * a
+                + (self.accel_lag_gain / self.accel_lag_tau) * throttle
+            )
+            v_new = v + a_new * dt
+        elif self.motor_model_config.enabled and dt > 0:
             # print("Motor model enabled, using dynamic prediction")
             motor_accel = self._motor_accel_state.get(target_id, 0.0)
             v_new, a_new, motor_accel_new = self.motor_model.predict(
@@ -863,6 +915,7 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         control: np.ndarray,
         target_confidence: Dict[int, float],
         target_prediction_mode: Dict[int, bool],
+        current_time_ns: int,
     ) -> None:
         """Build and emit per-step trust/weight log data."""
         log_data = {
@@ -962,9 +1015,7 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         )
         log_data["fleet_estimates"] = fleet_estimates
 
-        if not hasattr(self, "_init_time"):
-            self._init_time = time.time()
-        self.trust_weight_logger.record(time.time() - self._init_time, log_data)
+        self.trust_weight_logger.record(self._get_log_time_s(current_time_ns), log_data)
 
     def _log_backward_compat(
         self, trust_scores: Dict[int, float], weight_result: WeightResult

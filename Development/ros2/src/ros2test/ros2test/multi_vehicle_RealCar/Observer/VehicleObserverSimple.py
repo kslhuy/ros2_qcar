@@ -207,6 +207,7 @@ class VehicleObserver:
         # Fleet estimator will be created when V2V is activated (not at initialization)
         # This saves resources and ensures clean state when V2V starts
         self.v2v_active = False  # Track if V2V is active
+        self._v2v_time_reference: Optional[Dict[str, Any]] = None
 
         # ===== Relative State Estimator (pluggable) =====
         self.relative_estimator: Optional[RelativeStateEstimatorBase] = None
@@ -217,6 +218,13 @@ class VehicleObserver:
         self.position = np.zeros(3)  # [x, y, theta]
         self.velocity = 0.0
         self.gps_valid = False  # GPS validity flag
+        self.gps_valid_hold_seconds = 0.25
+        self.gps_valid_hold_mode = "adaptive"
+        self.gps_valid_hold_scale = 1.15
+        self.gps_valid_hold_min_seconds = 0.08
+        self.gps_valid_hold_max_seconds = 0.35
+        self._last_gps_sample_time = 0.0
+        self._gps_sample_period_estimate = 0.0
 
         # Fleet states (managed by fleet_estimator but cached here)
         self.fleet_states = np.zeros((self.state_dim, self.fleet_size))
@@ -225,12 +233,14 @@ class VehicleObserver:
         self.relative_state = np.zeros(
             4
         )  # Default size [delta, delta_dot, delta_ddot, f_c]
+        self.relative_target_id: Optional[int] = None
 
         # ===== Sensor Data Cache =====
 
         self.sensor_data = {
             "motor_tach_raw": 0.0,
             "motor_tach": 0.0,
+            "battery_voltage": 0.0,
             "gyro_z": 0.0,
             "accelerometer_raw": np.zeros(3),
             "accelerometer": np.zeros(3),
@@ -238,10 +248,11 @@ class VehicleObserver:
             "accel_magnitude": 0.0,
             "timestamp": 0.0,
             "gps_valid": False,
+            "gps_fresh": False,
+            "gps_has_fix": False,
             "gps_position": np.zeros(3),  # [x, y, theta]
-            "relative_measurement": np.zeros(2),  # [delta, delta_dot] from YOLO etc.
-            "relative_measurement_valid": False,
-            "relative_measurement_confidence": float("nan"),
+            "gps_age": float("inf"),
+            "gps_hold_window": 0.0,
             "relative_measurements_by_target": {},
         }
         # For derivative estimation when only distance is provided.
@@ -294,6 +305,216 @@ class VehicleObserver:
         except (TypeError, ValueError):
             self.v_lpf_alpha = 1.0
             self.accel_ema_alpha = 1.0
+        try:
+            gps_hold_cfg = self.observer_config.get(
+                "gps_valid_hold_seconds",
+                self.local_config_defaults.get("common", {}).get(
+                    "gps_valid_hold_seconds", 0.25
+                ),
+            )
+            self.gps_valid_hold_seconds = max(0.0, float(gps_hold_cfg))
+        except (TypeError, ValueError):
+            self.gps_valid_hold_seconds = 0.25
+        try:
+            self.gps_valid_hold_mode = str(
+                self.observer_config.get(
+                    "gps_valid_hold_mode",
+                    self.local_config_defaults.get("common", {}).get(
+                        "gps_valid_hold_mode", "adaptive"
+                    ),
+                )
+            ).strip().lower() or "adaptive"
+        except Exception:
+            self.gps_valid_hold_mode = "adaptive"
+        try:
+            self.gps_valid_hold_scale = max(
+                0.5,
+                float(
+                    self.observer_config.get(
+                        "gps_valid_hold_scale",
+                        self.local_config_defaults.get("common", {}).get(
+                            "gps_valid_hold_scale", 1.15
+                        ),
+                    )
+                ),
+            )
+        except (TypeError, ValueError):
+            self.gps_valid_hold_scale = 1.15
+        try:
+            self.gps_valid_hold_min_seconds = max(
+                0.0,
+                float(
+                    self.observer_config.get(
+                        "gps_valid_hold_min_seconds",
+                        self.local_config_defaults.get("common", {}).get(
+                            "gps_valid_hold_min_seconds", 0.08
+                        ),
+                    )
+                ),
+            )
+        except (TypeError, ValueError):
+            self.gps_valid_hold_min_seconds = 0.08
+        try:
+            self.gps_valid_hold_max_seconds = max(
+                self.gps_valid_hold_min_seconds,
+                float(
+                    self.observer_config.get(
+                        "gps_valid_hold_max_seconds",
+                        self.local_config_defaults.get("common", {}).get(
+                            "gps_valid_hold_max_seconds", 0.35
+                        ),
+                    )
+                ),
+            )
+        except (TypeError, ValueError):
+            self.gps_valid_hold_max_seconds = max(
+                self.gps_valid_hold_min_seconds, 0.35
+            )
+
+    def _get_gps_valid_hold_window(self) -> float:
+        """Return the GPS freshness window used to keep the last fix valid."""
+        if (
+            self.gps_valid_hold_mode == "adaptive"
+            and self._gps_sample_period_estimate > 0.0
+        ):
+            hold = self.gps_valid_hold_scale * self._gps_sample_period_estimate
+            return float(
+                np.clip(
+                    hold,
+                    self.gps_valid_hold_min_seconds,
+                    self.gps_valid_hold_max_seconds,
+                )
+            )
+        return float(
+            np.clip(
+                self.gps_valid_hold_seconds,
+                self.gps_valid_hold_min_seconds,
+                self.gps_valid_hold_max_seconds,
+            )
+        )
+
+    def _normalize_v2v_time_reference(
+        self, time_reference: Optional[Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
+        """Normalize shared V2V time-reference metadata."""
+        if not isinstance(time_reference, dict):
+            return None
+
+        source = str(time_reference.get("source", "local")).strip() or "local"
+        raw_reference_ns = time_reference.get(
+            "reference_time_ns", time_reference.get("epoch_time_ns")
+        )
+        try:
+            reference_time_ns = (
+                int(raw_reference_ns) if raw_reference_ns is not None else None
+            )
+        except (TypeError, ValueError):
+            reference_time_ns = None
+
+        if reference_time_ns is not None and reference_time_ns < 0:
+            reference_time_ns = None
+
+        normalized = {
+            "source": source,
+            "reference_time_ns": reference_time_ns,
+        }
+
+        for key in ("reference_vehicle_id", "leader_id"):
+            if key not in time_reference or time_reference.get(key) is None:
+                continue
+            try:
+                normalized[key] = int(time_reference[key])
+            except (TypeError, ValueError):
+                continue
+
+        return normalized
+
+    def set_v2v_time_reference(
+        self, time_reference: Optional[Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
+        """Store and propagate the active shared V2V time reference."""
+        normalized = self._normalize_v2v_time_reference(time_reference)
+        with self.lock:
+            self._v2v_time_reference = normalized
+            if (
+                self.fleet_estimator is not None
+                and hasattr(self.fleet_estimator, "set_time_reference")
+            ):
+                self.fleet_estimator.set_time_reference(normalized)
+
+        if self.vehicle_logger and normalized:
+            self.vehicle_logger.logger.info(
+                "VehicleObserver: Shared V2V time reference "
+                f"source={normalized.get('source')} "
+                f"reference_time_ns={normalized.get('reference_time_ns')}"
+            )
+
+        return dict(normalized) if normalized else None
+
+    def clear_v2v_time_reference(self) -> None:
+        """Clear the active shared V2V time reference."""
+        self.set_v2v_time_reference(None)
+
+    def has_v2v_time_reference(self) -> bool:
+        """Return True when a shared V2V time reference is active."""
+        with self.lock:
+            return isinstance(self._v2v_time_reference, dict)
+
+    def get_v2v_time_reference(self) -> Optional[Dict[str, Any]]:
+        """Return a copy of the active shared V2V time reference."""
+        with self.lock:
+            if not isinstance(self._v2v_time_reference, dict):
+                return None
+            return dict(self._v2v_time_reference)
+
+    def to_v2v_reference_time_ns(self, timestamp_ns: Optional[int] = None) -> int:
+        """
+        Convert a local wall-clock timestamp into the current V2V time domain.
+
+        Without an active shared reference, this falls back to the raw local
+        wall-clock nanosecond timestamp for backward compatibility.
+        """
+        ts_ns = int(time.time_ns()) if timestamp_ns is None else int(timestamp_ns)
+        with self.lock:
+            reference_time_ns = None
+            if isinstance(self._v2v_time_reference, dict):
+                reference_time_ns = self._v2v_time_reference.get("reference_time_ns")
+
+        if reference_time_ns is None:
+            return ts_ns
+        return max(ts_ns - int(reference_time_ns), 0)
+
+    def _build_v2v_time_payload_locked(self) -> Dict[str, Any]:
+        """Return shared V2V time metadata for outgoing broadcast payloads."""
+        source = "local"
+        reference_vehicle_id: Optional[int] = None
+        leader_id: Optional[int] = None
+        if isinstance(self._v2v_time_reference, dict):
+            source = str(self._v2v_time_reference.get("source", "local"))
+            raw_reference_vehicle_id = self._v2v_time_reference.get(
+                "reference_vehicle_id"
+            )
+            raw_leader_id = self._v2v_time_reference.get("leader_id")
+            try:
+                if raw_reference_vehicle_id is not None:
+                    reference_vehicle_id = int(raw_reference_vehicle_id)
+            except (TypeError, ValueError):
+                reference_vehicle_id = None
+            try:
+                if raw_leader_id is not None:
+                    leader_id = int(raw_leader_id)
+            except (TypeError, ValueError):
+                leader_id = None
+
+        payload: Dict[str, Any] = {
+            "timestamp_ref_ns": self.to_v2v_reference_time_ns(),
+            "time_reference_source": source,
+        }
+        if reference_vehicle_id is not None:
+            payload["time_reference_vehicle_id"] = reference_vehicle_id
+        elif leader_id is not None:
+            payload["time_reference_vehicle_id"] = leader_id
+        return payload
 
     @staticmethod
     def _deep_merge_dict(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
@@ -576,6 +797,22 @@ class VehicleObserver:
                 logger=self.vehicle_logger,
             )
 
+            for target_id, measurement in self.sensor_data.get(
+                "relative_measurements_by_target", {}
+            ).items():
+                if not hasattr(
+                    self.relative_estimator, "set_external_relative_measurement"
+                ):
+                    break
+                self.relative_estimator.set_external_relative_measurement(
+                    target_id=int(target_id),
+                    distance=float(measurement.get("distance", 0.0)),
+                    relative_velocity=measurement.get("relative_velocity"),
+                    timestamp_ns=measurement.get("timestamp_ns"),
+                    source=str(measurement.get("source", "external_sensor")),
+                    measurement_confidence=measurement.get("confidence"),
+                )
+
             self.vehicle_logger.logger.info(
                 f"Relative estimator initialized: {self.relative_estimator_type}"
             )
@@ -799,13 +1036,30 @@ class VehicleObserver:
 
                     # Read GPS once here (centralized GPS reading)
                     gps_valid = False
+                    gps_fresh = False
                     # Initialize with last known position to prevent zero-flickering
                     gps_position = self.sensor_data.get("gps_position", np.zeros(3))
+                    sensor_timestamp = time.time()
+                    gps_age = float("inf")
+                    gps_hold_window = self._get_gps_valid_hold_window()
 
                     if self.gps is not None:
                         try:
                             if self.gps.readGPS():
-                                gps_valid = True
+                                gps_fresh = True
+                                if self._last_gps_sample_time > 0.0:
+                                    gps_period = max(
+                                        0.0,
+                                        sensor_timestamp - self._last_gps_sample_time,
+                                    )
+                                    if 0.01 <= gps_period <= 2.0:
+                                        if self._gps_sample_period_estimate <= 0.0:
+                                            self._gps_sample_period_estimate = gps_period
+                                        else:
+                                            self._gps_sample_period_estimate = (
+                                                0.2 * gps_period
+                                                + 0.8 * self._gps_sample_period_estimate
+                                            )
                                 gps_position = np.array(
                                     [
                                         self.gps.position[0],
@@ -813,24 +1067,37 @@ class VehicleObserver:
                                         self.gps.orientation[2],
                                     ]
                                 )
+                                self._last_gps_sample_time = sensor_timestamp
+                                gps_hold_window = self._get_gps_valid_hold_window()
                         except Exception as gps_error:
                             self.vehicle_logger.log_warning(
                                 f"GPS read failed: {gps_error}"
                             )
-                            gps_valid = False
+
+                    if self._last_gps_sample_time > 0.0:
+                        gps_age = max(0.0, sensor_timestamp - self._last_gps_sample_time)
+                        gps_valid = gps_age <= gps_hold_window
+                    gps_has_fix = self._last_gps_sample_time > 0.0
 
                     self.sensor_data.update(
                         {
                             "motor_tach_raw": motor_tach_raw,
                             "motor_tach": motor_tach,
+                            "battery_voltage": float(
+                                getattr(qcar, "batteryVoltage", 0.0)
+                            ),
                             "gyro_z": qcar.gyroscope[2],
                             "accelerometer_raw": accel_raw.copy(),
                             "accelerometer": accel_filtered.copy(),
                             "accel_magnitude_raw": accel_magnitude_raw,
                             "accel_magnitude": accel_magnitude,
-                            "timestamp": time.time(),
+                            "timestamp": sensor_timestamp,
                             "gps_valid": gps_valid,
+                            "gps_fresh": gps_fresh,
+                            "gps_has_fix": gps_has_fix,
                             "gps_position": gps_position,
+                            "gps_age": gps_age,
+                            "gps_hold_window": gps_hold_window,
                         }
                     )
 
@@ -903,9 +1170,25 @@ class VehicleObserver:
                     "VehicleObserver: local_estimator is None - observer cannot function"
                 )
 
-            # Prepare GPS data dict for estimator (if GPS is valid)
+            # Prepare GPS data dict for estimator. Robust KalmanNet benefits from
+            # receiving stale cached GPS position together with freshness/age
+            # metadata, while the classical estimators keep the older behavior.
             gps_data = None
-            if self.sensor_data.get("gps_valid", False):
+            estimator_kind = str(getattr(self, "local_estimator_type", "")).strip().lower()
+            if estimator_kind == "robust_kalman_net":
+                if self.sensor_data.get("gps_has_fix", False):
+                    gps_data = {
+                        "x": self.sensor_data["gps_position"][0],
+                        "y": self.sensor_data["gps_position"][1],
+                        "theta": self.sensor_data["gps_position"][2],
+                        "valid": bool(self.sensor_data.get("gps_valid", False)),
+                        "position_valid": bool(self.sensor_data.get("gps_fresh", False)),
+                        "hold_valid": bool(self.sensor_data.get("gps_valid", False)),
+                        "fresh": bool(self.sensor_data.get("gps_fresh", False)),
+                        "age_sec": float(self.sensor_data.get("gps_age", float("inf"))),
+                        "has_fix": True,
+                    }
+            elif self.sensor_data.get("gps_valid", False):
                 gps_data = {
                     "x": self.sensor_data["gps_position"][0],
                     "y": self.sensor_data["gps_position"][1],
@@ -1000,9 +1283,7 @@ class VehicleObserver:
             if self.fleet_estimator is None:
                 return
 
-            current_time_ns = (
-                time.time_ns()
-            )  # Use nanoseconds for consistency with V2V timestamps
+            current_time_ns = self.to_v2v_reference_time_ns()
 
             # Pass actual control inputs (steering, throttle)
             control = np.array([
@@ -1060,6 +1341,110 @@ class VehicleObserver:
         except Exception as e:
             self.vehicle_logger.log_error("Fleet observer update error", e)
 
+    def set_relative_target(self, target_id: Optional[int]) -> None:
+        """Set the single target tracked by the relative observer."""
+        with self.lock:
+            self.relative_target_id = None if target_id is None else int(target_id)
+
+    def get_relative_target(self) -> Optional[int]:
+        """Return the currently selected relative-observer target."""
+        with self.lock:
+            return self.relative_target_id
+
+    def _get_target_vehicle_state(self, target_id: Optional[int]) -> Optional[np.ndarray]:
+        """Return the latest cached fleet state for the selected target."""
+        if target_id is None or target_id < 0:
+            return None
+        if target_id >= self.fleet_states.shape[1]:
+            return None
+        return self.fleet_states[:, target_id].copy()
+
+    def _publish_relative_measurement(
+        self,
+        target_id: int,
+        distance: float,
+        relative_velocity: Optional[float],
+        timestamp_ns: int,
+        source: str,
+        measurement_confidence: float,
+    ) -> None:
+        """Store one target measurement locally and forward it to interested estimators."""
+        target_int = int(target_id)
+        rel_velocity = (
+            float(relative_velocity)
+            if relative_velocity is not None and np.isfinite(relative_velocity)
+            else float("nan")
+        )
+
+        message_timestamp_ns = self.to_v2v_reference_time_ns(timestamp_ns)
+
+        with self.lock:
+            self._last_relative_distance_by_target[target_int] = (
+                float(distance),
+                float(message_timestamp_ns) / 1e9,
+            )
+            self.sensor_data["relative_measurements_by_target"][target_int] = {
+                "distance": float(distance),
+                "relative_velocity": rel_velocity,
+                "confidence": float(measurement_confidence),
+                "timestamp_ns": int(message_timestamp_ns),
+                "source": str(source),
+            }
+
+        self.set_relative_target(target_int)
+
+        if (
+            self.fleet_estimator is not None
+            and hasattr(self.fleet_estimator, "set_external_relative_measurement")
+        ):
+            try:
+                self.fleet_estimator.set_external_relative_measurement(
+                    target_id=target_int,
+                    distance=float(distance),
+                    relative_velocity=(
+                        rel_velocity if np.isfinite(rel_velocity) else None
+                    ),
+                    timestamp_ns=int(message_timestamp_ns),
+                    source=str(source),
+                    measurement_confidence=float(measurement_confidence),
+                )
+            except TypeError:
+                self.fleet_estimator.set_external_relative_measurement(
+                    target_id=target_int,
+                    distance=float(distance),
+                    relative_velocity=(
+                        rel_velocity if np.isfinite(rel_velocity) else None
+                    ),
+                    timestamp_ns=int(message_timestamp_ns),
+                    source=str(source),
+                )
+
+        if (
+            self.relative_estimator is not None
+            and hasattr(self.relative_estimator, "set_external_relative_measurement")
+        ):
+            try:
+                self.relative_estimator.set_external_relative_measurement(
+                    target_id=target_int,
+                    distance=float(distance),
+                    relative_velocity=(
+                        rel_velocity if np.isfinite(rel_velocity) else None
+                    ),
+                    timestamp_ns=int(timestamp_ns),
+                    source=str(source),
+                    measurement_confidence=float(measurement_confidence),
+                )
+            except TypeError:
+                self.relative_estimator.set_external_relative_measurement(
+                    target_id=target_int,
+                    distance=float(distance),
+                    relative_velocity=(
+                        rel_velocity if np.isfinite(rel_velocity) else None
+                    ),
+                    timestamp_ns=int(timestamp_ns),
+                    source=str(source),
+                )
+
     def _update_relative_observer(self, dt: float):
         """
         Update relative state observer.
@@ -1068,48 +1453,23 @@ class VehicleObserver:
             if not self.enable_relative or self.relative_estimator is None:
                 return
 
-            # Check for valid measurement (YOLO/Radar)
-            # If not valid, we might skip update or update with prediction only (if supported)
-            # The SA_ACC_UIO requires measurement y(k)
-
-            # Need measurement: [delta, delta_dot]
-            # y_meas = self.sensor_data.get('relative_measurement')
-            # valid = self.sensor_data.get('relative_measurement_valid', False)
-
-            # TEMP: If not valid, just return for now (or implement hold?)
-            # if not valid:
-            #    return
-
-            # For now, let's assume if it's enabled, we try to use cached data
-            # Ideally this comes from vehicle_logic loop feeding update_sensor_data with new Yolo info
-
-            valid = bool(self.sensor_data.get("relative_measurement_valid", False))
-            if not valid:
+            target_id = self.get_relative_target()
+            if target_id is None:
                 return
 
-            y_meas = self.sensor_data["relative_measurement"]
-
-            # Preceding vehicle state (from V2V via fleet estimator)
-            # Assuming predecessor is id - 1.
-            # TODO: logic to determine predecessor ID dynamically
-            pre_id = self.vehicle_id - 1
-            pre_state = None
-            if pre_id >= 0 and self.fleet_estimator:
-                # Get from fleet estimator cache
-                # fleet_states is [state_dim x fleet_size]
-                if pre_id < self.fleet_states.shape[1]:
-                    pre_state = self.fleet_states[:, pre_id]
-
-            # Host state
             host_state = self.local_state  # [x, y, theta, v, a]
+            target_state = self._get_target_vehicle_state(target_id)
+            current_time_ns = time.time_ns()
 
             # Update
             self.relative_state = self.relative_estimator.update(
-                measurement=y_meas,
+                measurement=None,
                 dt=dt,
                 control_input=self.control_input,
-                pre_vehicle_state=pre_state,
+                target_vehicle_state=target_state,
                 host_vehicle_state=host_state,
+                target_id=target_id,
+                current_time_ns=current_time_ns,
             )
 
         except Exception as e:
@@ -1121,15 +1481,17 @@ class VehicleObserver:
         target_id: Optional[int] = None,
         source: str = "external_sensor",
         measurement_confidence: Optional[float] = None,
+        timestamp_ns: Optional[int] = None,
     ):
         """
         Update relative measurement (e.g. from YOLO/radar).
 
         Args:
             measurement: [delta, delta_dot]
-            target_id: Vehicle ID this measurement refers to (defaults to predecessor)
+            target_id: Vehicle ID this measurement refers to. Defaults to current relative target.
             source: Source label for logging/debugging
             measurement_confidence: Optional source confidence in [0, 1]
+            timestamp_ns: Optional measurement timestamp in nanoseconds
         """
         try:
             arr = np.asarray(measurement, dtype=float).flatten()
@@ -1142,9 +1504,13 @@ class VehicleObserver:
 
             target = target_id
             if target is None:
-                target = self.vehicle_id - 1 if self.vehicle_id > 0 else None
+                target = self.get_relative_target()
+            if target is None:
+                return
+            target = int(target)
 
-            now_s = time.time()
+            now_ns = int(timestamp_ns) if timestamp_ns is not None else int(time.time_ns())
+            now_s = now_ns / 1e9
             source_name = str(source)
             source_name_l = source_name.lower()
 
@@ -1166,8 +1532,8 @@ class VehicleObserver:
             rel_velocity = float("nan")
             if arr.size > 1 and np.isfinite(arr[1]):
                 rel_velocity = float(arr[1])
-            elif target is not None:
-                prev = self._last_relative_distance_by_target.get(int(target))
+            else:
+                prev = self._last_relative_distance_by_target.get(target)
                 if prev is not None:
                     prev_distance, prev_time_s = prev
                     dt = now_s - prev_time_s
@@ -1180,22 +1546,21 @@ class VehicleObserver:
                     np.exp(-max(rel_distance - 6.0, 0.0) / 4.0)
                 )
                 consistency_factor = 1.0
-                if target is not None:
-                    prev = self._last_relative_distance_by_target.get(int(target))
-                    if prev is not None:
-                        prev_distance, prev_time_s = prev
-                        dt = now_s - prev_time_s
-                        if dt > 1e-3:
-                            rel_velocity_from_distance = (rel_distance - prev_distance) / dt
-                            if np.isfinite(rel_velocity):
-                                consistency_error = abs(
-                                    rel_velocity - rel_velocity_from_distance
-                                )
-                                consistency_factor = float(
-                                    np.exp(-consistency_error / 1.5)
-                                )
-                            else:
-                                consistency_factor = 0.8
+                prev = self._last_relative_distance_by_target.get(target)
+                if prev is not None:
+                    prev_distance, prev_time_s = prev
+                    dt = now_s - prev_time_s
+                    if dt > 1e-3:
+                        rel_velocity_from_distance = (rel_distance - prev_distance) / dt
+                        if np.isfinite(rel_velocity):
+                            consistency_error = abs(
+                                rel_velocity - rel_velocity_from_distance
+                            )
+                            consistency_factor = float(
+                                np.exp(-consistency_error / 1.5)
+                            )
+                        else:
+                            consistency_factor = 0.8
 
                 dynamic_conf = float(
                     np.clip(
@@ -1210,63 +1575,18 @@ class VehicleObserver:
                     self.observer_config.get("yolo_relative_min_confidence", 0.35)
                 )
                 if dynamic_conf < min_conf:
-                    with self.lock:
-                        self.sensor_data["relative_measurement_valid"] = False
-                        self.sensor_data["relative_measurement_confidence"] = dynamic_conf
                     return
 
-            y_meas = np.array(
-                [rel_distance, rel_velocity if np.isfinite(rel_velocity) else 0.0],
-                dtype=float,
+            self._publish_relative_measurement(
+                target_id=target,
+                distance=rel_distance,
+                relative_velocity=(
+                    rel_velocity if np.isfinite(rel_velocity) else None
+                ),
+                timestamp_ns=now_ns,
+                source=source_name,
+                measurement_confidence=dynamic_conf,
             )
-
-            with self.lock:
-                self.sensor_data["relative_measurement"] = y_meas
-                self.sensor_data["relative_measurement_valid"] = True
-                self.sensor_data["relative_measurement_confidence"] = dynamic_conf
-
-                if target is not None:
-                    target_int = int(target)
-                    self._last_relative_distance_by_target[target_int] = (
-                        rel_distance,
-                        now_s,
-                    )
-                    self.sensor_data["relative_measurements_by_target"][target_int] = {
-                        "distance": rel_distance,
-                        "relative_velocity": rel_velocity,
-                        "confidence": dynamic_conf,
-                        "timestamp_ns": int(now_s * 1e9),
-                        "source": source_name,
-                    }
-
-            # Feed trust-based estimators when they support external measurements.
-            if (
-                target is not None
-                and self.fleet_estimator is not None
-                and hasattr(self.fleet_estimator, "set_external_relative_measurement")
-            ):
-                try:
-                    self.fleet_estimator.set_external_relative_measurement(
-                        target_id=int(target),
-                        distance=rel_distance,
-                        relative_velocity=(
-                            rel_velocity if np.isfinite(rel_velocity) else None
-                        ),
-                        timestamp_ns=int(now_s * 1e9),
-                        source=source_name,
-                        measurement_confidence=dynamic_conf,
-                    )
-                except TypeError:
-                    # Backward compatibility with estimators that don't support confidence yet.
-                    self.fleet_estimator.set_external_relative_measurement(
-                        target_id=int(target),
-                        distance=rel_distance,
-                        relative_velocity=(
-                            rel_velocity if np.isfinite(rel_velocity) else None
-                        ),
-                        timestamp_ns=int(now_s * 1e9),
-                        source=source_name,
-                    )
         except Exception as e:
             self.vehicle_logger.log_error("Update relative measurement error", e)
 
@@ -1734,7 +2054,7 @@ class VehicleObserver:
         Includes acceleration and control inputs for cooperative control.
         """
         with self.lock:
-            return {
+            payload = {
                 "vehicle_id": self.vehicle_id,
                 "x": float(self.local_state[0]),
                 "y": float(self.local_state[1]),
@@ -1748,6 +2068,8 @@ class VehicleObserver:
                 "gps_valid": self.gps_valid,
                 "source": "local_sensors",
             }
+            payload.update(self._build_v2v_time_payload_locked())
+            return payload
 
     def get_fleet_state_for_broadcast(self) -> dict:
         """
@@ -1776,11 +2098,13 @@ class VehicleObserver:
                     else 0.8,  # Higher confidence for own state
                 }
 
-            return {
+            payload = {
                 "sender_id": self.vehicle_id,
                 "fleet_states": fleet_data,
                 "source": "fleet_consensus",
             }
+            payload.update(self._build_v2v_time_payload_locked())
+            return payload
 
     def get_trust_report_for_broadcast(self) -> Optional[Dict[str, Any]]:
         """
@@ -1833,15 +2157,20 @@ class VehicleObserver:
                 except Exception:
                     generalized_vector = {}
 
-            return {
+            payload = {
                 "reporter_id": self.vehicle_id,
                 "trust_scores": trust_scores,
                 "generalized_trust_vector": generalized_vector,
                 "source": "trust_estimator",
             }
+            payload.update(self._build_v2v_time_payload_locked())
+            return payload
 
     def reinitialize_fleet_estimation(
-        self, new_fleet_size: int, peer_vehicle_ids: List[int]
+        self,
+        new_fleet_size: int,
+        peer_vehicle_ids: List[int],
+        time_reference: Optional[Dict[str, Any]] = None,
     ):
         """
         Reinitialize fleet estimation when V2V is activated with actual fleet information.
@@ -1850,10 +2179,15 @@ class VehicleObserver:
         Args:
             new_fleet_size: Actual number of vehicles in the fleet (including this vehicle)
             peer_vehicle_ids: List of peer vehicle IDs that will be connected
+            time_reference: Shared timing metadata for cross-vehicle V2V alignment
         """
         with self.lock:
             old_fleet_size = self.fleet_size
             self.fleet_size = new_fleet_size
+            normalized_time_reference = self._normalize_v2v_time_reference(
+                time_reference
+            )
+            self._v2v_time_reference = normalized_time_reference
 
             # Mark V2V as active - fleet observer will start updating
             self.v2v_active = True
@@ -1871,6 +2205,8 @@ class VehicleObserver:
                     config=fleet_config,
                     logger=self.vehicle_logger,
                 )
+                if hasattr(self.fleet_estimator, "set_time_reference"):
+                    self.fleet_estimator.set_time_reference(normalized_time_reference)
 
                 # Initialize only own state in fleet - others will be updated as V2V data arrives
                 if self.vehicle_id < self.fleet_size:
@@ -1893,8 +2229,6 @@ class VehicleObserver:
                 )
                 for vid in range(self.fleet_size):
                     fs = self.fleet_states[:, vid]
-                    if vid != self.vehicle_id and not np.any(fs):
-                        continue
                     self.vehicle_logger.logger.info(
                         f"  vehicle_{vid}: x={fs[0]:.3f}, y={fs[1]:.3f}, theta={fs[2]:.3f}, v={fs[3]:.3f}"
                     )
@@ -1910,6 +2244,7 @@ class VehicleObserver:
         Cleans up fleet estimator and resets fleet size to 1 (just this vehicle).
         """
         self.v2v_active = False
+        self._v2v_time_reference = None
         # self.fleet_size = max(self.vehicle_id + 1, 1) # Keep purely local
 
     def reset_observer(self, initial_pose: Optional[np.ndarray] = None):
@@ -1923,6 +2258,14 @@ class VehicleObserver:
             if self.fleet_estimator is not None:
                 self.fleet_estimator.reset()
 
+            # Reset relative estimator
+            if self.relative_estimator is not None:
+                self.relative_estimator.reset()
+                if hasattr(
+                    self.relative_estimator, "clear_external_relative_measurement"
+                ):
+                    self.relative_estimator.clear_external_relative_measurement()
+
             # Reset local state cache
             if initial_pose is not None:
                 self.local_state[:3] = initial_pose
@@ -1934,6 +2277,8 @@ class VehicleObserver:
 
             self.velocity = 0.0
             self.gps_valid = False
+            self._last_gps_sample_time = 0.0
+            self.relative_state = np.zeros(4)
 
             # Reset acceleration and control tracking
             # self.last_velocity = 0.0
@@ -1945,6 +2290,7 @@ class VehicleObserver:
             self.control_input = {"steering": 0.0, "throttle": 0.0}
             self._vy_estimate = 0.0
             self._vy_est_last_time = 0.0
+            self.relative_target_id = None
             self._last_relative_distance_by_target.clear()
             self.sensor_data["motor_tach_raw"] = 0.0
             self.sensor_data["motor_tach"] = 0.0
@@ -1952,9 +2298,7 @@ class VehicleObserver:
             self.sensor_data["accelerometer"] = np.zeros(3)
             self.sensor_data["accel_magnitude_raw"] = 0.0
             self.sensor_data["accel_magnitude"] = 0.0
-            self.sensor_data["relative_measurement"] = np.zeros(2)
-            self.sensor_data["relative_measurement_valid"] = False
-            self.sensor_data["relative_measurement_confidence"] = float("nan")
+            self.sensor_data["gps_age"] = float("inf")
             self.sensor_data["relative_measurements_by_target"] = {}
             if hasattr(self, "vy_ekf") and self.vy_ekf is not None:
                 self.vy_ekf = LateralVelocityEKF(dt=0.01)
@@ -1963,62 +2307,7 @@ class VehicleObserver:
             if self.fleet_estimator is not None:
                 self.fleet_states = self.fleet_estimator.get_fleet_states()
 
-    # ===== Scope Integration for Visualization =====
 
-    # def enable_scopes(self, preset_names: List[str] = None, fps: int = 30,
-    #                   time_window: float = 60.0) -> bool:
-    #     """
-    #     Enable visualization scopes for estimator data.
-
-    #     Args:
-    #         preset_names: List of preset names to enable. Options:
-    #             - 'local_state': x, y, theta, velocity estimation
-    #             - 'local_error': estimation vs GPS error
-    #             - 'local_control': steering, throttle, velocity
-    #             - 'fleet_position': XY plot of all vehicles
-    #             - 'fleet_state': fleet state time series
-    #             - 'fleet_consensus': consensus error and trust scores
-    #             If None, enables all presets.
-    #         fps: Refresh rate (frames per second)
-    #         time_window: Time window for plots in seconds
-
-    #     Returns:
-    #         True if scopes enabled successfully
-    #     """
-    #     try:
-    #         from Observer.estimation_scopes import (
-    #             EstimationScopeManager,
-    #             create_scope_manager,
-    #             MULTISCOPE_AVAILABLE
-    #         )
-
-    #         if not MULTISCOPE_AVAILABLE:
-    #             self.vehicle_logger.log_warning("MultiScope not available - scopes disabled")
-    #             return False
-
-    #         if preset_names is None:
-    #             preset_names = ['local_state', 'local_error', 'local_control',
-    #                            'fleet_position', 'fleet_state', 'fleet_consensus']
-
-    #         self.scope_manager = create_scope_manager(
-    #             preset_names=preset_names,
-    #             fps=fps,
-    #             time_window=time_window,
-    #             max_vehicles=self.fleet_size
-    #         )
-    #         self.scope_manager.start()
-
-    #         self.vehicle_logger.logger.info(
-    #             f"Estimation scopes enabled: {preset_names}"
-    #         )
-    #         return True
-
-    #     except ImportError as e:
-    #         self.vehicle_logger.log_warning(f"Could not import estimation_scopes: {e}")
-    #         return False
-    #     except Exception as e:
-    #         self.vehicle_logger.log_error("Failed to enable scopes", e)
-    #         return False
 
     def sample_scopes(self, t: float) -> None:
         """

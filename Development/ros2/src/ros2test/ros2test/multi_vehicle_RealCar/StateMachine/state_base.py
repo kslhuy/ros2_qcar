@@ -237,11 +237,12 @@ class StateBase:
             # Handle V2V activation
             peer_vehicles = data.get("peer_vehicles", [])
             peer_ips = data.get("peer_ips", [])
+            time_reference = data.get("time_reference")
 
             if peer_vehicles and peer_ips:
                 if hasattr(self.vehicle_logic, "v2v_manager"):
                     success = self.vehicle_logic.v2v_manager.activate_v2v(
-                        peer_vehicles, peer_ips
+                        peer_vehicles, peer_ips, time_reference=time_reference
                     )
                     if success and self.logger:
                         self.logger.logger.info(
@@ -710,6 +711,8 @@ class StateBase:
             return False
 
         if success:
+            if hasattr(self.vehicle_logic, "invalidate_periodic_status_cache"):
+                self.vehicle_logic.invalidate_periodic_status_cache()
             self._on_controller_switched(category, controller_type, state_context)
         # else:
         #     self.logger.logger.error(f"Failed to switch {category} controller to {controller_type}")
@@ -1554,6 +1557,8 @@ class StateBase:
             # Swap the estimator
             vehicle_observer.set_local_estimator(new_estimator)
             vehicle_observer.local_estimator_type = observer_type
+            if hasattr(self.vehicle_logic, "invalidate_periodic_status_cache"):
+                self.vehicle_logic.invalidate_periodic_status_cache()
 
             return True
 
@@ -1612,6 +1617,8 @@ class StateBase:
             # Swap the estimator
             vehicle_observer.set_fleet_estimator(new_estimator)
             vehicle_observer.fleet_estimator_type = observer_type
+            if hasattr(self.vehicle_logic, "invalidate_periodic_status_cache"):
+                self.vehicle_logic.invalidate_periodic_status_cache()
 
             return True
 
