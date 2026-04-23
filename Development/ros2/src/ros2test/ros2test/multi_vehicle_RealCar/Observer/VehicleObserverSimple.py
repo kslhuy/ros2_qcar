@@ -222,6 +222,7 @@ class VehicleObserver:
         # This saves resources and ensures clean state when V2V starts
         self.v2v_active = False  # Track if V2V is active
         self._v2v_time_reference: Optional[Dict[str, Any]] = None
+        self._v2v_vehicle_manifest: Dict[int, Dict[str, Any]] = {}
 
         # ===== Relative State Estimator (pluggable) =====
         self.relative_estimator: Optional[RelativeStateEstimatorBase] = None
@@ -630,6 +631,16 @@ class VehicleObserver:
             self._deep_merge_dict(trust_consensus.setdefault("logging", {}), child_logging)
             self._deep_merge_dict(trust_kalman.setdefault("logging", {}), child_logging)
 
+        for section_name in ("vehicle_models", "timestamp_alignment"):
+            child_section = trust_cfg.get(section_name, {})
+            if isinstance(child_section, dict):
+                self._deep_merge_dict(
+                    trust_consensus.setdefault(section_name, {}), child_section
+                )
+                self._deep_merge_dict(
+                    trust_kalman.setdefault(section_name, {}), child_section
+                )
+
         return merged
 
     def _apply_acceleration_ema(self, accel_raw: np.ndarray) -> np.ndarray:
@@ -754,6 +765,112 @@ class VehicleObserver:
                 return False
         return default
 
+    @staticmethod
+    def _normalize_vehicle_type_name(value: Any) -> str:
+        """Normalize supported vehicle type names."""
+        return "Limo" if str(value or "").strip().lower() == "limo" else "Qcar"
+
+    def _normalize_vehicle_manifest(
+        self, vehicle_manifest: Optional[Dict[Any, Any]]
+    ) -> Dict[int, Dict[str, Any]]:
+        """Normalize V2V activation metadata keyed by vehicle ID."""
+        if not isinstance(vehicle_manifest, dict):
+            return {}
+
+        normalized: Dict[int, Dict[str, Any]] = {}
+        for raw_id, raw_meta in vehicle_manifest.items():
+            if not isinstance(raw_meta, dict):
+                continue
+
+            raw_vehicle_id = raw_meta.get("vehicle_id", raw_id)
+            try:
+                vehicle_id = int(raw_vehicle_id)
+            except (TypeError, ValueError):
+                continue
+
+            vehicle_type = self._normalize_vehicle_type_name(
+                raw_meta.get("vehicle_type", raw_meta.get("type", "Qcar"))
+            )
+            programme_type = str(raw_meta.get("programme_type", "") or "").strip()
+            if vehicle_type == "Limo":
+                programme_type = "Ros"
+            elif programme_type not in {"Py", "Ros"}:
+                programme_type = "Py"
+
+            raw_geometry = raw_meta.get(
+                "geometry", raw_meta.get("vehicle_geometry", {})
+            )
+            geometry = {}
+            if isinstance(raw_geometry, dict):
+                for key in ("wheelbase", "l_r", "l_f", "track"):
+                    value = raw_geometry.get(key)
+                    if value is None:
+                        continue
+                    try:
+                        geometry[key] = float(value)
+                    except (TypeError, ValueError):
+                        continue
+
+            normalized[vehicle_id] = {
+                "vehicle_type": vehicle_type,
+                "programme_type": programme_type,
+                "geometry": geometry,
+            }
+
+        return normalized
+
+    @staticmethod
+    def _find_vehicle_model_key(raw_models: Dict[Any, Any], vehicle_id: int):
+        """Return the existing vehicle_models key matching a vehicle ID."""
+        for raw_key in raw_models.keys():
+            try:
+                if int(raw_key) == int(vehicle_id):
+                    return raw_key
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    def _merge_v2v_manifest_into_fleet_config(
+        self, resolved: Dict[str, Any]
+    ) -> None:
+        """
+        Fill missing per-target model entries from V2V activation metadata.
+
+        The host still uses the default `vehicle` model from config. Static
+        `vehicle_models` entries remain authoritative and only receive missing
+        metadata from the manifest.
+        """
+        if not self._v2v_vehicle_manifest:
+            return
+
+        raw_models = resolved.get("vehicle_models", {})
+        if not isinstance(raw_models, dict):
+            raw_models = {}
+            resolved["vehicle_models"] = raw_models
+
+        for vehicle_id, meta in self._v2v_vehicle_manifest.items():
+            if int(vehicle_id) == int(self.vehicle_id):
+                continue
+
+            generated = {
+                "vehicle_type": meta.get("vehicle_type", "Qcar"),
+                "programme_type": meta.get("programme_type", "Py"),
+            }
+            geometry = meta.get("geometry", {})
+            if isinstance(geometry, dict):
+                generated.update(geometry)
+
+            existing_key = self._find_vehicle_model_key(raw_models, vehicle_id)
+            if existing_key is None:
+                raw_models[int(vehicle_id)] = generated
+                continue
+
+            existing = raw_models.get(existing_key)
+            if isinstance(existing, dict):
+                merged = dict(generated)
+                merged.update(existing)
+                raw_models[existing_key] = merged
+
     def _resolve_fleet_estimator_config(self) -> Dict[str, Any]:
         """
         Resolve effective fleet estimator config for the currently selected type.
@@ -769,12 +886,45 @@ class VehicleObserver:
                     vehicle_cfg = {}
                     resolved["vehicle"] = vehicle_cfg
                 vehicle_cfg.update(self.vehicle_geometry_config)
+            self._merge_v2v_manifest_into_fleet_config(resolved)
             return resolved
 
-        return {
+        resolved = {
             "consensus_gain": self.observer_config.get("consensus_gain", 0.3),
             "observer_gain": self.observer_config.get("observer_gain", 0.1),
         }
+        self._merge_v2v_manifest_into_fleet_config(resolved)
+        return resolved
+
+    def _apply_vehicle_geometry_to_local_config(
+        self, estimator_params: Dict[str, Any], explicit_override_keys=None
+    ) -> None:
+        """Inject per-vehicle geometry into local estimators that use a wheelbase."""
+        if not isinstance(estimator_params, dict) or not self.vehicle_geometry_config:
+            return
+
+        explicit_override_keys = set(explicit_override_keys or ())
+        wheelbase = self.vehicle_geometry_config.get("wheelbase")
+        try:
+            wheelbase = float(wheelbase)
+        except (TypeError, ValueError):
+            return
+        if not np.isfinite(wheelbase) or wheelbase <= 0.0:
+            return
+
+        estimator_kind = str(self.local_estimator_type or "").strip().lower()
+        if estimator_kind == "ekf":
+            if "wheelbase" not in explicit_override_keys:
+                estimator_params["wheelbase"] = wheelbase
+            if "kin_wheelbase" not in explicit_override_keys:
+                estimator_params["kin_wheelbase"] = wheelbase
+        elif estimator_kind == "robust_kalman_net":
+            if "kin_wheelbase" not in explicit_override_keys:
+                estimator_params["kin_wheelbase"] = wheelbase
+            comparator_cfg = estimator_params.setdefault("ekf_comparator_config", {})
+            if isinstance(comparator_cfg, dict):
+                comparator_cfg.setdefault("wheelbase", wheelbase)
+                comparator_cfg.setdefault("kin_wheelbase", wheelbase)
 
     def _create_fleet_estimator(self):
         """Create fleet state estimator using factory"""
@@ -879,6 +1029,7 @@ class VehicleObserver:
             bool: True if initialization successful
         """
         try:
+            explicit_override_keys = set((estimator_params or {}).keys())
             estimator_params = estimator_params or {}
 
             # Merge with config defaults
@@ -891,6 +1042,9 @@ class VehicleObserver:
                 estimator_params
             )  # estimator_params override defaults
             estimator_params = config_defaults
+            self._apply_vehicle_geometry_to_local_config(
+                estimator_params, explicit_override_keys=explicit_override_keys
+            )
             try:
                 self.v_lpf_alpha = float(
                     np.clip(float(estimator_params.get("v_lpf_alpha", 1.0)), 0.0, 1.0)
@@ -974,6 +1128,8 @@ class VehicleObserver:
         default_config = {
             "observer_rate": 100,
             "fleet_observer_rate": 50,
+            "camera_distance_offset": 0.0,
+            "yolo_relative_min_confidence": 0.35,
         }
 
         # Pull observer config block from self.config if present
@@ -1006,6 +1162,10 @@ class VehicleObserver:
 
         if "camera_distance_offset" in cfg_dict:
             merged["camera_distance_offset"] = cfg_dict.get("camera_distance_offset")
+        if "yolo_relative_min_confidence" in cfg_dict:
+            merged["yolo_relative_min_confidence"] = cfg_dict.get(
+                "yolo_relative_min_confidence"
+            )
 
         return merged
 
@@ -1562,8 +1722,8 @@ class VehicleObserver:
             source_name = str(source)
             source_name_l = source_name.lower()
 
-            # Add camera-to-center offset to make YOLO distance comparable to GPS center-to-center distance
-            camera_offset = float(self.observer_config.get("camera_distance_offset", 0.40))
+            # Optional camera/source distance correction for YOLO relative measurements.
+            camera_offset = float(self.observer_config.get("camera_distance_offset", 0.0))
             if "yolo" in source_name_l:
                 rel_distance += camera_offset
 
@@ -2219,6 +2379,7 @@ class VehicleObserver:
         new_fleet_size: int,
         peer_vehicle_ids: List[int],
         time_reference: Optional[Dict[str, Any]] = None,
+        vehicle_manifest: Optional[Dict[Any, Any]] = None,
     ):
         """
         Reinitialize fleet estimation when V2V is activated with actual fleet information.
@@ -2228,6 +2389,7 @@ class VehicleObserver:
             new_fleet_size: Actual number of vehicles in the fleet (including this vehicle)
             peer_vehicle_ids: List of peer vehicle IDs that will be connected
             time_reference: Shared timing metadata for cross-vehicle V2V alignment
+            vehicle_manifest: Optional per-vehicle metadata from the ground station
         """
         with self.lock:
             old_fleet_size = self.fleet_size
@@ -2236,6 +2398,9 @@ class VehicleObserver:
                 time_reference
             )
             self._v2v_time_reference = normalized_time_reference
+            self._v2v_vehicle_manifest = self._normalize_vehicle_manifest(
+                vehicle_manifest
+            )
 
             # Mark V2V as active - fleet observer will start updating
             self.v2v_active = True
@@ -2293,6 +2458,7 @@ class VehicleObserver:
         """
         self.v2v_active = False
         self._v2v_time_reference = None
+        self._v2v_vehicle_manifest = {}
         # self.fleet_size = max(self.vehicle_id + 1, 1) # Keep purely local
 
     def reset_observer(self, initial_pose: Optional[np.ndarray] = None):

@@ -144,13 +144,13 @@ pp_map:
   min_speed: 0.4                  # [m/s] Lowest speed the profile is allowed to use in turns. Up = less slowing in corners. Down = more slowing in corners.
   kappa_speed_gain: 1.0           # How strongly curvature reduces speed. Up = slower in bends. Down = keeps more speed in bends.
   max_speed: 0.65                 # [m/s] Maximum speed allowed by the profile. Up = higher straight-line speed. Down = lower overall cap.
-  hard_turn_kappa: 0.60           # [1/m] Curvature threshold for a very sharp turn. Up = fewer turns treated as hard. Down = more turns treated as hard.
+  hard_turn_kappa: 0.59           # [1/m] Curvature threshold for a very sharp turn. Up = fewer turns treated as hard. Down = more turns treated as hard.
   hard_turn_speed: 0.36           # [m/s] Speed cap used once a turn is classified as hard. Up = faster through hairpins. Down = safer/slower hairpins.
   t_clip_min: 0.5                 # [m] Minimum L1 lookahead. Up = smoother, less twitchy, but weaker correction. Down = more aggressive correction.
   t_clip_max: 1.0                 # [m] Maximum L1 lookahead. Up = smoother/wider steering. Down = tighter/more local steering.
   m_l1: 0.50                      # L1 lookahead increase with speed: L1 = q_l1 + m_l1*v. Up = more preview at speed. Down = more reactive at speed.
   q_l1: 0.2                       # [m] Base L1 lookahead at low speed. Up = smoother but slower response. Down = sharper but more oscillation risk.
-  speed_lookahead: 0.2            # [s] How far ahead the controller samples path speed. Up = slows earlier before corners. Down = reacts later.
+  speed_lookahead: 0.25            # [s] How far ahead the controller samples path speed. Up = slows earlier before corners. Down = reacts later.
   lat_err_coeff: 0.15             # [0..1] How much speed is reduced when the car is off the path. Up = slows more to recover. Down = keeps speed even with error.
   acc_scaler_for_steer: 1.0       # Steering multiplier while accelerating. Above 1.0 = stronger steering under accel. Below 1.0 = softer steering.
   dec_scaler_for_steer: 1.0       # Steering multiplier while braking/decelerating. Above 1.0 = stronger steering under braking. Below 1.0 = softer steering.

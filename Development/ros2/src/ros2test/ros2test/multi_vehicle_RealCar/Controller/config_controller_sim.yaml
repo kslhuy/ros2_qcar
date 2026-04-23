@@ -22,7 +22,7 @@ leader_longitudinal_controller_type: 'cacc'      # Gap/speed tracking in FOLLOWI
 leader_lateral_controller_type: 'fusion_lateral'   # Keep fusion lateral, but bias toward path tracking
 
 leader_reverse_follow:
-  enabled: false
+  enabled: true
   trigger_velocity_threshold: -0.03
   max_reverse_throttle: 0.08
   max_reverse_speed: 0.12

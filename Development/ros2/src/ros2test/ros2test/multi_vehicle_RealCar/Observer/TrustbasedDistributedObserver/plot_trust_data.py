@@ -16,6 +16,8 @@ import glob
 import re
 import math
 import csv
+import json
+import time
 from typing import Dict, List, Tuple
 
 import matplotlib.pyplot as plt
@@ -62,6 +64,7 @@ def _extract_vehicle_ids(columns: List[str]) -> List[int]:
     ids = set()
     prefixes = {
         "vehicle_present", "trust", "gtrust", "w_neighbor",
+        "w0_final", "w_self_final", "w_neighbor_sum_final",
         "est_conf", "pred_mode", "est_x", "est_v",
         "v_score", "d_score", "a_score", "h_score",
         "b_score", "q_factor", "local_trust", "global_trust",
@@ -81,7 +84,8 @@ def _active_vehicles(rows: List[dict], columns: List[str],
     active = []
     for vid in vehicle_ids:
         for prefix in ("vehicle_present", "trust", "gtrust",
-                       "w_neighbor", "est_conf", "est_x"):
+                       "w_neighbor", "w0_final", "w_self_final",
+                       "w_neighbor_sum_final", "est_conf", "est_x"):
             col = f"{prefix}_{vid}"
             if col not in columns:
                 continue
@@ -93,6 +97,10 @@ def _active_vehicles(rows: List[dict], columns: List[str],
                 active.append(vid)
                 break
     return active
+
+
+def _has_finite_column(rows: List[dict], col: str) -> bool:
+    return np.any(np.isfinite(_col_to_array(rows, col)))
 
 
 def _plot_series(ax, times, rows, prefix, vids, label_fmt="Vehicle {}",
@@ -137,6 +145,241 @@ def _add_turn_sections(ax, times, rows):
         import matplotlib.transforms as mtransforms
         trans = mtransforms.blended_transform_factory(ax.transData, ax.transAxes)
         ax.fill_between(times, 0, 1, where=(is_turning >= 1), color='gold', alpha=0.25, transform=trans, label='Turn Section')
+
+
+def _safe_float(value, default=float("nan")) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _last_nonempty_value(rows: List[dict], col: str) -> str:
+    for row in reversed(rows):
+        value = row.get(col, "")
+        if value not in ("", None):
+            return value
+    return ""
+
+
+def _json_list_or_empty(raw) -> List[dict]:
+    if raw in ("", None):
+        return []
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return []
+    if not isinstance(data, list):
+        return []
+    return [item for item in data if isinstance(item, dict)]
+
+
+def _finite_time_bounds(times: np.ndarray) -> Tuple[float, float]:
+    finite_times = np.asarray(times, dtype=float)
+    finite_times = finite_times[np.isfinite(finite_times)]
+    if finite_times.size == 0:
+        return 0.0, 1.0
+    t0 = float(np.min(finite_times))
+    t1 = float(np.max(finite_times))
+    if not math.isfinite(t1) or t1 <= t0:
+        t1 = t0 + 1.0
+    return t0, t1
+
+
+def _clamped_interval(start, end, t_min: float, t_max: float) -> Tuple[float, float]:
+    start_f = _safe_float(start)
+    end_f = _safe_float(end)
+    if not math.isfinite(start_f):
+        start_f = t_min
+    if not math.isfinite(end_f):
+        end_f = t_max
+    start_f = min(max(start_f, t_min), t_max)
+    end_f = min(max(end_f, start_f), t_max)
+    if end_f <= start_f:
+        end_f = min(max(start_f + 1e-3, t_min), max(t_max, start_f + 1e-3))
+    return start_f, end_f
+
+
+def _attack_target_label(interval: dict) -> str:
+    data_type = str(interval.get("data_type", "") or "attack").lower()
+    attacker = interval.get("attacker_id", "")
+    victims = interval.get("victim_ids", [])
+    if not isinstance(victims, list):
+        victims = [victims]
+    if data_type == "local":
+        return f"local V{attacker}"
+    if data_type == "fleet":
+        victim_text = "all" if -1 in victims else ",".join(f"V{v}" for v in victims)
+        return f"fleet {victim_text}"
+    if data_type == "both":
+        victim_text = "all" if -1 in victims else ",".join(f"V{v}" for v in victims)
+        return f"both V{attacker}->{victim_text}"
+    return data_type
+
+
+def _attack_display_label(interval: dict) -> str:
+    parts = [
+        str(interval.get("type", "") or "attack"),
+        str(interval.get("modification", "") or ""),
+        str(interval.get("data_type", "") or ""),
+    ]
+    fields = interval.get("target_fields", [])
+    if isinstance(fields, list):
+        fields = [str(f) for f in fields if str(f)]
+        if fields:
+            parts.append("/".join(fields))
+    return " ".join(part for part in parts if part).strip()
+
+
+def _extract_attack_intervals(rows: List[dict], columns: List[str],
+                              active: List[int], times: np.ndarray) -> List[dict]:
+    t_min, t_max = _finite_time_bounds(times)
+    intervals: List[dict] = []
+
+    raw_json = _last_nonempty_value(rows, "v2v_attack_intervals")
+    for item in _json_list_or_empty(raw_json):
+        start_s, end_s = _clamped_interval(
+            item.get("start_s"), item.get("end_s"), t_min, t_max
+        )
+        interval = dict(item)
+        interval["start_s"] = start_s
+        interval["end_s"] = end_s
+        interval["target_label"] = _attack_target_label(interval)
+        interval["display_label"] = _attack_display_label(interval)
+        intervals.append(interval)
+
+    if intervals:
+        return intervals
+
+    seen = set()
+    for vid in active:
+        if f"inject_attack_start_{vid}" not in columns:
+            continue
+        for row in rows:
+            start_f = _safe_float(row.get(f"inject_attack_start_{vid}", ""))
+            if not math.isfinite(start_f):
+                continue
+            end_f = _safe_float(row.get(f"inject_attack_end_{vid}", ""))
+            start_s, end_s = _clamped_interval(start_f, end_f, t_min, t_max)
+            fields = str(row.get(f"inject_attack_fields_{vid}", "")).split("|")
+            interval = {
+                "name": row.get(f"inject_attack_name_{vid}", ""),
+                "type": row.get(f"inject_attack_type_{vid}", ""),
+                "modification": row.get(f"inject_attack_modification_{vid}", ""),
+                "data_type": row.get(f"inject_attack_data_type_{vid}", ""),
+                "target_fields": [f for f in fields if f],
+                "start_s": start_s,
+                "end_s": end_s,
+                "attacker_id": row.get(f"inject_attack_attacker_{vid}", ""),
+                "victim_ids": [vid],
+                "target_label": f"V{vid}",
+            }
+            interval["display_label"] = _attack_display_label(interval)
+            key = (
+                interval["target_label"],
+                interval["type"],
+                interval["modification"],
+                interval["data_type"],
+                round(start_s, 6),
+                round(end_s, 6),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            intervals.append(interval)
+
+    if intervals:
+        return intervals
+
+    if "v2v_attack_start_s" in columns:
+        for row in rows:
+            start_f = _safe_float(row.get("v2v_attack_start_s", ""))
+            if not math.isfinite(start_f):
+                continue
+            end_f = _safe_float(row.get("v2v_attack_end_s", ""))
+            start_s, end_s = _clamped_interval(start_f, end_f, t_min, t_max)
+            interval = {
+                "type": row.get("v2v_attack_types", ""),
+                "modification": "",
+                "data_type": row.get("v2v_attack_data_types", ""),
+                "target_fields": [],
+                "start_s": start_s,
+                "end_s": end_s,
+                "attacker_id": "",
+                "victim_ids": [],
+                "target_label": "attack",
+            }
+            interval["display_label"] = _attack_display_label(interval)
+            key = (
+                interval["type"],
+                interval["data_type"],
+                round(start_s, 6),
+                round(end_s, 6),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            intervals.append(interval)
+
+    return intervals
+
+
+def _mask_to_time_spans(times: np.ndarray, mask: np.ndarray) -> List[Tuple[float, float]]:
+    times = np.asarray(times, dtype=float)
+    mask = np.asarray(mask, dtype=bool)
+    valid = np.isfinite(times)
+    if times.size == 0 or mask.size != times.size or not np.any(valid & mask):
+        return []
+
+    valid_times = times[valid]
+    positive_diffs = np.diff(valid_times)
+    positive_diffs = positive_diffs[positive_diffs > 0.0]
+    fallback_dt = float(np.median(positive_diffs)) if positive_diffs.size else 1e-3
+    spans: List[Tuple[float, float]] = []
+    start_idx = None
+    for idx, is_on in enumerate(mask):
+        if is_on and start_idx is None:
+            start_idx = idx
+        if start_idx is not None and (not is_on or idx == len(mask) - 1):
+            end_idx = idx if is_on and idx == len(mask) - 1 else idx - 1
+            start_t = times[start_idx]
+            end_t = times[end_idx]
+            if not (math.isfinite(start_t) and math.isfinite(end_t)):
+                start_idx = None
+                continue
+            if end_t <= start_t:
+                end_t = start_t + fallback_dt
+            spans.append((float(start_t), float(end_t)))
+            start_idx = None
+    return spans
+
+
+def _extract_attack_events(rows: List[dict], columns: List[str],
+                           times: np.ndarray) -> List[dict]:
+    raw_json = _last_nonempty_value(rows, "v2v_attack_events")
+    events = _json_list_or_empty(raw_json)
+    if events:
+        return [
+            {"event": str(e.get("event", "")), "time_s": _safe_float(e.get("time_s"))}
+            for e in events
+            if math.isfinite(_safe_float(e.get("time_s")))
+        ]
+
+    if "v2v_attack_enabled" not in columns:
+        return []
+    enabled = _col_to_array(rows, "v2v_attack_enabled")
+    enabled_mask = np.isfinite(enabled) & (enabled >= 0.5)
+    events = []
+    prev = False
+    for t, is_enabled in zip(times, enabled_mask):
+        if not math.isfinite(float(t)):
+            continue
+        if is_enabled and not prev:
+            events.append({"event": "enable", "time_s": float(t)})
+        elif prev and not is_enabled:
+            events.append({"event": "disable", "time_s": float(t)})
+        prev = bool(is_enabled)
+    return events
 
 
 def _yolo_usage_mask(rows: List[dict], vid: int) -> np.ndarray:
@@ -367,42 +610,80 @@ def _fig_trust(times, rows, active, focus, host_id):
     return fig
 
 
-def _fig_weights(times, rows, active, host_id):
+def _fig_weights(times, rows, active, focus, host_id):
     """
     Figure 2 – Weight Calculation
     Layout (2 rows × 2 cols):
       [0,0] w0, w_self over time             [0,1] Per-neighbor weights
       [1,0] Mean trust metrics                [1,1] Trusted neighbor count
     """
+    has_final = (
+        _has_finite_column(rows, f"w0_final_{focus}")
+        or _has_finite_column(rows, f"w_self_final_{focus}")
+        or _has_finite_column(rows, f"w_neighbor_sum_final_{focus}")
+        or any(
+            _has_finite_column(rows, f"w_neighbor_from_v{src}_to_{focus}")
+            for src in active
+        )
+    )
+
     fig = plt.figure(figsize=(16, 7))
-    fig.suptitle(f"Weight Calculation  (Host V{host_id})", fontsize=13,
-                 fontweight="bold")
+    final_note = "final per-target" if has_final else "legacy summary"
+    fig.suptitle(
+        f"Weight Calculation ({final_note})  (Host V{host_id}, Focus V{focus})",
+        fontsize=13,
+        fontweight="bold",
+    )
     gs = gridspec.GridSpec(2, 2, figure=fig, hspace=0.35, wspace=0.25)
 
-    # (0,0) w0, w_self
+    # (0,0) Direct/self/final neighbor budget for the focused target.
     ax = fig.add_subplot(gs[0, 0])
     n = 0
-    for col, lbl, ls in [("w0", "w0 (direct)", "-."),
-                          ("w_self", "w_self", "--")]:
+    if has_final:
+        main_weight_cols = [
+            (f"w0_final_{focus}", f"w0 final -> V{focus}", "-.", "tab:blue"),
+            (f"w_self_final_{focus}", f"w_self final -> V{focus}", "--", "k"),
+            (
+                f"w_neighbor_sum_final_{focus}",
+                f"neighbor sum final -> V{focus}",
+                "-",
+                "tab:orange",
+            ),
+        ]
+    else:
+        main_weight_cols = [
+            ("w0", "w0 summary", "-.", "tab:blue"),
+            ("w_self", "w_self summary", "--", "k"),
+            ("total_neighbor_weight", "neighbor total summary", "-", "tab:orange"),
+        ]
+
+    for col, lbl, ls, color in main_weight_cols:
         arr = _col_to_array(rows, col)
         if np.any(np.isfinite(arr)):
-            ax.plot(times, arr, ls, lw=1.5, label=lbl, color="k" if col == "w_self" else "tab:blue")
+            ax.plot(times, arr, ls, lw=1.5, label=lbl, color=color)
             n += 1
-    total_arr = _col_to_array(rows, "total_neighbor_weight")
-    if np.any(np.isfinite(total_arr)):
-        ax.plot(times, total_arr, "-", lw=1.2, label="total_neighbor_w",
-                color="tab:orange")
-        n += 1
     if n == 0:
-        _no_data(ax, "Fixed Weights")
-    _style(ax, "Fixed Weights (w0, w_self)", "Weight")
+        _no_data(ax, f"Final Weights for V{focus}")
+    _style(ax, f"Final Target Weights V{focus}", "Weight")
 
-    # (0,1) Per-neighbor weights
+    # (0,1) Source neighbor weights actually used for estimating the focus target.
     ax = fig.add_subplot(gs[0, 1])
-    if _plot_series(ax, times, rows, "w_neighbor", active,
-                    label_fmt="w_neighbor V{}") == 0:
-        _no_data(ax, "Per-Neighbor Weights")
-    _style(ax, "Per-Neighbor Weights", "Weight")
+    n = 0
+    if has_final:
+        for src in active:
+            col = f"w_neighbor_from_v{src}_to_{focus}"
+            arr = _col_to_array(rows, col)
+            if np.any(np.isfinite(arr)):
+                ax.plot(times, arr, lw=1.25, label=f"V{src} -> V{focus}")
+                n += 1
+    else:
+        n = _plot_series(
+            ax, times, rows, "w_neighbor", active,
+            label_fmt="summary w_neighbor V{}",
+        )
+    if n == 0:
+        _no_data(ax, f"Final Neighbor Source Weights to V{focus}")
+    _style(ax, f"Final Neighbor Source Weights to V{focus}", "Weight")
 
     # (1,0) Mean trust metrics
     ax = fig.add_subplot(gs[1, 0])
@@ -421,18 +702,22 @@ def _fig_weights(times, rows, active, host_id):
         _no_data(ax, "Trust Summary Metrics")
     _style(ax, "Trust Summary Metrics", "Value", xlabel="Time [s]")
 
-    # (1,1) Trusted neighbor count
+    # (1,1) Counts plus old summary total for compatibility checking.
     ax = fig.add_subplot(gs[1, 1])
     n = 0
     for col, lbl in [("trusted_neighbor_count", "Trusted Neighbors"),
-                      ("active_vehicle_count", "Active Vehicles")]:
+                      ("active_vehicle_count", "Active Vehicles"),
+                      ("total_neighbor_weight", "Legacy Neighbor Total")]:
         arr = _col_to_array(rows, col)
         if np.any(np.isfinite(arr)):
-            ax.step(times, arr, where="post", label=lbl)
+            if col in ("trusted_neighbor_count", "active_vehicle_count"):
+                ax.step(times, arr, where="post", label=lbl)
+            else:
+                ax.plot(times, arr, label=lbl, lw=1.1, alpha=0.8)
             n += 1
     if n == 0:
-        _no_data(ax, "Neighbor Counts")
-    _style(ax, "Neighbor / Active Vehicle Counts", "Count",
+        _no_data(ax, "Counts / Legacy Summary")
+    _style(ax, "Counts / Legacy Summary", "Count or Weight",
            xlabel="Time [s]")
 
     return fig
@@ -861,6 +1146,141 @@ def _fig_v2v_details(times, rows, active, focus, host_id):
     return fig
 
 
+def _fig_attack_timeline(times, rows, columns, active, host_id):
+    """
+    Figure 6 - Attack Timeline
+    Shows attack-module enable/disable moments and configured attack intervals.
+    """
+    intervals = _extract_attack_intervals(rows, columns, active, times)
+    events = _extract_attack_events(rows, columns, times)
+    t_min, t_max = _finite_time_bounds(times)
+
+    lanes = ["module enabled", "attack active"]
+    for interval in intervals:
+        label = interval.get("target_label", "attack")
+        if label not in lanes:
+            lanes.append(label)
+
+    fig_height = min(max(5.5, 1.0 + 0.55 * len(lanes)), 12.0)
+    fig = plt.figure(figsize=(16, fig_height))
+    fig.suptitle(f"V2V Attack Timeline (Host V{host_id})",
+                 fontsize=13, fontweight="bold")
+    gs = gridspec.GridSpec(2, 1, figure=fig, height_ratios=[3.0, 1.2],
+                           hspace=0.32)
+
+    ax = fig.add_subplot(gs[0, 0])
+    lane_y = {label: idx for idx, label in enumerate(lanes)}
+    bar_h = 0.72
+
+    if "v2v_attack_enabled" in columns:
+        enabled = _col_to_array(rows, "v2v_attack_enabled")
+        for start_s, end_s in _mask_to_time_spans(
+            times, np.isfinite(enabled) & (enabled >= 0.5)
+        ):
+            ax.broken_barh(
+                [(start_s, end_s - start_s)],
+                (lane_y["module enabled"] - bar_h / 2, bar_h),
+                facecolors="tab:green",
+                alpha=0.22,
+                edgecolors="tab:green",
+                label="module enabled",
+            )
+
+    if "v2v_attack_active" in columns:
+        active_arr = _col_to_array(rows, "v2v_attack_active")
+        for start_s, end_s in _mask_to_time_spans(
+            times, np.isfinite(active_arr) & (active_arr >= 0.5)
+        ):
+            ax.broken_barh(
+                [(start_s, end_s - start_s)],
+                (lane_y["attack active"] - bar_h / 2, bar_h),
+                facecolors="tab:red",
+                alpha=0.25,
+                edgecolors="tab:red",
+                label="attack active",
+            )
+
+    cmap = plt.get_cmap("tab10")
+    type_colors: Dict[str, object] = {}
+    for interval in intervals:
+        target_label = interval.get("target_label", "attack")
+        y = lane_y[target_label]
+        start_s = float(interval["start_s"])
+        end_s = float(interval["end_s"])
+        attack_type = str(interval.get("type", "") or "attack")
+        if attack_type not in type_colors:
+            type_colors[attack_type] = cmap(len(type_colors) % 10)
+        color = type_colors[attack_type]
+        ax.broken_barh(
+            [(start_s, end_s - start_s)],
+            (y - bar_h / 2, bar_h),
+            facecolors=color,
+            alpha=0.55,
+            edgecolors=color,
+            linewidth=1.0,
+            label=attack_type,
+        )
+        label = interval.get("display_label", attack_type)
+        if end_s > start_s:
+            ax.text(
+                start_s + 0.5 * (end_s - start_s),
+                y,
+                label,
+                ha="center",
+                va="center",
+                fontsize=8,
+                color="black",
+                clip_on=True,
+            )
+
+    for event in events:
+        event_name = str(event.get("event", "")).lower()
+        event_time = _safe_float(event.get("time_s"))
+        if not math.isfinite(event_time):
+            continue
+        color = "tab:green" if event_name == "enable" else "tab:red"
+        ax.axvline(event_time, color=color, linestyle="--", linewidth=1.1,
+                   alpha=0.9)
+        ax.text(
+            event_time,
+            len(lanes) - 0.35,
+            event_name,
+            rotation=90,
+            ha="right",
+            va="top",
+            color=color,
+            fontsize=8,
+        )
+
+    if not intervals and not events:
+        _no_data(ax, "Attack Timeline")
+    ax.set_yticks(list(lane_y.values()))
+    ax.set_yticklabels(lanes, fontsize=8)
+    ax.set_xlim(t_min, t_max)
+    _style(ax, "Attack Intervals and Enable/Disable Events",
+           "", xlabel="Time [s]")
+
+    ax2 = fig.add_subplot(gs[1, 0], sharex=ax)
+    plotted = 0
+    for col, label, color in [
+        ("v2v_attack_enabled", "module enabled", "tab:green"),
+        ("v2v_attack_active", "attack active", "tab:red"),
+        ("v2v_attack_active_count", "active scenario count", "tab:purple"),
+    ]:
+        if col not in columns:
+            continue
+        arr = _col_to_array(rows, col)
+        if np.any(np.isfinite(arr)):
+            ax2.step(times, arr, where="post", label=label, color=color)
+            plotted += 1
+    if plotted == 0:
+        _no_data(ax2, "Attack Status Signals")
+    _style(ax2, "Attack Status Signals", "Value", xlabel="Time [s]")
+
+    fig.tight_layout(rect=[0, 0, 1, 0.95])
+    return fig
+
+
 def _print_static_metrics(rows, active):
     """
     Print an analytic summary of the trust logging run to the console.
@@ -922,6 +1342,561 @@ def _print_static_metrics(rows, active):
     print("="*80 + "\n")
 
 
+def _relative_time_axis(times: np.ndarray) -> np.ndarray:
+    """Return a monotonic relative-time axis suitable for playback."""
+    n = len(times)
+    if n == 0:
+        return np.array([], dtype=float)
+
+    raw = np.asarray(times, dtype=float)
+    finite = np.isfinite(raw)
+    if np.count_nonzero(finite) < 2:
+        return np.arange(n, dtype=float)
+
+    sample_index = np.arange(n, dtype=float)
+    filled = raw.copy()
+    filled[~finite] = np.interp(sample_index[~finite],
+                                sample_index[finite], raw[finite])
+
+    diffs = np.diff(filled)
+    positive_diffs = diffs[np.isfinite(diffs) & (diffs > 0.0)]
+    median_dt = float(np.median(positive_diffs)) if positive_diffs.size else 1.0
+    if median_dt <= 0.0 or not math.isfinite(median_dt):
+        median_dt = 1.0
+
+    if np.any(diffs < -1e-9):
+        filled = sample_index * median_dt
+    else:
+        filled = np.maximum.accumulate(filled)
+
+    return filled - filled[0]
+
+
+def _finite_limits(arrays, default=(0.0, 1.0), pad_fraction=0.08):
+    vals = []
+    for arr in arrays:
+        if arr is None:
+            continue
+        arr = np.asarray(arr, dtype=float).ravel()
+        vals.append(arr[np.isfinite(arr)])
+    vals = [v for v in vals if v.size]
+    if not vals:
+        return default
+
+    joined = np.concatenate(vals)
+    ymin = float(np.min(joined))
+    ymax = float(np.max(joined))
+    if math.isclose(ymin, ymax):
+        pad = max(abs(ymin) * pad_fraction, 0.1)
+    else:
+        pad = (ymax - ymin) * pad_fraction
+    return ymin - pad, ymax + pad
+
+
+def _set_axis_y_limits(ax, arrays, bounded_unit=False):
+    if bounded_unit:
+        ax.set_ylim(-0.05, 1.05)
+    else:
+        ax.set_ylim(*_finite_limits(arrays))
+
+
+def _format_live_value(value) -> str:
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return "nan"
+    if not math.isfinite(value):
+        return "nan"
+    return f"{value:.3f}"
+
+
+def _run_playback_dashboard(file_to_plot: str, times: np.ndarray,
+                            rows: List[dict], columns: List[str],
+                            active: List[int], focus: int, host_id: int,
+                            speed: float = 1.0, window_s: float = 30.0,
+                            interval_ms: int = 50,
+                            start_time: float = None,
+                            loop: bool = True,
+                            max_points: int = 1200):
+    """
+    Replays a trust log as a live dashboard.
+
+    Keyboard controls:
+      Space: pause/resume
+      Left/Right: seek 5 seconds
+      Home/End: jump to start/end
+      +/-: change playback speed
+    """
+    if len(rows) == 0:
+        print("No rows to play back.")
+        return None
+
+    speed = max(float(speed), 1e-6)
+    interval_ms = max(int(interval_ms), 10)
+    window_s = float(window_s)
+    max_points = max(int(max_points), 0)
+
+    t_rel = _relative_time_axis(times)
+    if t_rel.size == 0:
+        print("No valid time samples to play back.")
+        return None
+
+    duration = float(t_rel[-1])
+    if start_time is None:
+        start_t = 0.0
+    else:
+        start_t = min(max(float(start_time), 0.0), duration)
+
+    def arr(col):
+        return _col_to_array(rows, col) if col in columns else np.full(len(rows), np.nan)
+
+    arrays = {}
+    base_cols = [
+        "w0", "w_self", "total_neighbor_weight", "trusted_neighbor_count",
+        "active_vehicle_count", "is_turning", "v2v_attack_active",
+        "v2v_attack_active_count",
+    ]
+    for col in base_cols:
+        arrays[col] = arr(col)
+
+    per_vehicle_prefixes = [
+        "trust", "gtrust", "local_trust", "global_trust",
+        "w_neighbor", "pred_mode", "est_x", "est_y",
+        "v_score", "d_score", "a_score", "h_score", "b_score",
+        "q_factor", "gamma_host", "gamma_local_peer", "gamma_self",
+        "flag_attack", "flag_local", "flag_global",
+        "rel_meas_used_global", "yolo_rel_meas_used_global",
+    ]
+    for vid in active:
+        for prefix in per_vehicle_prefixes:
+            col = f"{prefix}_{vid}"
+            arrays[col] = arr(col)
+
+    final_focus_cols = [
+        f"w0_final_{focus}",
+        f"w_self_final_{focus}",
+        f"w_neighbor_sum_final_{focus}",
+    ]
+    for col in final_focus_cols:
+        arrays[col] = arr(col)
+    for src in active:
+        col = f"w_neighbor_from_v{src}_to_{focus}"
+        arrays[col] = arr(col)
+    has_final_focus_weights = any(
+        np.any(np.isfinite(arrays.get(col, np.array([np.nan]))))
+        for col in final_focus_cols
+    ) or any(
+        np.any(np.isfinite(arrays.get(f"w_neighbor_from_v{src}_to_{focus}", np.array([np.nan]))))
+        for src in active
+    )
+
+    fig = plt.figure(figsize=(18, 10.8))
+    fig.suptitle(
+        f"Realtime Trust Log Playback - {os.path.basename(file_to_plot)} "
+        f"(Host V{host_id}, Focus V{focus})",
+        fontsize=14,
+        fontweight="bold",
+    )
+    gs = gridspec.GridSpec(
+        3, 3, figure=fig, hspace=0.45, wspace=0.32,
+        height_ratios=[1.0, 1.0, 0.82],
+    )
+
+    ax_trust = fig.add_subplot(gs[0, 0])
+    ax_weights = fig.add_subplot(gs[0, 1])
+    ax_final = fig.add_subplot(gs[0, 2])
+    ax_components = fig.add_subplot(gs[1, 0])
+    ax_gamma = fig.add_subplot(gs[1, 1])
+    ax_xy = fig.add_subplot(gs[1, 2])
+    ax_flags = fig.add_subplot(gs[2, 0:2])
+    ax_status = fig.add_subplot(gs[2, 2])
+    ax_status.axis("off")
+
+    time_lines = []
+    current_markers = []
+    xy_lines = []
+    colors = plt.rcParams["axes.prop_cycle"].by_key().get("color", [])
+    if not colors:
+        colors = ["C0", "C1", "C2", "C3", "C4", "C5"]
+
+    def add_time_line(ax, col, label, *, color=None, ls="-", lw=1.4,
+                      alpha=1.0, drawstyle="default", marker=None,
+                      smooth=True, current_marker=True):
+        data = arrays.get(col)
+        if data is None or not np.any(np.isfinite(data)):
+            return None
+        line, = ax.plot([], [], label=label, color=color, ls=ls, lw=lw,
+                        alpha=alpha, drawstyle=drawstyle, marker=marker,
+                        markersize=3)
+        time_lines.append((line, data, smooth))
+        if current_marker:
+            current_line, = ax.plot([], [], marker="o", color=line.get_color(),
+                                    linestyle="None", markersize=4,
+                                    alpha=min(alpha + 0.15, 1.0))
+            current_markers.append((current_line, data, smooth))
+        return line
+
+    # Trust scores for all active vehicles.
+    for i, vid in enumerate(active):
+        color = colors[i % len(colors)]
+        add_time_line(ax_trust, f"trust_{vid}", f"trust V{vid}",
+                      color=color, lw=1.5)
+        add_time_line(ax_trust, f"gtrust_{vid}", f"gtrust V{vid}",
+                      color=color, ls="--", alpha=0.75, lw=1.2)
+    ax_trust.axhline(0.5, color="r", ls=":", lw=0.9, alpha=0.7)
+    _style(ax_trust, "Direct and Generalized Trust", "Trust [0,1]",
+           legend=True)
+    _set_axis_y_limits(ax_trust,
+                       [arrays.get(f"trust_{v}") for v in active] +
+                       [arrays.get(f"gtrust_{v}") for v in active],
+                       bounded_unit=True)
+
+    # Weights. Prefer final per-target weights when the CSV has them.
+    if has_final_focus_weights:
+        add_time_line(ax_weights, f"w0_final_{focus}", f"w0 -> V{focus}",
+                      color="tab:blue", ls="-.")
+        add_time_line(ax_weights, f"w_self_final_{focus}",
+                      f"w_self -> V{focus}", color="k", ls="--")
+        add_time_line(ax_weights, f"w_neighbor_sum_final_{focus}",
+                      f"neighbor sum -> V{focus}", color="tab:orange")
+        for i, src in enumerate(active):
+            add_time_line(
+                ax_weights,
+                f"w_neighbor_from_v{src}_to_{focus}",
+                f"V{src} -> V{focus}",
+                color=colors[i % len(colors)],
+                alpha=0.8,
+                lw=1.1,
+            )
+        weight_limit_arrays = [
+            arrays.get(f"w0_final_{focus}"),
+            arrays.get(f"w_self_final_{focus}"),
+            arrays.get(f"w_neighbor_sum_final_{focus}"),
+        ] + [arrays.get(f"w_neighbor_from_v{src}_to_{focus}") for src in active]
+        weight_title = f"Final Weights for Target V{focus}"
+    else:
+        add_time_line(ax_weights, "w0", "w0 summary", color="k", ls="-.")
+        add_time_line(ax_weights, "w_self", "w_self summary",
+                      color="tab:blue", ls="--")
+        add_time_line(ax_weights, "total_neighbor_weight",
+                      "neighbor total summary", color="tab:orange")
+        for i, vid in enumerate(active):
+            add_time_line(ax_weights, f"w_neighbor_{vid}", f"summary w V{vid}",
+                          color=colors[i % len(colors)], alpha=0.8, lw=1.1)
+        weight_limit_arrays = [
+            arrays.get("w0"), arrays.get("w_self"),
+            arrays.get("total_neighbor_weight"),
+        ] + [arrays.get(f"w_neighbor_{v}") for v in active]
+        weight_title = "Consensus Weights (Legacy Summary)"
+    _style(ax_weights, weight_title, "Weight", legend=True)
+    _set_axis_y_limits(ax_weights, weight_limit_arrays)
+
+    # Focus trust components.
+    component_cols = [
+        (f"v_score_{focus}", "velocity"),
+        (f"d_score_{focus}", "distance"),
+        (f"a_score_{focus}", "acceleration"),
+        (f"h_score_{focus}", "heading"),
+        (f"b_score_{focus}", "beacon"),
+        (f"q_factor_{focus}", "quality"),
+    ]
+    for i, (col, label) in enumerate(component_cols):
+        add_time_line(ax_components, col, label, color=colors[i % len(colors)])
+    _style(ax_components, f"Component Scores Local Trust V{focus}", "Score [0,1]",
+           legend=True)
+    _set_axis_y_limits(ax_components,
+                       [arrays.get(col) for col, _ in component_cols],
+                       bounded_unit=True)
+
+    # Focus global trust factors.
+    gamma_cols = [
+        (f"gamma_host_{focus}", "gamma_host"),
+        (f"gamma_local_peer_{focus}", "gamma_local_peer"),
+        (f"gamma_self_{focus}", "gamma_self"),
+    ]
+    for i, (col, label) in enumerate(gamma_cols):
+        add_time_line(ax_gamma, col, label, color=colors[i % len(colors)])
+    _style(ax_gamma, f"Component Scores Global Trust V{focus}", "Value [0,1]",
+           legend=True)
+    _set_axis_y_limits(ax_gamma, [arrays.get(col) for col, _ in gamma_cols],
+                       bounded_unit=True)
+
+    # Final local/global trust scores for the focus vehicle.
+    final_cols = [
+        (f"local_trust_{focus}", "local trust", "-"),
+        (f"global_trust_{focus}", "global trust", "--"),
+    ]
+    for i, (col, label, ls) in enumerate(final_cols):
+        add_time_line(ax_final, col, label, color=colors[i % len(colors)], ls=ls)
+    _style(ax_final, f"Final Trust Score Local and Global V{focus}",
+           "Trust [0,1]", legend=True)
+    _set_axis_y_limits(ax_final, [arrays.get(col) for col, _, _ in final_cols],
+                       bounded_unit=True)
+
+    # Estimated XY trajectories.
+    for i, vid in enumerate(active):
+        x = arrays.get(f"est_x_{vid}")
+        y = arrays.get(f"est_y_{vid}")
+        if x is None or y is None or not (np.any(np.isfinite(x)) and np.any(np.isfinite(y))):
+            continue
+        color = colors[i % len(colors)]
+        traj_line, = ax_xy.plot([], [], label=f"V{vid}", color=color, lw=1.4)
+        marker_line, = ax_xy.plot([], [], marker="o", color=color,
+                                  linestyle="None", markersize=5)
+        xy_lines.append((traj_line, marker_line, x, y))
+    _style(ax_xy, "Estimated XY Trajectory", "Y [m]", xlabel="X [m]",
+           legend=True)
+    all_x = [arrays.get(f"est_x_{v}") for v in active]
+    all_y = [arrays.get(f"est_y_{v}") for v in active]
+    ax_xy.set_xlim(*_finite_limits(all_x, default=(-1.0, 1.0)))
+    ax_xy.set_ylim(*_finite_limits(all_y, default=(-1.0, 1.0)))
+    ax_xy.set_aspect("auto")
+
+    # Flags and activity.
+    flag_cols = [
+        (f"flag_attack_{focus}", "target attack", 0.0),
+        (f"flag_local_{focus}", "local bad", 0.15),
+        (f"flag_global_{focus}", "global bad", 0.30),
+        (f"rel_meas_used_global_{focus}", "rel used", 0.45),
+        (f"yolo_rel_meas_used_global_{focus}", "YOLO used", 0.60),
+        (f"pred_mode_{focus}", "prediction", 0.75),
+        ("is_turning", "turning", 0.90),
+        ("v2v_attack_active", "V2V attack", 1.05),
+    ]
+    for i, (col, label, offset) in enumerate(flag_cols):
+        data = arrays.get(col)
+        if data is None or not np.any(np.isfinite(data)):
+            continue
+        shifted = np.where(np.isfinite(data), data, 0.0) * 0.10 + offset
+        arrays[f"__flag_{col}"] = shifted
+        add_time_line(ax_flags, f"__flag_{col}", label,
+                      color=colors[i % len(colors)], lw=1.5,
+                      drawstyle="steps-post", smooth=False,
+                      current_marker=False)
+    ax_flags.set_ylim(-0.05, 1.20)
+    ax_flags.set_yticks([item[2] + 0.05 for item in flag_cols])
+    ax_flags.set_yticklabels([item[1] for item in flag_cols], fontsize=8)
+    _style(ax_flags, f"Flags V{focus}", "", xlabel="Time [s]", legend=False)
+
+    ax_status.text(
+        0.04, 0.96, "Playback Status", va="top", ha="left",
+        fontsize=10, fontweight="bold", transform=ax_status.transAxes,
+    )
+    status_left_text = ax_status.text(
+        0.04, 0.74, "", va="top", ha="left",
+        family="monospace", fontsize=9.0, transform=ax_status.transAxes,
+    )
+    status_mid_text = ax_status.text(
+        0.53, 0.74, "", va="top", ha="left",
+        family="monospace", fontsize=9.0, transform=ax_status.transAxes,
+    )
+    status_right_text = ax_status.text(
+        0.04, 0.30, "", va="top", ha="left",
+        family="monospace", fontsize=9.0, transform=ax_status.transAxes,
+    )
+    ax_status.text(
+        0.04, 0.06,
+        "Space pause  |  Left/Right seek  |  Home/End jump  |  +/- speed",
+        va="center",
+        ha="left",
+        fontsize=8.2,
+        color="#555",
+        transform=ax_status.transAxes,
+    )
+
+    time_axes = [
+        ax_trust, ax_weights, ax_components, ax_gamma,
+        ax_final, ax_flags,
+    ]
+    playhead_lines = []
+    for ax in time_axes:
+        ax.set_xlim(0.0, max(1.0, min(duration, window_s if window_s > 0 else duration)))
+        playhead_lines.append(
+            ax.axvline(0.0, color="k", lw=0.9, alpha=0.55, ls=":")
+        )
+
+    state = {
+        "paused": False,
+        "wall_start": time.perf_counter(),
+        "sim_start": start_t,
+        "current_t": start_t,
+        "speed": speed,
+    }
+
+    def seek(target_t):
+        target_t = min(max(float(target_t), 0.0), duration)
+        state["current_t"] = target_t
+        state["sim_start"] = target_t
+        state["wall_start"] = time.perf_counter()
+        update_frame(target_t)
+        fig.canvas.draw_idle()
+
+    def interp_sample(data, idx, current_t):
+        data = np.asarray(data, dtype=float)
+        if idx >= len(data):
+            return float("nan")
+        if idx >= len(data) - 1 or current_t <= t_rel[idx]:
+            return data[idx]
+        y0 = data[idx]
+        y1 = data[idx + 1]
+        if not (np.isfinite(y0) and np.isfinite(y1)):
+            return y0 if np.isfinite(y0) else y1
+        dt = t_rel[idx + 1] - t_rel[idx]
+        if dt <= 0.0:
+            return y0
+        alpha = (current_t - t_rel[idx]) / dt
+        alpha = min(max(alpha, 0.0), 1.0)
+        return y0 + alpha * (y1 - y0)
+
+    def visible_series(data, plot_slice, idx, current_t, smooth):
+        x_plot = t_rel[plot_slice]
+        y_plot = data[plot_slice]
+        if not smooth or idx >= len(data) - 1 or current_t <= t_rel[idx]:
+            return x_plot, y_plot
+
+        y_current = interp_sample(data, idx, current_t)
+        if not np.isfinite(y_current):
+            return x_plot, y_plot
+        if x_plot.size and math.isclose(float(x_plot[-1]), current_t):
+            y_plot = y_plot.copy()
+            y_plot[-1] = y_current
+            return x_plot, y_plot
+        return np.append(x_plot, current_t), np.append(y_plot, y_current)
+
+    def update_frame(current_t):
+        idx = int(np.searchsorted(t_rel, current_t, side="right") - 1)
+        idx = max(0, min(idx, len(rows) - 1))
+
+        if window_s > 0:
+            left_t = max(0.0, current_t - window_s)
+            right_t = max(window_s, current_t)
+            right_t = min(max(right_t, 1.0), max(duration, 1.0))
+        else:
+            left_t = 0.0
+            right_t = max(duration, 1.0)
+
+        start_idx = int(np.searchsorted(t_rel, left_t, side="left"))
+        end_idx = idx + 1
+        visible_count = max(end_idx - start_idx, 1)
+        point_step = 1
+        if max_points > 0 and visible_count > max_points:
+            point_step = int(math.ceil(visible_count / max_points))
+        plot_slice = slice(start_idx, end_idx, point_step)
+
+        for line, data, smooth in time_lines:
+            x_time, y_time = visible_series(data, plot_slice, idx, current_t, smooth)
+            line.set_data(x_time, y_time)
+
+        for marker_line, data, smooth in current_markers:
+            y_current = interp_sample(data, idx, current_t) if smooth else data[idx]
+            if np.isfinite(y_current):
+                marker_line.set_data([current_t], [y_current])
+            else:
+                marker_line.set_data([], [])
+
+        for traj_line, marker_line, x, y in xy_lines:
+            x_traj, y_traj = x[plot_slice], y[plot_slice]
+            x_current = interp_sample(x, idx, current_t)
+            y_current = interp_sample(y, idx, current_t)
+            if idx < len(x) - 1 and current_t > t_rel[idx]:
+                if np.isfinite(x_current) and np.isfinite(y_current):
+                    x_traj = np.append(x_traj, x_current)
+                    y_traj = np.append(y_traj, y_current)
+            traj_line.set_data(x_traj, y_traj)
+            if np.isfinite(x_current) and np.isfinite(y_current):
+                marker_line.set_data([x_current], [y_current])
+            else:
+                marker_line.set_data([], [])
+
+        for ax in time_axes:
+            ax.set_xlim(left_t, right_t)
+        for playhead_line in playhead_lines:
+            playhead_line.set_xdata([current_t, current_t])
+
+        left_lines = [
+            f"time    {current_t:7.2f} / {duration:7.2f}s",
+            f"sample  {idx + 1:7d} / {len(rows):7d}",
+            f"speed   {state['speed']:7.2f}x",
+            f"state   {'PAUSED' if state['paused'] else 'PLAYING'}",
+            f"window  {max(window_s, 0.0):7.2f}s",
+        ]
+        live_weight_col = (
+            f"w_neighbor_sum_final_{focus}"
+            if has_final_focus_weights
+            else f"w_neighbor_{focus}"
+        )
+        live_weight_label = "w_sum" if has_final_focus_weights else "weight"
+        mid_lines = [
+            f"focus V{focus}",
+            f"local  {_format_live_value(interp_sample(arrays.get(f'local_trust_{focus}', [np.nan]), idx, current_t))}",
+            f"global {_format_live_value(interp_sample(arrays.get(f'global_trust_{focus}', [np.nan]), idx, current_t))}",
+            f"direct {_format_live_value(interp_sample(arrays.get(f'trust_{focus}', [np.nan]), idx, current_t))}",
+            f"{live_weight_label:7s}{_format_live_value(interp_sample(arrays.get(live_weight_col, [np.nan]), idx, current_t))}",
+        ]
+        right_lines = [
+            f"active {int(arrays['active_vehicle_count'][idx]) if np.isfinite(arrays['active_vehicle_count'][idx]) else 0}",
+            f"trusted {int(arrays['trusted_neighbor_count'][idx]) if np.isfinite(arrays['trusted_neighbor_count'][idx]) else 0}",
+            f"attack {int(arrays['v2v_attack_active'][idx]) if np.isfinite(arrays['v2v_attack_active'][idx]) else 0}",
+        ]
+        status_left_text.set_text("\n".join(left_lines))
+        status_mid_text.set_text("\n".join(mid_lines))
+        status_right_text.set_text("\n".join(right_lines))
+
+    def on_timer():
+        if state["paused"]:
+            return True
+
+        elapsed = time.perf_counter() - state["wall_start"]
+        current_t = state["sim_start"] + elapsed * state["speed"]
+        if current_t >= duration:
+            if loop and duration > 0.0:
+                current_t = 0.0
+                state["sim_start"] = 0.0
+                state["wall_start"] = time.perf_counter()
+            else:
+                current_t = duration
+                state["paused"] = True
+
+        state["current_t"] = current_t
+        update_frame(current_t)
+        fig.canvas.draw_idle()
+        return True
+
+    def on_key(event):
+        if event.key in (" ", "space"):
+            state["paused"] = not state["paused"]
+            state["sim_start"] = state["current_t"]
+            state["wall_start"] = time.perf_counter()
+            update_frame(state["current_t"])
+            fig.canvas.draw_idle()
+        elif event.key == "right":
+            seek(state["current_t"] + 5.0)
+        elif event.key == "left":
+            seek(state["current_t"] - 5.0)
+        elif event.key == "home":
+            seek(0.0)
+        elif event.key == "end":
+            seek(duration)
+        elif event.key in ("+", "="):
+            state["speed"] = min(state["speed"] * 1.25, 100.0)
+            state["sim_start"] = state["current_t"]
+            state["wall_start"] = time.perf_counter()
+        elif event.key in ("-", "_"):
+            state["speed"] = max(state["speed"] / 1.25, 0.01)
+            state["sim_start"] = state["current_t"]
+            state["wall_start"] = time.perf_counter()
+
+    fig.canvas.mpl_connect("key_press_event", on_key)
+    update_frame(start_t)
+
+    timer = fig.canvas.new_timer(interval=interval_ms)
+    timer.add_callback(on_timer)
+    timer.start()
+    fig._trust_playback_timer = timer
+
+    return fig
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Plot trust/weight logs."
@@ -935,6 +1910,20 @@ def main():
                         help="path to a relative_uio_log_V*.csv file to plot")
     parser.add_argument("--skip-relative", action="store_true",
                         help="do not auto-load matching relative UIO log")
+    parser.add_argument("--playback", action="store_true",
+                        help="replay the selected CSV as a realtime dashboard")
+    parser.add_argument("--speed", type=float, default=1.0,
+                        help="playback speed multiplier for --playback (default: 1.0)")
+    parser.add_argument("--window", type=float, default=30.0,
+                        help="scrolling time window in seconds for --playback; use 0 for full history")
+    parser.add_argument("--playback-interval", type=int, default=30,
+                        help="dashboard refresh interval in milliseconds for --playback")
+    parser.add_argument("--max-points", type=int, default=1200,
+                        help="maximum visible points per line during playback; use 0 to disable downsampling")
+    parser.add_argument("--start-time", type=float,
+                        help="start playback at this elapsed log time in seconds")
+    parser.add_argument("--no-loop", action="store_true",
+                        help="stop at the end of playback instead of looping")
     args = parser.parse_args()
 
     directory = os.path.dirname(os.path.abspath(__file__))
@@ -988,6 +1977,36 @@ def main():
     print(f"Candidate focus vehicles: {focus_candidates}")
     print(f"Total samples: {len(rows)}\n")
 
+    if args.playback:
+        if args.focus is not None and args.focus in focus_candidates:
+            playback_focus = args.focus
+        elif args.focus is not None and args.focus in active:
+            playback_focus = args.focus
+        else:
+            playback_focus = focus_candidates[0]
+
+        print(
+            f"Starting realtime playback with focus vehicle V{playback_focus} "
+            f"at {args.speed:g}x speed."
+        )
+        _run_playback_dashboard(
+            file_to_plot=file_to_plot,
+            times=times,
+            rows=rows,
+            columns=columns,
+            active=active,
+            focus=playback_focus,
+            host_id=host_id,
+            speed=args.speed,
+            window_s=args.window,
+            interval_ms=args.playback_interval,
+            start_time=args.start_time,
+            loop=not args.no_loop,
+            max_points=args.max_points,
+        )
+        plt.show()
+        return
+
     # Print analytic summary
     _print_static_metrics(rows, active)
 
@@ -1019,10 +2038,13 @@ def main():
     for focus in focuses:
         print(f"Plotting figures with focus vehicle: V{focus} ...")
         _fig_trust(times, rows, active, focus, host_id)
-        _fig_weights(times, rows, active, host_id)
+        _fig_weights(times, rows, active, focus, host_id)
         _fig_estimation(times, rows, active, host_id)
         _fig_impact_histograms(rows, active, focus, host_id)
         _fig_v2v_details(times, rows, active, focus, host_id)
+
+    print("Plotting V2V attack timeline ...")
+    _fig_attack_timeline(times, rows, columns, active, host_id)
 
     if not args.skip_relative:
         relative_file = args.relative_file or _find_relative_uio_log(directory, host_id)

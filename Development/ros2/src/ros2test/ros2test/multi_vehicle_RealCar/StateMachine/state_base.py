@@ -238,11 +238,15 @@ class StateBase:
             peer_vehicles = data.get("peer_vehicles", [])
             peer_ips = data.get("peer_ips", [])
             time_reference = data.get("time_reference")
+            vehicle_manifest = data.get("vehicle_manifest")
 
             if peer_vehicles and peer_ips:
                 if hasattr(self.vehicle_logic, "v2v_manager"):
                     success = self.vehicle_logic.v2v_manager.activate_v2v(
-                        peer_vehicles, peer_ips, time_reference=time_reference
+                        peer_vehicles,
+                        peer_ips,
+                        time_reference=time_reference,
+                        vehicle_manifest=vehicle_manifest,
                     )
                     if success and self.logger:
                         self.logger.logger.info(
