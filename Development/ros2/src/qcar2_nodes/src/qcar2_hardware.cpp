@@ -305,9 +305,9 @@ private:
 
         // color ID selection
         if (led_color_id == 0)
-            {color_value = { 255, 0, 0 };}
-        if (led_color_id == 1)
             {color_value = { 0, 255, 0 }; }
+        if (led_color_id == 1)
+            {color_value = { 255, 0, 0 };}
         if (led_color_id == 2)
             {color_value = { 0, 0, 255 };}
         if (led_color_id == 3)
@@ -317,8 +317,8 @@ private:
         if (led_color_id == 5)
             {color_value = { 255, 0, 255 };}
 
-        // { 255, 0, 0 };        /* LED #0: red     */
-        // { 0, 255, 0 },        /* LED #1: green   */
+        // { 0, 255, 0 };        /* LED #0: green     */
+        // { 255, 0, 0 },        /* LED #1: red   */
         // { 0, 0, 255 },        /* LED #2: blue    */
         // { 255, 255, 0 },      /* LED #3: yellow  */
         // { 0, 255, 255 },      /* LED #4: cyan    */
