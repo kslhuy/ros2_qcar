@@ -177,6 +177,9 @@ class VehicleObserver:
         self.relative_config_defaults = {}
         self.enable_relative = False
         self.relative_estimator_type = "sa_acc_uio"
+        self.relative_recording_enabled = True
+        self.relative_recording_overwrite = True
+        self.relative_recording_output_dir = None
         try:
             config_path = os.path.join(
                 os.path.dirname(__file__), "config_relative_estimators.yaml"
@@ -187,7 +190,18 @@ class VehicleObserver:
                 self.relative_estimator_type = loaded.get(
                     "relative_estimator_type", "sa_acc_uio"
                 )
-                self.enable_relative = loaded.get("enable_relative", False)
+                self.enable_relative = self._config_bool(
+                    loaded.get("enable_relative", False), False
+                )
+                self.relative_recording_enabled = self._config_bool(
+                    loaded.get("enable_recording", True), True
+                )
+                self.relative_recording_overwrite = self._config_bool(
+                    loaded.get("recording_overwrite", True), True
+                )
+                self.relative_recording_output_dir = loaded.get(
+                    "recording_output_dir", None
+                )
 
                 self.vehicle_logger.logger.info(
                     f"Loaded relative estimator config: {self.relative_estimator_type}, Enabled: {self.enable_relative}"
@@ -723,6 +737,23 @@ class VehicleObserver:
 
     # ===== Factory Methods for Creating Estimators =====
 
+    @staticmethod
+    def _config_bool(value, default: bool = False) -> bool:
+        """Parse bool-like YAML/runtime config values."""
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return default
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"1", "true", "yes", "on", "enabled", "enable"}:
+                return True
+            if normalized in {"0", "false", "no", "off", "disabled", "disable"}:
+                return False
+        return default
+
     def _resolve_fleet_estimator_config(self) -> Dict[str, Any]:
         """
         Resolve effective fleet estimator config for the currently selected type.
@@ -787,9 +818,18 @@ class VehicleObserver:
             return False
 
         try:
-            params = self.relative_config_defaults.get(self.relative_estimator_type, {})
+            params = copy.deepcopy(
+                self.relative_config_defaults.get(self.relative_estimator_type, {})
+            )
             if config_overrides:
                 params.update(config_overrides)
+            params.setdefault("vehicle_id", self.vehicle_id)
+            params.setdefault("enable_recording", self.relative_recording_enabled)
+            params.setdefault("recording_overwrite", self.relative_recording_overwrite)
+            if self.relative_recording_output_dir is not None:
+                params.setdefault(
+                    "recording_output_dir", self.relative_recording_output_dir
+                )
 
             self.relative_estimator = RelativeEstimatorFactory.create(
                 estimator_type=self.relative_estimator_type,
@@ -884,6 +924,13 @@ class VehicleObserver:
             self.vehicle_logger.logger.info(
                 f"Local estimator initialized: {self.local_estimator_type}"
             )
+
+            if self.enable_relative and self.relative_estimator is None:
+                relative_ok = self.initialize_relative_estimator()
+                if not relative_ok and self.vehicle_logger:
+                    self.vehicle_logger.log_warning(
+                        "Relative estimator is enabled but failed to initialize"
+                    )
 
             return True
 
@@ -1254,6 +1301,7 @@ class VehicleObserver:
                 "y": float(state[1]),
                 "theta": float(state[2]),
                 "velocity": float(state[3]),
+                "acceleration": float(self.local_state[4]),
                 "gps_valid": gps_valid,
                 "position": self.position.copy(),
                 "local_state": self.local_state.copy(),
@@ -2398,6 +2446,12 @@ class VehicleObserver:
                 self.local_estimator, "stop_recording"
             ):
                 self.local_estimator.stop_recording()
+
+            if self.relative_estimator is not None and hasattr(
+                self.relative_estimator, "stop_recording"
+            ):
+                self.relative_estimator.stop_recording()
+                self.vehicle_logger.logger.info("Relative UIO recorder stopped")
 
         except Exception as e:
             if self.vehicle_logger:

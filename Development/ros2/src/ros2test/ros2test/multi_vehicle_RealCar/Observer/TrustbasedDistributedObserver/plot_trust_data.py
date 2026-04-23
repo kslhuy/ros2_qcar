@@ -23,6 +23,7 @@ import matplotlib.gridspec as gridspec
 import numpy as np
 import argparse
 
+# python plot_trust_data.py --file ".\trust_weight_log_V1.csv" --relative-file "..\Relative_obs\relative_uio_log_V1.csv"
 
 # ──────────────────────────────────────────────────────────────────────
 # Helpers
@@ -144,6 +145,22 @@ def _yolo_usage_mask(rows: List[dict], vid: int) -> np.ndarray:
     if not np.any(np.isfinite(yolo_flag)):
         return np.zeros(len(rows), dtype=bool)
     return np.isfinite(yolo_flag) & (yolo_flag >= 0.5)
+
+
+def _find_relative_uio_log(directory: str, host_id: int) -> str:
+    """Return the matching relative UIO log for a host vehicle, if present."""
+    if host_id < 0:
+        return ""
+    candidate_dirs = [
+        directory,
+        os.path.abspath(os.path.join(directory, "..", "Relative_obs")),
+    ]
+    matches = []
+    for candidate_dir in candidate_dirs:
+        pattern = os.path.join(candidate_dir, f"relative_uio_log_V{host_id}*.csv")
+        matches.extend(glob.glob(pattern))
+    matches = sorted(set(matches), key=os.path.getmtime)
+    return matches[-1] if matches else ""
 
 # ──────────────────────────────────────────────────────────────────────
 # Figure builders
@@ -522,6 +539,169 @@ def _fig_estimation(times, rows, active, host_id):
     return fig
 
 
+def _fig_relative_uio(filepath: str, host_id: int):
+    """
+    Figure 6 - Relative UIO diagnostics from relative_uio_log_V*.csv.
+    """
+    columns, rows = _load_csv(filepath)
+    if "time" not in columns or not rows:
+        print(f"Relative UIO log has no plottable samples: {filepath}")
+        return None
+
+    times = _col_to_array(rows, "time")
+    target_ids = _col_to_array(rows, "target_id")
+    finite_targets = target_ids[np.isfinite(target_ids)]
+    target_label = (
+        f"V{int(finite_targets[-1])}" if finite_targets.size > 0 else "unknown target"
+    )
+
+    fig = plt.figure(figsize=(18, 18))
+    fig.suptitle(
+        f"Relative UIO Diagnostics  (Host V{host_id}, Target {target_label})",
+        fontsize=13,
+        fontweight="bold",
+    )
+    gs = gridspec.GridSpec(5, 2, figure=fig, hspace=0.35, wspace=0.25)
+
+    # Kinematic state estimates
+    ax = fig.add_subplot(gs[0, 0])
+    n = 0
+    for col, label in [
+        ("delta_hat", "delta_hat"),
+        ("delta_dot_hat", "delta_dot_hat"),
+        ("delta_ddot_hat", "delta_ddot_hat"),
+    ]:
+        arr = _col_to_array(rows, col)
+        if np.any(np.isfinite(arr)):
+            ax.plot(times, arr, label=label)
+            n += 1
+    if n == 0:
+        _no_data(ax, "UIO Kinematic State Estimates")
+    _style(ax, "UIO Kinematic State Estimates", "Estimate")
+
+    # Distance estimate against measurements and V2V fallback
+    ax = fig.add_subplot(gs[0, 1])
+    n = 0
+    for col, label, style in [
+        ("delta_hat", "UIO distance estimate", "-"),
+        ("measurement_distance", "Measured distance", "--"),
+        ("v2v_fallback_distance", "V2V-derived distance", ":"),
+    ]:
+        arr = _col_to_array(rows, col)
+        if np.any(np.isfinite(arr)):
+            ax.plot(times, arr, style, label=label)
+            n += 1
+    if n == 0:
+        _no_data(ax, "Relative Distance")
+    _style(ax, "Relative Distance", "Distance [m]")
+
+    # Relative velocity estimate against measurements and V2V fallback
+    ax = fig.add_subplot(gs[1, 0])
+    n = 0
+    for col, label, style in [
+        ("delta_dot_hat", "UIO relative velocity", "-"),
+        ("measurement_relative_velocity", "Measured relative velocity", "--"),
+        ("v2v_fallback_relative_velocity", "V2V-derived relative velocity", ":"),
+    ]:
+        arr = _col_to_array(rows, col)
+        if np.any(np.isfinite(arr)):
+            ax.plot(times, arr, style, label=label)
+            n += 1
+    if n == 0:
+        _no_data(ax, "Relative Velocity")
+    _style(ax, "Relative Velocity", "Velocity [m/s]")
+
+    # Relative acceleration estimate against V2V-derived acceleration
+    ax = fig.add_subplot(gs[1, 1])
+    rel_acc_v2v = _col_to_array(rows, "v2v_fallback_relative_acceleration")
+    if not np.any(np.isfinite(rel_acc_v2v)):
+        target_acc = _col_to_array(rows, "target_state_4")
+        host_acc = _col_to_array(rows, "host_state_4")
+        if np.any(np.isfinite(target_acc)) and np.any(np.isfinite(host_acc)):
+            rel_acc_v2v = target_acc - host_acc
+
+    n = 0
+    for arr, label, style in [
+        (_col_to_array(rows, "delta_ddot_hat"), "UIO relative acceleration delta_ddot_hat", "-"),
+        (rel_acc_v2v, "V2V-derived relative acceleration", ":"),
+        (_col_to_array(rows, "target_acceleration_input"), "Target acceleration input", "--"),
+    ]:
+        if np.any(np.isfinite(arr)):
+            ax.plot(times, arr, style, label=label)
+            n += 1
+    if n > 0:
+        ax.axhline(0.0, color="k", ls=":", lw=0.8, alpha=0.6)
+    if n == 0:
+        _no_data(ax, "Relative Acceleration")
+    _style(ax, "Relative Acceleration Estimate", "Acceleration [m/s^2]")
+
+    # Measurement / estimate errors against V2V-derived fallback
+    ax = fig.add_subplot(gs[2, 0])
+    n = 0
+    rel_acc_error = _col_to_array(rows, "relative_acceleration_error_vs_v2v")
+    if not np.any(np.isfinite(rel_acc_error)):
+        delta_ddot = _col_to_array(rows, "delta_ddot_hat")
+        if np.any(np.isfinite(delta_ddot)) and np.any(np.isfinite(rel_acc_v2v)):
+            rel_acc_error = delta_ddot - rel_acc_v2v
+
+    for arr, label in [
+        (_col_to_array(rows, "distance_error_vs_v2v"), "Distance error"),
+        (_col_to_array(rows, "relative_velocity_error_vs_v2v"), "Relative velocity error"),
+        (rel_acc_error, "Relative acceleration error"),
+    ]:
+        if np.any(np.isfinite(arr)):
+            ax.plot(times, arr, label=label)
+            n += 1
+    if n > 0:
+        ax.axhline(0.0, color="k", ls=":", lw=0.8, alpha=0.6)
+    if n == 0:
+        _no_data(ax, "Measurement Error vs V2V")
+    _style(ax, "Measurement Error vs V2V", "Error", xlabel="Time [s]")
+
+    # Measurement availability/quality
+    ax = fig.add_subplot(gs[2, 1])
+    n = 0
+    for col, label, style in [
+        ("measurement_used", "Measurement used", "-"),
+        ("measurement_confidence", "Measurement confidence", "--"),
+        ("measurement_age_s", "Measurement age [s]", ":"),
+    ]:
+        arr = _col_to_array(rows, col)
+        if np.any(np.isfinite(arr)):
+            ax.plot(times, arr, style, label=label)
+            n += 1
+    if n == 0:
+        _no_data(ax, "Measurement Usage")
+    _style(ax, "Measurement Usage / Quality", "Value", xlabel="Time [s]")
+
+    # Inputs used by the observer
+    ax = fig.add_subplot(gs[3, 0])
+    n = 0
+    for col, label in [
+        ("host_velocity_input", "Host velocity input"),
+        ("target_acceleration_input", "Target acceleration input"),
+    ]:
+        arr = _col_to_array(rows, col)
+        if np.any(np.isfinite(arr)):
+            ax.plot(times, arr, label=label)
+            n += 1
+    if n == 0:
+        _no_data(ax, "UIO Inputs")
+    _style(ax, "UIO Inputs", "Input", xlabel="Time [s]")
+
+    # Unknown input / cyber-disturbance estimate separated from kinematics
+    ax = fig.add_subplot(gs[3:5, 1])
+    arr = _col_to_array(rows, "f_c_hat")
+    if np.any(np.isfinite(arr)):
+        ax.plot(times, arr, label="d_c_hat / f_c_hat", color="tab:red", lw=1.4)
+        ax.axhline(0.0, color="k", ls=":", lw=0.8, alpha=0.6)
+    else:
+        _no_data(ax, "Unknown Input Estimate")
+    _style(ax, "Unknown Input Estimate d_c_hat / f_c_hat", "Estimate", xlabel="Time [s]")
+
+    return fig
+
+
 def _fig_impact_histograms(rows, active, focus, host_id):
     """
     Figure 4 - Impact Overview Histograms
@@ -751,6 +931,10 @@ def main():
                         help="generate figures for every candidate focus vehicle")
     parser.add_argument("--focus", type=int,
                         help="vehicle ID to use as focus (overrides interactive choice)")
+    parser.add_argument("--relative-file",
+                        help="path to a relative_uio_log_V*.csv file to plot")
+    parser.add_argument("--skip-relative", action="store_true",
+                        help="do not auto-load matching relative UIO log")
     args = parser.parse_args()
 
     directory = os.path.dirname(os.path.abspath(__file__))
@@ -839,6 +1023,14 @@ def main():
         _fig_estimation(times, rows, active, host_id)
         _fig_impact_histograms(rows, active, focus, host_id)
         _fig_v2v_details(times, rows, active, focus, host_id)
+
+    if not args.skip_relative:
+        relative_file = args.relative_file or _find_relative_uio_log(directory, host_id)
+        if relative_file and os.path.isfile(relative_file):
+            print(f"Plotting relative UIO diagnostics: {os.path.basename(relative_file)}")
+            _fig_relative_uio(relative_file, host_id)
+        elif args.relative_file:
+            print(f"Specified relative UIO file does not exist: {args.relative_file}")
 
     plt.show()
 
