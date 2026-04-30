@@ -25,6 +25,15 @@ import matplotlib.gridspec as gridspec
 import numpy as np
 import argparse
 
+ATTACK_VALUE_FIELDS = [
+    ("x", "Injected X", "x [m]"),
+    ("y", "Injected Y", "y [m]"),
+    ("theta", "Injected Heading", "theta [rad]"),
+    ("velocity", "Injected Velocity", "v [m/s]"),
+    ("acceleration", "Injected Acceleration", "a [m/s^2]"),
+    ("confidence", "Injected Confidence", "confidence"),
+]
+
 # python plot_trust_data.py --file ".\trust_weight_log_V1.csv" --relative-file "..\Relative_obs\relative_uio_log_V1.csv"
 
 # ──────────────────────────────────────────────────────────────────────
@@ -231,6 +240,75 @@ def _attack_display_label(interval: dict) -> str:
     return " ".join(part for part in parts if part).strip()
 
 
+def _attack_value_column(field: str, kind: str, vehicle_id: int) -> str:
+    return f"inject_attack_{kind}_{field}_{vehicle_id}"
+
+
+def _attack_field_has_data(rows: List[dict], columns: List[str],
+                           active: List[int], field: str) -> bool:
+    for vid in active:
+        for kind in ("original", "modified", "delta"):
+            col = _attack_value_column(field, kind, vid)
+            if col in columns and _has_finite_column(rows, col):
+                return True
+    return False
+
+
+def _plot_attack_value_panel(ax, times, rows, columns, active,
+                             field: str, title: str, ylabel: str):
+    plotted = 0
+    cmap = plt.get_cmap("tab10")
+    for idx, vid in enumerate(active):
+        modified_col = _attack_value_column(field, "modified", vid)
+        original_col = _attack_value_column(field, "original", vid)
+        delta_col = _attack_value_column(field, "delta", vid)
+        if modified_col not in columns and original_col not in columns:
+            continue
+
+        modified = _col_to_array(rows, modified_col)
+        original = _col_to_array(rows, original_col)
+        delta = _col_to_array(rows, delta_col)
+        if not (
+            np.any(np.isfinite(modified))
+            or np.any(np.isfinite(original))
+            or np.any(np.isfinite(delta))
+        ):
+            continue
+
+        color = cmap(idx % 10)
+        if np.any(np.isfinite(original)):
+            ax.plot(
+                times,
+                original,
+                linestyle="--",
+                linewidth=1.1,
+                alpha=0.65,
+                color=color,
+                label=f"V{vid} original",
+            )
+        if np.any(np.isfinite(modified)):
+            ax.plot(
+                times,
+                modified,
+                linewidth=1.8,
+                color=color,
+                label=f"V{vid} injected",
+            )
+        elif np.any(np.isfinite(delta)):
+            ax.plot(
+                times,
+                delta,
+                linewidth=1.6,
+                color=color,
+                label=f"V{vid} delta",
+            )
+        plotted += 1
+
+    if plotted == 0:
+        _no_data(ax, title)
+    _style(ax, title, ylabel, xlabel="Time [s]")
+
+
 def _extract_attack_intervals(rows: List[dict], columns: List[str],
                               active: List[int], times: np.ndarray) -> List[dict]:
     t_min, t_max = _finite_time_bounds(times)
@@ -380,6 +458,93 @@ def _extract_attack_events(rows: List[dict], columns: List[str],
             events.append({"event": "disable", "time_s": float(t)})
         prev = bool(is_enabled)
     return events
+
+
+def _parse_vehicle_id_list(raw) -> List[int]:
+    if raw in ("", None):
+        return []
+    if isinstance(raw, (list, tuple, set)):
+        values = list(raw)
+    else:
+        values = str(raw).replace(",", "|").split("|")
+
+    parsed: List[int] = []
+    for value in values:
+        text = str(value).strip()
+        if not text:
+            continue
+        try:
+            parsed.append(int(text))
+        except (TypeError, ValueError):
+            continue
+    return sorted(set(parsed))
+
+
+def _extract_rollback_events(rows: List[dict], columns: List[str],
+                             times: np.ndarray) -> List[dict]:
+    if "rollback_triggered" not in columns:
+        return []
+
+    events: List[dict] = []
+    seen = set()
+    for idx, row in enumerate(rows):
+        triggered = _safe_float(row.get("rollback_triggered", 0.0), 0.0)
+        if not math.isfinite(triggered) or triggered < 0.5:
+            continue
+
+        event_time = _safe_float(row.get("rollback_event_time_s", ""))
+        if not math.isfinite(event_time):
+            event_time = _safe_float(times[idx] if idx < len(times) else float("nan"))
+        if not math.isfinite(event_time):
+            continue
+
+        total_rollbacks = int(_safe_float(row.get("rollback_total", 0.0), 0.0))
+        active_vehicles = _parse_vehicle_id_list(row.get("rollback_active_vehicles", ""))
+        newly_flagged = _parse_vehicle_id_list(row.get("rollback_newly_flagged", ""))
+        key = (
+            round(float(event_time), 6),
+            total_rollbacks,
+            tuple(active_vehicles),
+            tuple(newly_flagged),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        events.append(
+            {
+                "time_s": float(event_time),
+                "total_rollbacks": total_rollbacks,
+                "active_count": len(active_vehicles),
+                "active_vehicles": active_vehicles,
+                "newly_flagged_count": len(newly_flagged),
+                "newly_flagged": newly_flagged,
+            }
+        )
+    return events
+
+
+def _extract_rollback_vehicle_masks(rows: List[dict], columns: List[str]) -> Dict[int, np.ndarray]:
+    if "rollback_active_vehicles" not in columns:
+        return {}
+
+    tracked_ids = set()
+    active_lists: List[List[int]] = []
+    for row in rows:
+        active_ids = _parse_vehicle_id_list(row.get("rollback_active_vehicles", ""))
+        newly_flagged = _parse_vehicle_id_list(row.get("rollback_newly_flagged", ""))
+        tracked_ids.update(active_ids)
+        tracked_ids.update(newly_flagged)
+        active_lists.append(active_ids)
+
+    if not tracked_ids:
+        return {}
+
+    masks: Dict[int, np.ndarray] = {}
+    for vehicle_id in sorted(tracked_ids):
+        masks[vehicle_id] = np.array(
+            [vehicle_id in active_ids for active_ids in active_lists], dtype=bool
+        )
+    return masks
 
 
 def _yolo_usage_mask(rows: List[dict], vid: int) -> np.ndarray:
@@ -627,14 +792,14 @@ def _fig_weights(times, rows, active, focus, host_id):
         )
     )
 
-    fig = plt.figure(figsize=(16, 7))
+    fig = plt.figure(figsize=(19, 8))
     final_note = "final per-target" if has_final else "legacy summary"
     fig.suptitle(
         f"Weight Calculation ({final_note})  (Host V{host_id}, Focus V{focus})",
         fontsize=13,
         fontweight="bold",
     )
-    gs = gridspec.GridSpec(2, 2, figure=fig, hspace=0.35, wspace=0.25)
+    gs = gridspec.GridSpec(2, 3, figure=fig, hspace=0.35, wspace=0.28)
 
     # (0,0) Direct/self/final neighbor budget for the focused target.
     ax = fig.add_subplot(gs[0, 0])
@@ -685,8 +850,31 @@ def _fig_weights(times, rows, active, focus, host_id):
         _no_data(ax, f"Final Neighbor Source Weights to V{focus}")
     _style(ax, f"Final Neighbor Source Weights to V{focus}", "Weight")
 
-    # (1,0) Mean trust metrics
+    # (0,2) Legacy summary weights for comparison.
+    ax = fig.add_subplot(gs[0, 2])
+    n = 0
+    for col, lbl, ls, color in [
+        ("w0", "w0 summary", "-.", "tab:blue"),
+        ("w_self", "w_self summary", "--", "k"),
+        ("total_neighbor_weight", "neighbor total summary", "-", "tab:orange"),
+    ]:
+        arr = _col_to_array(rows, col)
+        if np.any(np.isfinite(arr)):
+            ax.plot(times, arr, ls, lw=1.4, label=lbl, color=color)
+            n += 1
+    if n == 0:
+        _no_data(ax, "Legacy Summary Weights")
+    _style(ax, "Legacy Summary Weights", "Weight")
+
+    # (1,0) Legacy per-neighbor weights for comparison.
     ax = fig.add_subplot(gs[1, 0])
+    if _plot_series(ax, times, rows, "w_neighbor", active,
+                    label_fmt="summary w_neighbor V{}") == 0:
+        _no_data(ax, "Legacy Per-Neighbor Weights")
+    _style(ax, "Legacy Per-Neighbor Weights", "Weight", xlabel="Time [s]")
+
+    # (1,1) Mean trust metrics
+    ax = fig.add_subplot(gs[1, 1])
     n = 0
     for col, lbl in [("mean_direct_trust", "Mean Direct Trust"),
                       ("mean_generalized_trust", "Mean Generalized Trust"),
@@ -702,8 +890,8 @@ def _fig_weights(times, rows, active, focus, host_id):
         _no_data(ax, "Trust Summary Metrics")
     _style(ax, "Trust Summary Metrics", "Value", xlabel="Time [s]")
 
-    # (1,1) Counts plus old summary total for compatibility checking.
-    ax = fig.add_subplot(gs[1, 1])
+    # (1,2) Counts plus old summary total for compatibility checking.
+    ax = fig.add_subplot(gs[1, 2])
     n = 0
     for col, lbl in [("trusted_neighbor_count", "Trusted Neighbors"),
                       ("active_vehicle_count", "Active Vehicles"),
@@ -1149,7 +1337,8 @@ def _fig_v2v_details(times, rows, active, focus, host_id):
 def _fig_attack_timeline(times, rows, columns, active, host_id):
     """
     Figure 6 - Attack Timeline
-    Shows attack-module enable/disable moments and configured attack intervals.
+    Shows attack-module enable/disable moments, configured attack intervals,
+    and the actual injected values recorded in the trust CSV.
     """
     intervals = _extract_attack_intervals(rows, columns, active, times)
     events = _extract_attack_events(rows, columns, times)
@@ -1161,14 +1350,31 @@ def _fig_attack_timeline(times, rows, columns, active, host_id):
         if label not in lanes:
             lanes.append(label)
 
-    fig_height = min(max(5.5, 1.0 + 0.55 * len(lanes)), 12.0)
+    attack_value_fields = [
+        field_info
+        for field_info in ATTACK_VALUE_FIELDS
+        if _attack_field_has_data(rows, columns, active, field_info[0])
+    ]
+    value_rows = int(math.ceil(len(attack_value_fields) / 2.0))
+
+    fig_height = min(
+        max(5.5 + 2.4 * value_rows, 1.8 + 0.55 * len(lanes) + 2.4 * value_rows),
+        18.0,
+    )
     fig = plt.figure(figsize=(16, fig_height))
     fig.suptitle(f"V2V Attack Timeline (Host V{host_id})",
                  fontsize=13, fontweight="bold")
-    gs = gridspec.GridSpec(2, 1, figure=fig, height_ratios=[3.0, 1.2],
-                           hspace=0.32)
+    height_ratios = [max(3.0, 0.45 * len(lanes)), 1.25] + ([1.6] * value_rows)
+    gs = gridspec.GridSpec(
+        2 + value_rows,
+        2,
+        figure=fig,
+        height_ratios=height_ratios,
+        hspace=0.35,
+        wspace=0.22,
+    )
 
-    ax = fig.add_subplot(gs[0, 0])
+    ax = fig.add_subplot(gs[0, :])
     lane_y = {label: idx for idx, label in enumerate(lanes)}
     bar_h = 0.72
 
@@ -1260,7 +1466,7 @@ def _fig_attack_timeline(times, rows, columns, active, host_id):
     _style(ax, "Attack Intervals and Enable/Disable Events",
            "", xlabel="Time [s]")
 
-    ax2 = fig.add_subplot(gs[1, 0], sharex=ax)
+    ax2 = fig.add_subplot(gs[1, :], sharex=ax)
     plotted = 0
     for col, label, color in [
         ("v2v_attack_enabled", "module enabled", "tab:green"),
@@ -1276,6 +1482,209 @@ def _fig_attack_timeline(times, rows, columns, active, host_id):
     if plotted == 0:
         _no_data(ax2, "Attack Status Signals")
     _style(ax2, "Attack Status Signals", "Value", xlabel="Time [s]")
+
+    for idx, (field, title, ylabel) in enumerate(attack_value_fields):
+        row_idx = 2 + idx // 2
+        col_idx = idx % 2
+        value_ax = fig.add_subplot(gs[row_idx, col_idx], sharex=ax)
+        _plot_attack_value_panel(
+            value_ax,
+            times,
+            rows,
+            columns,
+            active,
+            field=field,
+            title=title,
+            ylabel=ylabel,
+        )
+
+    fig.tight_layout(rect=[0, 0, 1, 0.95])
+    return fig
+
+
+def _fig_rollback_timeline(times, rows, columns, active, host_id):
+    """
+    Figure 7 - Rollback Timeline
+    Shows rollback enable state, active malicious vehicles, rollback trigger events,
+    and compact event metadata derived from the trust CSV.
+    """
+    rollback_cols = {
+        "rollback_enabled",
+        "rollback_triggered",
+        "rollback_total",
+        "rollback_active_count",
+        "rollback_active_vehicles",
+        "rollback_newly_flagged_count",
+        "rollback_newly_flagged",
+        "rollback_event_time_s",
+    }
+    if not (rollback_cols & set(columns)):
+        return None
+
+    events = _extract_rollback_events(rows, columns, times)
+    vehicle_masks = _extract_rollback_vehicle_masks(rows, columns)
+    t_min, t_max = _finite_time_bounds(times)
+
+    lanes = ["rollback enabled"]
+    for vehicle_id in sorted(vehicle_masks):
+        lanes.append(f"malicious V{vehicle_id}")
+
+    fig = plt.figure(figsize=(16, 9))
+    fig.suptitle(f"Rollback Timeline (Host V{host_id})",
+                 fontsize=13, fontweight="bold")
+    gs = gridspec.GridSpec(
+        3, 2, figure=fig,
+        height_ratios=[max(2.8, 0.5 * len(lanes)), 2.0, 2.4],
+        hspace=0.35, wspace=0.24,
+    )
+
+    ax_timeline = fig.add_subplot(gs[0, :])
+    lane_y = {label: idx for idx, label in enumerate(lanes)}
+    bar_h = 0.72
+    timeline_plotted = False
+
+    if "rollback_enabled" in columns:
+        enabled = _col_to_array(rows, "rollback_enabled")
+        for start_s, end_s in _mask_to_time_spans(
+            times, np.isfinite(enabled) & (enabled >= 0.5)
+        ):
+            ax_timeline.broken_barh(
+                [(start_s, end_s - start_s)],
+                (lane_y["rollback enabled"] - bar_h / 2, bar_h),
+                facecolors="tab:blue",
+                alpha=0.22,
+                edgecolors="tab:blue",
+                label="rollback enabled",
+            )
+            timeline_plotted = True
+
+    cmap = plt.get_cmap("tab10")
+    for idx, (vehicle_id, mask) in enumerate(sorted(vehicle_masks.items())):
+        label = f"malicious V{vehicle_id}"
+        for start_s, end_s in _mask_to_time_spans(times, mask):
+            color = cmap(idx % 10)
+            ax_timeline.broken_barh(
+                [(start_s, end_s - start_s)],
+                (lane_y[label] - bar_h / 2, bar_h),
+                facecolors=color,
+                alpha=0.45,
+                edgecolors=color,
+                label=label,
+            )
+            timeline_plotted = True
+
+    for event_idx, event in enumerate(events, start=1):
+        event_time = float(event["time_s"])
+        newly_flagged = event.get("newly_flagged", [])
+        active_vehicles = event.get("active_vehicles", [])
+        label = (
+            f"RB#{event_idx}"
+            if not newly_flagged
+            else f"RB#{event_idx}: +{','.join(f'V{vid}' for vid in newly_flagged)}"
+        )
+        ax_timeline.axvline(
+            event_time, color="tab:red", linestyle="--", linewidth=1.2, alpha=0.95
+        )
+        ax_timeline.scatter(
+            [event_time],
+            [lane_y["rollback enabled"]],
+            color="tab:red",
+            s=34,
+            zorder=4,
+        )
+        ax_timeline.text(
+            event_time,
+            len(lanes) - 0.25,
+            label,
+            rotation=90,
+            ha="right",
+            va="top",
+            color="tab:red",
+            fontsize=8,
+        )
+        for vehicle_id in active_vehicles:
+            lane_label = f"malicious V{vehicle_id}"
+            if lane_label in lane_y:
+                ax_timeline.scatter(
+                    [event_time],
+                    [lane_y[lane_label]],
+                    color="tab:red",
+                    s=20,
+                    zorder=4,
+                )
+        timeline_plotted = True
+
+    if not timeline_plotted:
+        _no_data(ax_timeline, "Rollback Timeline")
+    ax_timeline.set_yticks(list(lane_y.values()))
+    ax_timeline.set_yticklabels(lanes, fontsize=8)
+    ax_timeline.set_xlim(t_min, t_max)
+    _style(ax_timeline, "Rollback State and Trigger Events", "",
+           xlabel="Time [s]")
+
+    ax_signals = fig.add_subplot(gs[1, :], sharex=ax_timeline)
+    plotted = 0
+    for col, label, color in [
+        ("rollback_triggered", "rollback trigger", "tab:red"),
+        ("rollback_total", "total rollbacks", "tab:orange"),
+        ("rollback_active_count", "active malicious count", "tab:purple"),
+        ("rollback_newly_flagged_count", "newly flagged count", "tab:green"),
+    ]:
+        if col not in columns:
+            continue
+        arr = _col_to_array(rows, col)
+        if np.any(np.isfinite(arr)):
+            ax_signals.step(times, arr, where="post", label=label, color=color)
+            plotted += 1
+    if plotted == 0:
+        _no_data(ax_signals, "Rollback Signals")
+    _style(ax_signals, "Rollback Signals", "Value", xlabel="Time [s]")
+
+    ax_meta = fig.add_subplot(gs[2, :])
+    ax_meta.axis("off")
+
+    unique_flagged = sorted({
+        vehicle_id
+        for event in events
+        for vehicle_id in event.get("active_vehicles", []) + event.get("newly_flagged", [])
+    })
+    total_rollbacks = int(events[-1]["total_rollbacks"]) if events else 0
+    max_active = 0
+    if "rollback_active_count" in columns:
+        active_counts = _col_to_array(rows, "rollback_active_count")
+        finite_active = active_counts[np.isfinite(active_counts)]
+        if finite_active.size:
+            max_active = int(np.max(finite_active))
+
+    meta_lines = [
+        f"total rollbacks      : {total_rollbacks}",
+        f"rollback events      : {len(events)}",
+        f"unique flagged       : {', '.join(f'V{vid}' for vid in unique_flagged) if unique_flagged else 'none'}",
+        f"max active malicious : {max_active}",
+    ]
+
+    if events:
+        meta_lines.append("")
+        meta_lines.append("events:")
+        for event_idx, event in enumerate(events, start=1):
+            newly_flagged = event.get("newly_flagged", [])
+            active_vehicles = event.get("active_vehicles", [])
+            meta_lines.append(
+                f"  RB#{event_idx} @ {event['time_s']:.2f}s"
+                f" | newly={','.join(f'V{vid}' for vid in newly_flagged) if newly_flagged else 'none'}"
+                f" | active={','.join(f'V{vid}' for vid in active_vehicles) if active_vehicles else 'none'}"
+            )
+    else:
+        meta_lines.append("")
+        meta_lines.append("events: none")
+
+    ax_meta.text(
+        0.02, 0.98, "\n".join(meta_lines),
+        va="top", ha="left",
+        family="monospace", fontsize=9.2,
+        transform=ax_meta.transAxes,
+    )
+    ax_meta.set_title("Rollback Metadata", fontsize=10, fontweight="bold")
 
     fig.tight_layout(rect=[0, 0, 1, 0.95])
     return fig
@@ -1340,6 +1749,43 @@ def _print_static_metrics(rows, active):
         print(f"V{vid:<9} | {target_atks:<12} | {local_bads:<15} | {global_bads:<16} | {elem_str}")
 
     print("="*80 + "\n")
+
+    rollback_available = any(
+        key in rows[0]
+        for key in (
+            "rollback_triggered",
+            "rollback_total",
+            "rollback_active_count",
+        )
+    ) if rows else False
+    if rollback_available:
+        rollback_events = _extract_rollback_events(
+            rows,
+            list(rows[0].keys()),
+            _col_to_array(rows, "time"),
+        )
+        active_counts = _col_to_array(rows, "rollback_active_count")
+        max_active = 0
+        if np.any(np.isfinite(active_counts)):
+            max_active = int(np.nanmax(active_counts))
+        unique_flagged = sorted({
+            vehicle_id
+            for event in rollback_events
+            for vehicle_id in event.get("active_vehicles", []) + event.get("newly_flagged", [])
+        })
+
+        print(f"{'ROLLBACK SUMMARY':^80}")
+        print("-" * 80)
+        print(f"Total rollback events : {len(rollback_events)}")
+        print(f"Unique flagged IDs    : {', '.join(f'V{vid}' for vid in unique_flagged) if unique_flagged else 'None'}")
+        print(f"Max active malicious  : {max_active}")
+        for idx, event in enumerate(rollback_events, start=1):
+            newly = ", ".join(f"V{vid}" for vid in event.get("newly_flagged", [])) or "None"
+            active_ids = ", ".join(f"V{vid}" for vid in event.get("active_vehicles", [])) or "None"
+            print(
+                f"  RB#{idx} @ {event['time_s']:.2f}s | newly flagged: {newly} | active after rollback: {active_ids}"
+            )
+        print("=" * 80 + "\n")
 
 
 def _relative_time_axis(times: np.ndarray) -> np.ndarray:
@@ -2010,29 +2456,31 @@ def main():
     # Print analytic summary
     _print_static_metrics(rows, active)
 
-    # Choose focus vehicles according to command-line flags or interactive input
-    if args.all:
-        focuses = focus_candidates
-    elif args.focus is not None:
-        if args.focus in focus_candidates:
-            focuses = [args.focus]
-        else:
-            print(f"Requested focus V{args.focus} not in candidate list; using {focus_candidates[0]}")
-            focuses = [focus_candidates[0]]
-    else:
-        # interactive prompt if no CLI preference provided
-        focus_selection = input(
-            "Enter a focus vehicle ID from the list above, or type 'all' to generate a separate set of figures for every candidate (default = first): "
-        ).strip().lower()
+    focuses = focus_candidates
 
-        if focus_selection == "all":
-            focuses = focus_candidates
-        else:
-            try:
-                fid = int(focus_selection)
-                focuses = [fid] if fid in focus_candidates else [focus_candidates[0]]
-            except ValueError:
-                focuses = [focus_candidates[0]]
+    # # Choose focus vehicles according to command-line flags or interactive input
+    # if args.all:
+    #     focuses = focus_candidates
+    # elif args.focus is not None:
+    #     if args.focus in focus_candidates:
+    #         focuses = [args.focus]
+    #     else:
+    #         print(f"Requested focus V{args.focus} not in candidate list; using {focus_candidates[0]}")
+    #         focuses = [focus_candidates[0]]
+    # else:
+    #     # interactive prompt if no CLI preference provided
+    #     focus_selection = input(
+    #         "Enter a focus vehicle ID from the list above, or type 'all' to generate a separate set of figures for every candidate (default = first): "
+    #     ).strip().lower()
+
+    #     if focus_selection == "all":
+    #         focuses = focus_candidates
+    #     else:
+    #         try:
+    #             fid = int(focus_selection)
+    #             focuses = [fid] if fid in focus_candidates else [focus_candidates[0]]
+    #         except ValueError:
+    #             focuses = [focus_candidates[0]]
 
     # Build the figures (multiple sets if necessary)
     for focus in focuses:
@@ -2045,6 +2493,9 @@ def main():
 
     print("Plotting V2V attack timeline ...")
     _fig_attack_timeline(times, rows, columns, active, host_id)
+    rollback_fig = _fig_rollback_timeline(times, rows, columns, active, host_id)
+    if rollback_fig is not None:
+        print("Plotting rollback timeline ...")
 
     if not args.skip_relative:
         relative_file = args.relative_file or _find_relative_uio_log(directory, host_id)

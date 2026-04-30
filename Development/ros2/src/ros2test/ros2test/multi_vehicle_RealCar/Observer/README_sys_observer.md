@@ -103,6 +103,35 @@ The system uses a **5-dimensional state vector**:
 
 ---
 
+## Recording And Plotting
+
+### Enable CSV Saving
+
+Set these flags in the observer configs:
+
+- In `config_local_estimators.yaml`, set `enable_recording: true` to save local estimator CSV files into `scope_recordings/local/`.
+- In `config_fleet_estimators.yaml`, set `enable_recording: true` to save fleet estimator CSV files into `scope_recordings/fleet/`.
+- Use `recording_overwrite: true` if you want fixed filenames like `local_V0.csv` and `fleet_V0.csv`.
+- Use `recording_overwrite: false` if you want timestamped files for each run.
+- In `config_fleet_estimators.yaml`, `max_record_vehicles` sets how many fleet vehicles are flattened into the CSV columns.
+
+### Plot Recorded CSV Files
+
+Run the plot helper from `qcar/Observer/`:
+
+```bash
+python plot_scope_data.py --type local
+python plot_scope_data.py --type fleet
+python plot_scope_data.py --type both
+python plot_scope_data.py --file scope_recordings/local/local_V0.csv
+```
+
+`--type local` loads the latest file from `scope_recordings/local/`.  
+`--type fleet` loads the latest file from `scope_recordings/fleet/`.  
+`--type both` shows the latest local and fleet recordings side by side.
+
+---
+
 
 
 ## API Reference

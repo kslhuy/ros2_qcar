@@ -20,7 +20,7 @@ Features:
 import json
 import numpy as np
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 from collections import defaultdict
 
 # Import base class and utilities from fleet_state_estimators
@@ -49,10 +49,6 @@ from Observer.TrustbasedDistributedObserver.weight_trust_module import (
     WeightResult,
 )
 from Observer.TrustbasedDistributedObserver.trust_logger import TrustWeightLogger
-from Observer.TrustbasedDistributedObserver.motor_model import (
-    AccelDragMotorModel,
-    MotorModelConfig,
-)
 from Observer.TrustbasedDistributedObserver.external_measurement_cache import (
     ExternalMeasurementCache,
 )
@@ -175,6 +171,9 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             enabled=bool(self.config.get("rollback_enabled", False)),
             window_size=int(self.config.get("rollback_window_size", 15)),
             trust_threshold=self.trust_config.trust_threshold,
+            predict_fn=self._predict_dynamics,
+            constraints_fn=self._apply_state_constraints,
+            logger=logger,
         )
 
         # Statistics
@@ -216,11 +215,6 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         self.accel_lag_enabled = bool(accel_lag_cfg.get("enabled", False))
         self.accel_lag_tau = max(float(accel_lag_cfg.get("tau", 0.318)), 1e-6)
         self.accel_lag_gain = float(accel_lag_cfg.get("input_gain", 1.0))
-        motor_cfg_dict = vehicle_config.get("motor_model", {})
-        self.motor_model_config = MotorModelConfig.from_dict(motor_cfg_dict)
-        self.motor_model = AccelDragMotorModel(self.motor_model_config)
-        # Per-vehicle persistent motor acceleration state [m/s^2]
-        self._motor_accel_state: Dict[int, float] = {}
         # Per-vehicle cached control inputs from V2V. Do not fall back to host
         # control for another target; if target control is absent/stale the
         # prediction model must degrade to constant velocity.
@@ -235,15 +229,11 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                 f"Acceleration lag model {'ENABLED' if self.accel_lag_enabled else 'DISABLED'}"
                 f" (tau={self.accel_lag_tau}, gain={self.accel_lag_gain})"
             )
-            self.logger.logger.info(
-                f"Motor model {'ENABLED' if self.motor_model_config.enabled else 'DISABLED'}"
-                f" (tau={self.motor_model_config.tau}, k_th={self.motor_model_config.k_th})"
-            )
 
         # Initialize specialized logger for trusts & weights
         self.trust_weight_logger = TrustWeightLogger(
             output_dir=os.path.dirname(os.path.abspath(__file__)),
-            max_vehicles=max(10, fleet_size),
+            max_vehicles=max(1, fleet_size),
         )
         self.trust_weight_logger.start(vehicle_id)
         self._init_time = time.time()
@@ -256,6 +246,7 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         self._v2v_attack_last_event: str = ""
         self._v2v_attack_last_event_time_s: Optional[float] = None
         self._v2v_attack_events: List[Dict[str, Any]] = []
+        self._v2v_attack_value_snapshot: Dict[int, Dict[str, Any]] = {}
 
     # ------------------------------------------------------------------
     # Override add_received_local_state to also cache control_input
@@ -326,6 +317,17 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             duration_s > 0.0
             and self._get_startup_elapsed_s(current_time_ns) < duration_s
         )
+
+    def _get_current_malicious_vehicle_ids(
+        self, trust_scores: Dict[int, float]
+    ) -> Set[int]:
+        """Return currently untrusted external vehicles using the active trust threshold."""
+        threshold = float(np.clip(self.trust_config.trust_threshold, 0.0, 1.0))
+        return {
+            int(vehicle_id)
+            for vehicle_id, trust_val in trust_scores.items()
+            if int(vehicle_id) != self.vehicle_id and float(trust_val) < threshold
+        }
 
     # ------------------------------------------------------------------
     # V2V attack metadata for trust-log ground truth
@@ -415,6 +417,72 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             "active": active,
         }
 
+    def _normalize_attack_value_snapshot(
+        self, raw_snapshot: Any
+    ) -> Dict[int, Dict[str, Any]]:
+        """Normalize live per-vehicle attack values for CSV logging."""
+        if not isinstance(raw_snapshot, dict):
+            return {}
+
+        by_vehicle_raw = raw_snapshot.get("by_vehicle", raw_snapshot)
+        if not isinstance(by_vehicle_raw, dict):
+            return {}
+
+        normalized: Dict[int, Dict[str, Any]] = {}
+        for raw_vehicle_id, raw_entry in by_vehicle_raw.items():
+            try:
+                vehicle_id = int(raw_vehicle_id)
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(raw_entry, dict):
+                continue
+
+            raw_values = raw_entry.get("values", {})
+            if not isinstance(raw_values, dict):
+                raw_values = {}
+
+            values: Dict[str, Dict[str, float]] = {}
+            for raw_field, raw_value_triplet in raw_values.items():
+                if not isinstance(raw_value_triplet, dict):
+                    continue
+                field = str(raw_field)
+                original = self._finite_or_none(raw_value_triplet.get("original"))
+                modified = self._finite_or_none(raw_value_triplet.get("modified"))
+                delta = self._finite_or_none(raw_value_triplet.get("delta"))
+                if original is None and modified is None and delta is None:
+                    continue
+                values[field] = {
+                    "original": original,
+                    "modified": modified,
+                    "delta": delta,
+                }
+
+            attacker_id = raw_entry.get("attacker_id")
+            try:
+                attacker_id = int(attacker_id)
+            except (TypeError, ValueError):
+                attacker_id = None
+
+            fields = [str(v) for v in self._list_or_empty(raw_entry.get("fields", []))]
+            if values:
+                fields = sorted(set(fields) | set(values.keys()))
+
+            normalized[vehicle_id] = {
+                "active": bool(raw_entry.get("active", False)),
+                "attacker_id": attacker_id,
+                "types": [str(v) for v in self._list_or_empty(raw_entry.get("types", []))],
+                "names": [str(v) for v in self._list_or_empty(raw_entry.get("names", []))],
+                "modifications": [
+                    str(v) for v in self._list_or_empty(raw_entry.get("modifications", []))
+                ],
+                "data_types": [
+                    str(v) for v in self._list_or_empty(raw_entry.get("data_types", []))
+                ],
+                "fields": fields,
+                "values": values,
+            }
+        return normalized
+
     @staticmethod
     def _attack_scenario_key(scenario: Dict[str, Any]) -> str:
         fields = ",".join(str(v) for v in scenario.get("target_fields", []))
@@ -481,6 +549,14 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                 self._append_v2v_attack_event("enable", event_time_s)
         elif previous_enabled is True or manual_disable_time is not None:
             self._append_v2v_attack_event("disable", event_time_s)
+
+        value_snapshot = self._normalize_attack_value_snapshot(
+            status.get("attack_value_snapshot")
+        )
+        if value_snapshot:
+            self._v2v_attack_value_snapshot = value_snapshot
+        elif not attack_active or not enabled:
+            self._v2v_attack_value_snapshot = {}
 
         raw_scenarios: List[Any] = []
         for key in (
@@ -604,6 +680,11 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             clock_s = self._get_log_time_s(current_time_ns)
 
         enabled = bool(self._v2v_attack_status.get("enabled", False))
+        attack_value_snapshot = (
+            self._v2v_attack_value_snapshot
+            if enabled and bool(self._v2v_attack_status.get("attack_active", False))
+            else {}
+        )
         scenarios = list(self._v2v_attack_scenarios.values())
         active_scenarios = [
             s for s in scenarios if self._scenario_is_active_at_clock(s, clock_s, enabled)
@@ -615,29 +696,64 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             vehicle_scenarios = [
                 s for s in scenarios if self._scenario_targets_vehicle(s, vehicle_id)
             ]
-            if not vehicle_scenarios:
+            vehicle_snapshot = attack_value_snapshot.get(vehicle_id, {})
+            if not vehicle_scenarios and not vehicle_snapshot:
                 continue
             active_for_vehicle = [
                 s
                 for s in vehicle_scenarios
                 if self._scenario_is_active_at_clock(s, clock_s, enabled)
             ]
+            scenario_fields = {
+                str(field)
+                for scenario in vehicle_scenarios
+                for field in scenario.get("target_fields", [])
+            }
+            snapshot_values = vehicle_snapshot.get("values", {})
+            snapshot_fields = set(vehicle_snapshot.get("fields", [])) | set(
+                snapshot_values.keys()
+            )
+            start_s = (
+                min(float(s["t_start"]) for s in vehicle_scenarios)
+                if vehicle_scenarios
+                else float("nan")
+            )
+            end_s = (
+                max(float(s["t_end"]) for s in vehicle_scenarios)
+                if vehicle_scenarios
+                else float("nan")
+            )
+
+            combined_types = self._unique_values(vehicle_scenarios, "type")
+            combined_names = self._unique_values(vehicle_scenarios, "name")
+            combined_data_types = self._unique_values(vehicle_scenarios, "data_type")
+            combined_modifications = self._unique_values(vehicle_scenarios, "modification")
+            for key, dest in (
+                ("types", combined_types),
+                ("names", combined_names),
+                ("data_types", combined_data_types),
+                ("modifications", combined_modifications),
+            ):
+                for value in vehicle_snapshot.get(key, []):
+                    value = str(value)
+                    if value and value not in dest:
+                        dest.append(value)
+
             by_vehicle[vehicle_id] = {
-                "active": bool(active_for_vehicle),
-                "types": self._unique_values(vehicle_scenarios, "type"),
-                "names": self._unique_values(vehicle_scenarios, "name"),
-                "data_types": self._unique_values(vehicle_scenarios, "data_type"),
-                "modifications": self._unique_values(vehicle_scenarios, "modification"),
-                "fields": sorted(
-                    {
-                        str(field)
-                        for scenario in vehicle_scenarios
-                        for field in scenario.get("target_fields", [])
-                    }
+                "active": bool(active_for_vehicle) or bool(vehicle_snapshot.get("active", False)),
+                "types": combined_types,
+                "names": combined_names,
+                "data_types": combined_data_types,
+                "modifications": combined_modifications,
+                "fields": sorted(scenario_fields | snapshot_fields),
+                "start_s": start_s,
+                "end_s": end_s,
+                "attacker_id": (
+                    vehicle_scenarios[0].get("attacker_id")
+                    if vehicle_scenarios
+                    else vehicle_snapshot.get("attacker_id")
                 ),
-                "start_s": min(float(s["t_start"]) for s in vehicle_scenarios),
-                "end_s": max(float(s["t_end"]) for s in vehicle_scenarios),
-                "attacker_id": vehicle_scenarios[0].get("attacker_id"),
+                "values": snapshot_values,
             }
 
         return {
@@ -720,25 +836,25 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         vehicle_type_norm = "Limo" if vehicle_type.strip().lower() == "limo" else "Qcar"
 
         velocity_lag = cfg.get("velocity_lag_model", {})
+        velocity_lag_lookup = cfg.get("velocity_lag_lookup_model", {})
         accel_lag = cfg.get("accel_lag_model", {})
-        motor_model = cfg.get("motor_model", {})
         if not isinstance(velocity_lag, dict):
             velocity_lag = {}
+        if not isinstance(velocity_lag_lookup, dict):
+            velocity_lag_lookup = {}
         if not isinstance(accel_lag, dict):
             accel_lag = {}
-        if not isinstance(motor_model, dict):
-            motor_model = {}
 
         longitudinal_model = str(cfg.get("longitudinal_model", "") or "").strip().lower()
         if not longitudinal_model:
             if vehicle_type_norm == "Limo":
                 longitudinal_model = "velocity_command"
+            elif self._as_bool(velocity_lag_lookup.get("enabled"), False):
+                longitudinal_model = "velocity_lag_lookup"
             elif self._as_bool(velocity_lag.get("enabled"), False):
                 longitudinal_model = "velocity_lag"
             elif self._as_bool(accel_lag.get("enabled"), False):
                 longitudinal_model = "acceleration_lag"
-            elif self._as_bool(motor_model.get("enabled"), False):
-                longitudinal_model = "motor_model"
             else:
                 longitudinal_model = "constant_velocity"
 
@@ -763,6 +879,23 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                 ),
                 0.0,
             ),
+            "velocity_lag_lookup_tau": max(
+                self._as_float(
+                    velocity_lag_lookup.get("tau"),
+                    cfg.get("velocity_lag_lookup_tau", 0.301),
+                ),
+                1e-6,
+            ),
+            "velocity_lag_lookup_throttle_breakpoints": [
+                float(v)
+                for v in velocity_lag_lookup.get("throttle_breakpoints", [])
+            ],
+            "velocity_lag_lookup_velocity_breakpoints": [
+                float(v)
+                for v in velocity_lag_lookup.get(
+                    "steady_state_velocity_breakpoints", []
+                )
+            ],
             "velocity_command_tau": max(
                 self._as_float(cfg.get("velocity_command_tau"), velocity_lag.get("tau", 0.301)),
                 1e-6,
@@ -939,8 +1072,13 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                     target_ctrl = self._get_target_control(
                         target_id, control, current_time_ns=current_time_ns
                     )
+                    components["prediction"] = {
+                        "dt": float(dt),
+                        "control": None
+                        if target_ctrl is None
+                        else np.asarray(target_ctrl, dtype=float).copy(),
+                    }
 
-                    saved_motor = self._motor_accel_state.get(target_id, 0.0)
                     consensus_est = normal_est.copy()
                     normal_est = self._apply_state_constraints(
                         self._predict_dynamics(
@@ -949,16 +1087,13 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                         target_id=target_id,
                     )
                     components["dynamics_delta"] = normal_est - consensus_est
-                    primary_motor = self._motor_accel_state.get(target_id, saved_motor)
                     # Predicted-only from old state for mode switch comparison
-                    self._motor_accel_state[target_id] = saved_motor
                     predicted_only_est = self._apply_state_constraints(
                         self._predict_dynamics(
                             current_est, target_ctrl, dt, target_id=target_id
                         ),
                         target_id=target_id,
                     )
-                    self._motor_accel_state[target_id] = primary_motor
 
                 else:
                     # Keep child estimator behavior (e.g., TrustBasedKalmanEstimator)
@@ -972,10 +1107,16 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                     components = {
                         "direct": {"source": -1, "delta": (normal_est - current_est)},
                         "neighbors": {},
+                        "prediction": {"dt": float(dt), "control": None},
                         "dynamics_delta": np.zeros(self.state_dim),
                     }
                     target_ctrl = self._get_target_control(
                         target_id, control, current_time_ns=current_time_ns
+                    )
+                    components["prediction"]["control"] = (
+                        None
+                        if target_ctrl is None
+                        else np.asarray(target_ctrl, dtype=float).copy()
                     )
                     predicted_only_est = self._apply_state_constraints(
                         self._predict_dynamics(
@@ -1005,15 +1146,7 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                 self.self_belief = 1.0
             self.self_belief_log.append(self.self_belief)
 
-            # 5.1 Log trust/weight/estimation state
-            self._log_update(
-                trust_scores, weight_result, control,
-                target_confidence, target_prediction_mode,
-                current_time_ns=current_time_ns,
-                target_components=step_targets,
-            )
-
-            # 6. Contamination rollback
+            # 5.1 Contamination rollback
             if self.rollback.enabled:
                 self.rollback.record(
                     current_time_ns=current_time_ns,
@@ -1026,7 +1159,19 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                     fleet_states=self.fleet_states,
                 )
 
-            # 7. Cleanup old data
+            # 5.2 Log trust/weight/estimation state after rollback has settled
+            self._log_update(
+                trust_scores,
+                weight_result,
+                control,
+                target_confidence,
+                target_prediction_mode,
+                current_time_ns=current_time_ns,
+                target_components=step_targets,
+                rollback_status=self.rollback.get_status(),
+            )
+
+            # 6. Cleanup old data
             self._cleanup_old_data(current_time_ns)
 
             return self.fleet_states.copy()
@@ -1290,21 +1435,25 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         """Update estimate for a target vehicle and return replayable contribution terms."""
         current_est = self.fleet_states[:, target_id].copy()
         total_correction = np.zeros(self.state_dim)
+        current_malicious_ids = self._get_current_malicious_vehicle_ids(trust_scores)
 
         components = {
-            "direct": {"source": target_id, "delta": np.zeros(self.state_dim)},
+            "direct": {"source": target_id, "weight": 0.0, "state": None},
             "neighbors": {},
+            "prediction": {"dt": float(dt), "control": None},
             "dynamics_delta": np.zeros(self.state_dim),
             "weights": {"w0": 0.0, "w_self": 1.0, "neighbors": {}},
         }
 
         # Get direct measurement from target
-        direct_state = self._get_latest_received_state(target_id, current_time_ns)
+        direct_state = None
+        if target_id not in current_malicious_ids:
+            direct_state = self._get_latest_received_state(target_id, current_time_ns)
 
         # Cache available neighbor fleet snapshots containing this target
         neighbor_fleet_estimates: Dict[int, Dict] = {}
         for neighbor_id in self.received_fleet_states.keys():
-            if neighbor_id == self.vehicle_id:
+            if neighbor_id == self.vehicle_id or neighbor_id in current_malicious_ids:
                 continue
             fleet_entry = self._get_latest_fleet_data_with_timestamp(
                 neighbor_id, current_time_ns
@@ -1321,6 +1470,8 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
 
         use_startup_fixed_weights = self._use_startup_fixed_weights(current_time_ns)
 
+        target_trust_obj = self.trust_model.get_trust_score(target_id)
+
         # Calculate weights (paper or trust-based - unified call)
         if use_startup_fixed_weights:
             startup_trust_scores = {
@@ -1334,6 +1485,7 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                 trust_scores=startup_trust_scores,
                 neighbor_fleet_estimates=neighbor_fleet_estimates,
                 direct_measurement=direct_state,
+                target_trust_obj=None,
             )
         elif self.weight_config.weight_type == "paper":
             opinion_scores = (
@@ -1341,7 +1493,6 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                 if self.generalized_trust_vector
                 else trust_scores
             )
-            target_trust_obj = self.trust_model.get_trust_score(target_id)
             target_local_trust = (
                 target_trust_obj.local_trust_sample
                 if target_trust_obj is not None
@@ -1360,15 +1511,10 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                 trust_scores=trust_scores,
                 neighbor_fleet_estimates=neighbor_fleet_estimates,
                 direct_measurement=direct_state,
+                target_trust_obj=target_trust_obj,
             )
 
         # === Flag-Driven w₀ Adaptation ===
-        trust_obj = self.trust_model.get_trust_score(target_id)
-        if trust_obj is not None and not use_startup_fixed_weights:
-            target_weights = self.weight_module.apply_flag_adaptation(
-                target_weights, trust_obj, self.weight_config
-            )
-
         components["weights"] = {
             "w0": float(target_weights.get("w0", 0.0)),
             "w_self": float(target_weights.get("w_self", 0.0)),
@@ -1382,7 +1528,11 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         if direct_state is not None and target_weights["w0"] > 0:
             direct_delta = target_weights["w0"] * (direct_state - current_est)
             total_correction += direct_delta
-            components["direct"] = {"source": target_id, "delta": direct_delta}
+            components["direct"] = {
+                "source": target_id,
+                "weight": float(target_weights["w0"]),
+                "state": np.asarray(direct_state, dtype=float).copy(),
+            }
 
         # === Neighbor Consensus Correction ===
         for neighbor_id, neighbor_fleet in neighbor_fleet_estimates.items():
@@ -1401,7 +1551,10 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             )
             neighbor_delta = w_neighbor * (neigh_est - current_est)
             total_correction += neighbor_delta
-            components["neighbors"][neighbor_id] = neighbor_delta
+            components["neighbors"][neighbor_id] = {
+                "weight": float(w_neighbor),
+                "state": neigh_est.copy(),
+            }
 
         # === Apply Consensus Correction ===
         # Dynamics propagation f(x̂_corrected, u, dt) is applied in update()
@@ -1491,6 +1644,32 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             )
             v_new = v + v_dot * dt
             a_new = v_dot
+        elif longitudinal_model == "velocity_lag_lookup":
+            throttle_breakpoints = np.asarray(
+                model_cfg.get("velocity_lag_lookup_throttle_breakpoints", []),
+                dtype=float,
+            ).reshape(-1)
+            velocity_breakpoints = np.asarray(
+                model_cfg.get("velocity_lag_lookup_velocity_breakpoints", []),
+                dtype=float,
+            ).reshape(-1)
+            if (
+                throttle_breakpoints.size >= 2
+                and throttle_breakpoints.size == velocity_breakpoints.size
+            ):
+                v_ss = float(np.interp(float(throttle), throttle_breakpoints, velocity_breakpoints))
+            else:
+                deadband = max(float(model_cfg.get("velocity_lag_deadband", 0.0)), 0.0)
+                throttle_eff = float(throttle)
+                if deadband > 0.0:
+                    throttle_eff = float(
+                        np.sign(throttle) * max(abs(float(throttle)) - deadband, 0.0)
+                    )
+                v_ss = float(model_cfg["velocity_gain"]) * throttle_eff
+            tau_lookup = float(model_cfg.get("velocity_lag_lookup_tau", model_cfg["velocity_lag_tau"]))
+            v_dot = (v_ss - v) / max(tau_lookup, 1e-6)
+            v_new = v + v_dot * dt
+            a_new = v_dot
         elif longitudinal_model == "velocity_command":
             # Limo ROS Twist.linear.x style: command is desired velocity, not
             # a QCar throttle. Treat `throttle` slot as v_cmd for compatibility.
@@ -1506,12 +1685,6 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                 * throttle
             )
             v_new = v + a_new * dt
-        elif longitudinal_model == "motor_model" and self.motor_model_config.enabled:
-            motor_accel = self._motor_accel_state.get(target_id, 0.0)
-            v_new, a_new, motor_accel_new = self.motor_model.predict(
-                throttle=throttle, v=v, motor_accel=motor_accel, dt=dt,
-            )
-            self._motor_accel_state[target_id] = motor_accel_new
         elif longitudinal_model == "simple_acceleration":
             a_new = throttle
             v_new = v + a_new * dt
@@ -1612,6 +1785,7 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         target_prediction_mode: Dict[int, bool],
         current_time_ns: int,
         target_components: Optional[Dict[int, Dict]] = None,
+        rollback_status: Optional[Dict[str, object]] = None,
     ) -> None:
         """Build and emit per-step trust/weight log data."""
         target_components = target_components or {}
@@ -1647,6 +1821,7 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             "neighbors": {},
             "final_target_weights": final_target_weights,
             "v2v_attack": self._get_v2v_attack_log_data(current_time_ns),
+            "rollback": rollback_status or self.rollback.get_status(),
         }
 
         for vehicle_id, trust_score in trust_scores.items():
@@ -1853,6 +2028,7 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         self._v2v_attack_last_event = ""
         self._v2v_attack_last_event_time_s = None
         self._v2v_attack_events = []
+        self._v2v_attack_value_snapshot = {}
 
     def __del__(self):
         if hasattr(self, "trust_weight_logger"):

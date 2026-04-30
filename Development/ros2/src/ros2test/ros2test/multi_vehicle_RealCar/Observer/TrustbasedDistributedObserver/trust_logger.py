@@ -15,6 +15,8 @@ from typing import Dict, Any, Iterable, List
 
 
 class TrustWeightLogger:
+    ATTACK_VALUE_FIELDS = ("x", "y", "theta", "velocity", "acceleration", "confidence")
+
     def __init__(self, output_dir: str = None, max_vehicles: int = 5):
         if output_dir is None:
             output_dir = os.path.dirname(os.path.abspath(__file__))
@@ -96,6 +98,14 @@ class TrustWeightLogger:
             "platoon_conf_min",
             "platoon_conf_max",
             "prediction_mode_count",
+            "rollback_enabled",
+            "rollback_triggered",
+            "rollback_total",
+            "rollback_active_count",
+            "rollback_active_vehicles",
+            "rollback_newly_flagged_count",
+            "rollback_newly_flagged",
+            "rollback_event_time_s",
             "rel_meas_used_global_count",
             "yolo_rel_meas_used_global_count",
             "is_turning",
@@ -179,6 +189,14 @@ class TrustWeightLogger:
                     f"inject_attack_attacker_{i}",
                 ]
             )
+            for field in self.ATTACK_VALUE_FIELDS:
+                columns.extend(
+                    [
+                        f"inject_attack_original_{field}_{i}",
+                        f"inject_attack_modified_{field}_{i}",
+                        f"inject_attack_delta_{field}_{i}",
+                    ]
+                )
             for k in range(max_vehicles):
                 columns.extend(
                     [
@@ -231,7 +249,21 @@ class TrustWeightLogger:
         v2v_attack = data.get("v2v_attack", {})
         if not isinstance(v2v_attack, dict):
             v2v_attack = {}
+        rollback = data.get("rollback", {})
+        if not isinstance(rollback, dict):
+            rollback = {}
         attack_by_vehicle = self._normalize_vehicle_dict(v2v_attack.get("by_vehicle", {}))
+        rollback_active = rollback.get("active_malicious", [])
+        rollback_newly_flagged = rollback.get("newly_flagged", [])
+        rollback_event_time_ns = rollback.get("event_time_ns")
+        try:
+            rollback_event_time_s = (
+                float(rollback_event_time_ns) / 1e9
+                if rollback_event_time_ns is not None
+                else nan_val
+            )
+        except (TypeError, ValueError):
+            rollback_event_time_s = nan_val
 
         row = {
             "time": float(t),
@@ -254,6 +286,18 @@ class TrustWeightLogger:
             "platoon_conf_min": nan_val,
             "platoon_conf_max": nan_val,
             "prediction_mode_count": 0,
+            "rollback_enabled": int(bool(rollback.get("enabled", False))),
+            "rollback_triggered": int(bool(rollback.get("triggered", False))),
+            "rollback_total": int(rollback.get("total_rollbacks", 0) or 0),
+            "rollback_active_count": len(rollback_active)
+            if isinstance(rollback_active, (list, tuple, set))
+            else 0,
+            "rollback_active_vehicles": self._to_csv_text(rollback_active),
+            "rollback_newly_flagged_count": len(rollback_newly_flagged)
+            if isinstance(rollback_newly_flagged, (list, tuple, set))
+            else 0,
+            "rollback_newly_flagged": self._to_csv_text(rollback_newly_flagged),
+            "rollback_event_time_s": rollback_event_time_s,
             "rel_meas_used_global_count": 0,
             "yolo_rel_meas_used_global_count": 0,
             "is_turning": int(data.get("is_turning", 0)),
@@ -373,6 +417,10 @@ class TrustWeightLogger:
             row[f"inject_attack_start_{i}"] = nan_val
             row[f"inject_attack_end_{i}"] = nan_val
             row[f"inject_attack_attacker_{i}"] = nan_val
+            for field in self.ATTACK_VALUE_FIELDS:
+                row[f"inject_attack_original_{field}_{i}"] = nan_val
+                row[f"inject_attack_modified_{field}_{i}"] = nan_val
+                row[f"inject_attack_delta_{field}_{i}"] = nan_val
 
             present = False
 
@@ -406,6 +454,21 @@ class TrustWeightLogger:
                     row[f"inject_attack_attacker_{i}"] = self._to_float_or_nan(
                         attack_data.get("attacker_id", nan_val)
                     )
+                    values = attack_data.get("values", {})
+                    if isinstance(values, dict):
+                        for field in self.ATTACK_VALUE_FIELDS:
+                            field_values = values.get(field, {})
+                            if not isinstance(field_values, dict):
+                                continue
+                            row[f"inject_attack_original_{field}_{i}"] = (
+                                self._to_float_or_nan(field_values.get("original", nan_val))
+                            )
+                            row[f"inject_attack_modified_{field}_{i}"] = (
+                                self._to_float_or_nan(field_values.get("modified", nan_val))
+                            )
+                            row[f"inject_attack_delta_{field}_{i}"] = (
+                                self._to_float_or_nan(field_values.get("delta", nan_val))
+                            )
 
             if i in direct_trust:
                 trust_val = self._to_float_or_nan(direct_trust[i])

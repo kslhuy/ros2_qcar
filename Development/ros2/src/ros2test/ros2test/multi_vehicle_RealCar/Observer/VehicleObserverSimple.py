@@ -34,7 +34,11 @@ from Observer.relative_state_estimators import (
     RelativeEstimatorFactory,
     RelativeStateEstimatorBase,
 )
-from Observer.estimation_scopes import ScopeDataRecorder
+from Observer.estimation_scopes import (
+    LOCAL_RECORD_COLUMNS,
+    ScopeDataRecorder,
+    build_fleet_record_columns,
+)
 from Observer.Obs_6d_on_track_sysID.vy_kalman_filter import LateralVelocityEKF
 
 
@@ -91,13 +95,14 @@ class VehicleObserver:
                 "TrustbasedDistributedObserver",
                 "config_trust_estimator.yaml",
             )
-            with open(config_path, "r") as f:
-                loaded = yaml.safe_load(f) or {}
+            loaded = self._load_yaml_dict(config_path)
 
             # Merge trust child config into trust estimator sections.
             try:
-                with open(trust_child_config_path, "r") as f:
-                    trust_child_loaded = yaml.safe_load(f) or {}
+                trust_child_loaded = self._load_yaml_dict(trust_child_config_path)
+                trust_child_loaded = self._apply_trust_model_source(
+                    trust_child_loaded, trust_child_config_path
+                )
                 loaded = self._merge_trust_child_into_fleet_config(
                     loaded, trust_child_loaded
                 )
@@ -115,15 +120,13 @@ class VehicleObserver:
             if selected_fleet_type:
                 self.fleet_estimator_type = selected_fleet_type
 
-            # Load fleet plotting config
-            self.fleet_plotting_config = {
-                "enabled": loaded.get("enable_plotting", False),
-                "params": loaded.get("plotting", {}),
-            }
             # Load fleet recording config
             self.fleet_recording_enabled = loaded.get("enable_recording", False)
             self.fleet_recording_overwrite = loaded.get(
                 "recording_overwrite", False
+            )
+            self.fleet_recording_max_vehicles = loaded.get(
+                "max_record_vehicles", 5
             )
 
             self.vehicle_logger.logger.info(
@@ -141,25 +144,20 @@ class VehicleObserver:
             config_path = os.path.join(
                 os.path.dirname(__file__), "config_local_estimators.yaml"
             )
-            with open(config_path, "r") as f:
-                loaded = yaml.safe_load(f)
-                self.local_config_defaults = loaded.get("local", {})
-                self.local_estimator_type = loaded.get("local_estimator_type")
+            loaded = self._load_yaml_dict(config_path)
+            loaded = self._apply_local_model_source(loaded, config_path)
+            self.local_config_defaults = loaded.get("local", {})
+            self.local_estimator_type = loaded.get("local_estimator_type")
 
-                # Load local plotting config
-                self.local_plotting_config = {
-                    "enabled": loaded.get("enable_plotting", False),
-                    "params": loaded.get("plotting", {}),
-                }
-                # Load local recording config
-                self.local_recording_enabled = loaded.get("enable_recording", False)
-                self.local_recording_overwrite = loaded.get(
-                    "recording_overwrite", False
-                )
+            # Load local recording config
+            self.local_recording_enabled = loaded.get("enable_recording", False)
+            self.local_recording_overwrite = loaded.get(
+                "recording_overwrite", False
+            )
 
-                self.vehicle_logger.logger.info(
-                    f"Loaded local estimator config: {self.local_estimator_type}"
-                )
+            self.vehicle_logger.logger.info(
+                f"Loaded local estimator config: {self.local_estimator_type}"
+            )
         except Exception as e:
             if self.vehicle_logger:
                 self.vehicle_logger.log_warning(
@@ -544,6 +542,223 @@ class VehicleObserver:
                 base[key] = copy.deepcopy(value)
         return base
 
+    @staticmethod
+    def _load_yaml_dict(config_path: str) -> Dict[str, Any]:
+        """Load a YAML file and normalize missing/non-dict content to {}."""
+        with open(config_path, "r") as f:
+            loaded = yaml.safe_load(f) or {}
+        return loaded if isinstance(loaded, dict) else {}
+
+    def _get_host_vehicle_type(self) -> str:
+        """Resolve the host vehicle type from runtime config."""
+        vehicle_cfg = None
+        if isinstance(self.config, dict):
+            vehicle_cfg = self.config.get("vehicle")
+        else:
+            vehicle_cfg = getattr(self.config, "vehicle", None)
+
+        if isinstance(vehicle_cfg, dict):
+            raw_value = vehicle_cfg.get("vehicle_type", "Qcar")
+        else:
+            raw_value = getattr(vehicle_cfg, "vehicle_type", "Qcar")
+        return self._normalize_vehicle_type_name(raw_value)
+
+    def _is_physical_qcar_host(self) -> bool:
+        """Resolve whether the current QCar host is a physical car or sim."""
+        vehicle_cfg = None
+        if isinstance(self.config, dict):
+            vehicle_cfg = self.config.get("vehicle")
+        else:
+            vehicle_cfg = getattr(self.config, "vehicle", None)
+
+        if isinstance(vehicle_cfg, dict):
+            value = vehicle_cfg.get("is_physical_qcar")
+        else:
+            value = getattr(vehicle_cfg, "is_physical_qcar", None)
+        return self._config_bool(value, False)
+
+    def _resolve_model_source_path(self, source_cfg: Any) -> str:
+        """
+        Resolve observer_model_source into a concrete YAML path.
+
+        Supported forms:
+          observer_model_source: relative/path.yaml
+          observer_model_source:
+            path: relative/path.yaml
+          observer_model_source:
+            qcar_real: extra_configs/throttle_acceleration_observer_model_real.yaml
+            qcar_sim: extra_configs/throttle_acceleration_observer_model_sim.yaml
+            limo: extra_configs/throttle_acceleration_observer_model_limo.yaml
+        """
+        if isinstance(source_cfg, str):
+            return source_cfg.strip()
+        if not isinstance(source_cfg, dict):
+            return ""
+
+        if not self._config_bool(source_cfg.get("enabled", True), True):
+            return ""
+
+        direct_path = str(source_cfg.get("path", source_cfg.get("file", ""))).strip()
+        if direct_path:
+            return direct_path
+
+        host_vehicle_type = self._get_host_vehicle_type()
+        if host_vehicle_type == "Limo":
+            limo_path = str(
+                source_cfg.get("limo", source_cfg.get("Limo", source_cfg.get("default", "")))
+            ).strip()
+            return limo_path
+
+        qcar_key = "qcar_real" if self._is_physical_qcar_host() else "qcar_sim"
+        qcar_path = str(
+            source_cfg.get(qcar_key, source_cfg.get("qcar", source_cfg.get("default", "")))
+        ).strip()
+        return qcar_path
+
+    def _load_observer_model_source(
+        self, loaded_cfg: Dict[str, Any], config_path: str
+    ) -> Dict[str, Any]:
+        """
+        Load the external observer-model YAML referenced by a config file.
+
+        The referencing YAML can set either:
+          observer_model_source: relative/or/absolute/path.yaml
+        or:
+          observer_model_source:
+            path: relative/or/absolute/path.yaml
+            enabled: true
+        """
+        if not isinstance(loaded_cfg, dict):
+            return {}
+
+        source_cfg = loaded_cfg.get("observer_model_source")
+        if not source_cfg:
+            return {}
+
+        source_path = self._resolve_model_source_path(source_cfg)
+        if not source_path:
+            return {}
+
+        if not os.path.isabs(source_path):
+            source_path = os.path.normpath(
+                os.path.join(os.path.dirname(config_path), source_path)
+            )
+
+        try:
+            return self._load_yaml_dict(source_path)
+        except Exception as exc:
+            if self.vehicle_logger:
+                self.vehicle_logger.log_warning(
+                    f"Failed to load observer model source '{source_path}': {exc}"
+                )
+            return {}
+
+    def _build_local_model_source_patch(
+        self, model_source_cfg: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Translate an observer-model YAML into local-estimator config overrides."""
+        if not isinstance(model_source_cfg, dict):
+            return {}
+
+        observer_model = model_source_cfg.get("observer_model", {})
+        if not isinstance(observer_model, dict):
+            return {}
+
+        patch: Dict[str, Any] = {"ekf": {}, "robust_kalman_net": {}}
+        ekf_patch = patch["ekf"]
+        robust_patch = patch["robust_kalman_net"]
+
+        recommended = observer_model.get("recommended_longitudinal_model")
+        if recommended is not None:
+            ekf_patch["longitudinal_model"] = copy.deepcopy(recommended)
+            robust_patch["longitudinal_model"] = copy.deepcopy(recommended)
+
+        for key in (
+            "velocity_lag_model",
+            "velocity_lag_lookup_model",
+            "accel_lag_model",
+        ):
+            value = observer_model.get(key)
+            if isinstance(value, dict):
+                ekf_patch[key] = copy.deepcopy(value)
+                robust_patch[key] = copy.deepcopy(value)
+
+        config_patch = observer_model.get("config_patch", {})
+        if isinstance(config_patch, dict):
+            local_patch = config_patch.get("local", {})
+            if isinstance(local_patch, dict):
+                self._deep_merge_dict(patch, local_patch)
+
+        if not any(
+            isinstance(section, dict) and section
+            for section in (ekf_patch, robust_patch)
+        ):
+            return {}
+        return patch
+
+    def _build_trust_model_source_patch(
+        self, model_source_cfg: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Translate an observer-model YAML into trust-fleet vehicle overrides."""
+        if not isinstance(model_source_cfg, dict):
+            return {}
+
+        observer_model = model_source_cfg.get("observer_model", {})
+        if not isinstance(observer_model, dict):
+            return {}
+
+        patch: Dict[str, Any] = {"vehicle": {}}
+        vehicle_patch = patch["vehicle"]
+
+        recommended = observer_model.get("recommended_longitudinal_model")
+        if recommended is not None:
+            vehicle_patch["longitudinal_model"] = copy.deepcopy(recommended)
+
+        for key in (
+            "velocity_lag_model",
+            "velocity_lag_lookup_model",
+            "accel_lag_model",
+        ):
+            value = observer_model.get(key)
+            if isinstance(value, dict):
+                vehicle_patch[key] = copy.deepcopy(value)
+
+        config_patch = observer_model.get("config_patch", {})
+        if isinstance(config_patch, dict):
+            trust_patch = config_patch.get("trust_based_distributed_observer", {})
+            if isinstance(trust_patch, dict):
+                self._deep_merge_dict(patch, trust_patch)
+
+        if not vehicle_patch:
+            return {}
+        return patch
+
+    def _apply_local_model_source(
+        self, loaded_cfg: Dict[str, Any], config_path: str
+    ) -> Dict[str, Any]:
+        """Merge a referenced calibration-derived model YAML into local config."""
+        merged = copy.deepcopy(loaded_cfg) if isinstance(loaded_cfg, dict) else {}
+        model_source_cfg = self._load_observer_model_source(merged, config_path)
+        patch = self._build_local_model_source_patch(model_source_cfg)
+        if patch:
+            local_section = merged.setdefault("local", {})
+            if not isinstance(local_section, dict):
+                local_section = {}
+                merged["local"] = local_section
+            self._deep_merge_dict(local_section, patch)
+        return merged
+
+    def _apply_trust_model_source(
+        self, trust_cfg: Dict[str, Any], config_path: str
+    ) -> Dict[str, Any]:
+        """Merge a referenced calibration-derived model YAML into trust config."""
+        merged = copy.deepcopy(trust_cfg) if isinstance(trust_cfg, dict) else {}
+        model_source_cfg = self._load_observer_model_source(merged, config_path)
+        patch = self._build_trust_model_source_patch(model_source_cfg)
+        if patch:
+            self._deep_merge_dict(merged, patch)
+        return merged
+
     def _merge_trust_child_into_fleet_config(
         self, fleet_cfg: Dict[str, Any], trust_cfg: Dict[str, Any]
     ) -> Dict[str, Any]:
@@ -684,25 +899,9 @@ class VehicleObserver:
                     output_dir="scope_recordings/local"
                 )
 
-                # Define local columns
-                local_columns = [
-                    "x",
-                    "y",
-                    "theta",
-                    "velocity",
-                    "acceleration",
-                    "x_gps",
-                    "y_gps",
-                    "theta_gps",  # GPS reference
-                    "steering",
-                    "throttle",  # Control inputs
-                    "v_ref",  # Reference velocity
-                    "gps_valid",  # GPS validity flag
-                ]
-
                 # Start recording with vehicle ID prefix
                 self.local_recorder.start(
-                    columns=local_columns,
+                    columns=LOCAL_RECORD_COLUMNS,
                     name=f"local_V{self.vehicle_id}",
                     overwrite=self.local_recording_overwrite,
                 )
@@ -712,30 +911,15 @@ class VehicleObserver:
 
             # Initialize Fleet Recorder
             if self.fleet_recording_enabled:
-                # Fleet recorder needs max_vehicles
-                max_vehicles = self.fleet_plotting_config["params"].get(
-                    "max_vehicles_plot", 5
-                )
+                # Fleet recorder needs a fixed column budget for flattened CSV output
+                max_vehicles = int(getattr(self, "fleet_recording_max_vehicles", 5))
                 self.fleet_recorder = ScopeDataRecorder(
                     output_dir="scope_recordings/fleet", max_vehicles=max_vehicles
                 )
 
-                # Define fleet columns (using helper for flattened names)
-                fleet_columns = ["consensus_error"]
-
-                # Add flattened state columns: fleet_x_0, fleet_y_0, etc.
-                state_names = ["x", "y", "theta", "v", "a"]
-                for v_idx in range(max_vehicles):
-                    for s_name in state_names:
-                        fleet_columns.append(f"fleet_{s_name}_{v_idx}")
-
-                # Add trust score columns
-                for v_idx in range(max_vehicles):
-                    fleet_columns.append(f"trust_{v_idx}")
-
                 # Start recording with vehicle ID prefix
                 self.fleet_recorder.start(
-                    columns=fleet_columns,
+                    columns=build_fleet_record_columns(max_vehicles),
                     name=f"fleet_V{self.vehicle_id}",
                     overwrite=self.fleet_recording_overwrite,
                 )
@@ -1470,6 +1654,37 @@ class VehicleObserver:
         except Exception as e:
             self.vehicle_logger.log_error("Local observer update error", e)
             return self._get_last_known_state()
+
+    def get_local_sensor_attack_status(self) -> dict:
+        """Expose local sensor attack status when supported by the active estimator."""
+        estimator = self.get_local_estimator()
+        default_status = {
+            "local_sensor_attack_supported": False,
+            "local_sensor_attack_enabled": False,
+            "local_sensor_attack_active": False,
+            "local_sensor_attack_branch_types": "",
+            "local_sensor_attack_gps_type": "",
+            "local_sensor_attack_remaining_steps": 0,
+            "local_sensor_attack_intensity": 0.0,
+        }
+        if estimator is None or not hasattr(estimator, "get_sensor_attack_status"):
+            return default_status
+
+        try:
+            status = estimator.get_sensor_attack_status()
+        except Exception as e:
+            if self.vehicle_logger:
+                self.vehicle_logger.log_warning(
+                    f"Failed to read local sensor attack status: {e}"
+                )
+            return default_status
+
+        if not isinstance(status, dict):
+            return default_status
+
+        merged_status = default_status.copy()
+        merged_status.update(status)
+        return merged_status
 
     def _update_fleet_observer_internal(self, dt: float):
         """
@@ -2227,16 +2442,30 @@ class VehicleObserver:
 
     def get_calibration_sample(self) -> Optional[np.ndarray]:
         """
-        Build one calibration sample [v, throttle, steering, yaw_rate, ax, ay, az].
+        Build one calibration sample for passive online calibration.
 
         Used by CalibratingState to record data during active calibration
         sequences (throttle-velocity, steering-curvature, throttle-acceleration).
         """
         with self.lock:
+            x = float(self.local_state[0]) if len(self.local_state) > 0 else 0.0
+            y = float(self.local_state[1]) if len(self.local_state) > 1 else 0.0
+            theta = float(self.local_state[2]) if len(self.local_state) > 2 else 0.0
             v = (
                 float(self.local_state[3])
                 if len(self.local_state) > 3
                 else float(self.sensor_data.get("motor_tach", 0.0))
+            )
+            v_raw = float(
+                self.sensor_data.get(
+                    "motor_tach_raw",
+                    self.sensor_data.get("motor_tach", v),
+                )
+            )
+            a_ref = (
+                float(self.local_state[4])
+                if len(self.local_state) > 4
+                else float(getattr(self.local_estimator, "acceleration_estimate", 0.0))
             )
             throttle = float(self.control_input.get("throttle", 0.0))
             steering = float(self.control_input.get("steering", 0.0))
@@ -2247,8 +2476,20 @@ class VehicleObserver:
             )
 
             sample = np.array(
-                [v, throttle, steering, yaw_rate,
-                 float(accel[0]), float(accel[1]), float(accel[2])],
+                [
+                    v,
+                    throttle,
+                    steering,
+                    yaw_rate,
+                    float(accel[0]),
+                    float(accel[1]),
+                    float(accel[2]),
+                    x,
+                    y,
+                    theta,
+                    a_ref,
+                    v_raw,
+                ],
                 dtype=np.float32,
             )
             if not np.all(np.isfinite(sample)):
@@ -2522,77 +2763,6 @@ class VehicleObserver:
                 self.fleet_states = self.fleet_estimator.get_fleet_states()
 
 
-
-    def sample_scopes(self, t: float) -> None:
-        """
-        Sample current estimator data to visualization scopes.
-        Call this after update_observer() in the control loop.
-
-        Args:
-            t: Current time in seconds (relative to experiment start)
-        """
-        if not hasattr(self, "scope_manager") or self.scope_manager is None:
-            return
-
-        try:
-            # Build combined data dict for all presets
-            data = {
-                # Local state
-                "x": float(self.local_state[0]),
-                "y": float(self.local_state[1]),
-                "theta": float(self.local_state[2]),
-                "velocity": float(self.local_state[3]),
-                "acceleration": float(self.local_state[4])
-                if len(self.local_state) > 4
-                else 0.0,
-                # GPS reference (if available)
-                "x_gps": float(self.sensor_data["gps_position"][0])
-                if self.gps_valid
-                else float(self.local_state[0]),
-                "y_gps": float(self.sensor_data["gps_position"][1])
-                if self.gps_valid
-                else float(self.local_state[1]),
-                "theta_gps": float(self.sensor_data["gps_position"][2])
-                if self.gps_valid
-                else float(self.local_state[2]),
-                # Control inputs
-                "steering": float(self.control_input.get("steering", 0.0)),
-                "throttle": float(self.control_input.get("throttle", 0.0)),
-                "v_ref": 0.0,  # Can be passed from vehicle_logic if needed
-                # Fleet states
-                "fleet_states": self.fleet_states.copy(),
-                "consensus_error": 0.0,  # Can be computed by fleet estimator
-                "trust_scores": {},  # Can be populated by trust-based estimators
-            }
-
-            self.scope_manager.sample(t, data)
-
-        except Exception as e:
-            # Non-blocking - don't interrupt main loop on scope errors
-            pass
-
-    def stop_scopes(self) -> None:
-        """Stop visualization scopes."""
-        if hasattr(self, "scope_manager") and self.scope_manager is not None:
-            self.scope_manager.stop()
-            self.scope_manager = None
-            self.vehicle_logger.logger.info("Estimation scopes stopped")
-
-    def start_scope_recording(self) -> Optional[str]:
-        """
-        Start recording scope data to file.
-
-        Returns:
-            Path to recording file, or None if failed
-        """
-        if hasattr(self, "scope_manager") and self.scope_manager is not None:
-            return self.scope_manager.start_recording()
-        return None
-
-    def stop_scope_recording(self) -> None:
-        """Stop recording scope data."""
-        if hasattr(self, "scope_manager") and self.scope_manager is not None:
-            self.scope_manager.stop_recording()
 
     def stop(self):
         """Stop all observer activities and close recorders."""
