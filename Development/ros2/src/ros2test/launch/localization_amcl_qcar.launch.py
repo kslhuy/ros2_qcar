@@ -4,7 +4,7 @@ from ament_index_python.packages import get_package_share_directory
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, TimerAction
-from launch.conditions import IfCondition
+from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -17,11 +17,16 @@ def generate_launch_description():
 
     default_map_yaml = '/home/nvidia/Documents/qcar2/Development/ros2/src/ros2test/map/my_new_map2.yaml'
     default_params_file = os.path.join(qcar2_share, 'config', 'qcar2_slam_and_nav.yaml')
+    default_ekf_params_file = os.path.join(ros2test_share, 'config', 'qcar_amcl_ekf.yaml')
+    default_rf2o_params_file = os.path.join(ros2test_share, 'config', 'qcar_rf2o.yaml')
     rviz_config = os.path.join(ros2test_share, 'rviz2config', 'conf.rviz')
 
     map_yaml = LaunchConfiguration('map_yaml')
     params_file = LaunchConfiguration('params_file')
+    ekf_params_file = LaunchConfiguration('ekf_params_file')
+    rf2o_params_file = LaunchConfiguration('rf2o_params_file')
     use_sim_time = LaunchConfiguration('use_sim_time')
+    use_fused_odom = LaunchConfiguration('use_fused_odom')
     run_rviz = LaunchConfiguration('run_rviz')
     rviz_log_level = LaunchConfiguration('rviz_log_level')
     localization_start_delay_sec = LaunchConfiguration('localization_start_delay_sec')
@@ -34,6 +39,20 @@ def generate_launch_description():
         param_rewrites={
             'use_sim_time': use_sim_time,
             'yaml_filename': map_yaml,
+        },
+        convert_types=True,
+    )
+    configured_ekf_params = RewrittenYaml(
+        source_file=ekf_params_file,
+        param_rewrites={
+            'use_sim_time': use_sim_time,
+        },
+        convert_types=True,
+    )
+    configured_rf2o_params = RewrittenYaml(
+        source_file=rf2o_params_file,
+        param_rewrites={
+            'use_sim_time': use_sim_time,
         },
         convert_types=True,
     )
@@ -52,11 +71,46 @@ def generate_launch_description():
     )
 
     dead_reckoning_odom = Node(
+        condition=UnlessCondition(use_fused_odom),
         package='ros2test',
         executable='qcar_dead_reckoning_odom',
         name='qcar_dead_reckoning_odom',
         output='screen',
         parameters=[{'use_sim_time': use_sim_time}],
+    )
+
+    wheel_imu_odom = Node(
+        condition=IfCondition(use_fused_odom),
+        package='ros2test',
+        executable='qcar_dead_reckoning_odom',
+        name='qcar_dead_reckoning_odom',
+        output='screen',
+        parameters=[{
+            'use_sim_time': use_sim_time,
+            'odom_frame_id': 'odom',
+            'base_frame_id': 'base_link',
+            'odom_topic': '/odom/wheel',
+            'publish_tf': False,
+            'publish_rate': 80.0,
+        }],
+    )
+
+    rf2o_node = Node(
+        condition=IfCondition(use_fused_odom),
+        package='rf2o_laser_odometry',
+        executable='rf2o_laser_odometry_node',
+        name='rf2o_laser_odometry',
+        output='screen',
+        parameters=[configured_rf2o_params],
+    )
+
+    ekf_node = Node(
+        condition=IfCondition(use_fused_odom),
+        package='ros2test',
+        executable='qcar_ekf_odom_fusion',
+        name='ekf_filter_node',
+        output='screen',
+        parameters=[configured_ekf_params],
     )
 
     map_server_node = Node(
@@ -131,9 +185,24 @@ def generate_launch_description():
             description='Full path to the ROS2 parameters file for map_server and AMCL',
         ),
         DeclareLaunchArgument(
+            'ekf_params_file',
+            default_value=default_ekf_params_file,
+            description='Full path to the EKF odom-fusion parameters file.',
+        ),
+        DeclareLaunchArgument(
+            'rf2o_params_file',
+            default_value=default_rf2o_params_file,
+            description='Full path to the RF2O laser odometry parameters file.',
+        ),
+        DeclareLaunchArgument(
             'use_sim_time',
             default_value='false',
             description='Use simulation clock if true',
+        ),
+        DeclareLaunchArgument(
+            'use_fused_odom',
+            default_value='false',
+            description='If true, fuse wheel/IMU and RF2O odom for AMCL. If false, use simple dead reckoning only and avoid requiring RF2O.',
         ),
         DeclareLaunchArgument(
             'run_rviz',
@@ -173,6 +242,9 @@ def generate_launch_description():
         qcar2_launch,
         fixed_lidar_frame,
         dead_reckoning_odom,
+        wheel_imu_odom,
+        rf2o_node,
+        ekf_node,
         delayed_localization_stack,
         initial_pose_helper,
         rviz_node,

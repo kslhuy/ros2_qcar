@@ -59,11 +59,11 @@ longitudinal_controller_type: 'cacc'
 
 command_smoothing:
   longitudinal:
-    alpha: 0.1
+    alpha: 0.0
     rise_rate: 0.9
     fall_rate: 1.0
   lateral:
-    alpha: 0.01
+    alpha: 0.0
     rise_rate: 1.0
     fall_rate: 1.0
 
@@ -85,7 +85,7 @@ cacc:
   # respond when the leader changes acceleration faster/slower than the
   # follower. Set to 0 (default) to ignore acceleration information.
   leader_acceleration_weight: 1.0
-  target_velocity_weight: 0.6   # Extra straight-road catch-up toward v_ref when the gap is open. Up = reaches cruise speed faster. Down = follows the leader more conservatively.
+  target_velocity_weight: 0.0   # Extra straight-road catch-up toward v_ref when the gap is open. Up = reaches cruise speed faster. Down = follows the leader more conservatively.
   target_velocity_gap_window: 0.15  # [m] Extra gap needed before the cruise-speed bias becomes strong. Up = waits for a larger safe gap. Down = starts accelerating sooner.
   target_velocity_turn_scale: 0.30  # Scale applied to that cruise-speed bias in turns. Up = more push remains in corners. Down = corners stay more conservative.
   spacing_deadband: 0.15      # Spacing error deadband in meters. Prevents micro-oscillations and throttle twitching when the follower is already very close to the target gap distance.
@@ -166,19 +166,19 @@ pure_pursuit:
   curvature_threshold: 0.05   # Lane curvature threshold for turn detection
   turn_lookahead_offset: 0.2 # Lateral offset in turns (meters)
   turn_lookahead_gain: 1.4   # Lookahead distance multiplier in turns
-  turn_preview_cap: 0.01     # [m] Max forward preview added in turns. Up = smoother/wider arc, but more corner cutting. Down = stays closer to the leader's exact arc.
+  turn_preview_cap: 0.0     # [m] Max forward preview added in turns. Up = smoother/wider arc, but more corner cutting. Down = stays closer to the leader's exact arc.
   heading_alignment_gain: 0.0   # 0.0 = old lateral behavior. Increase only if first heading capture is too slow.
-  heading_alignment_window_deg: 45.0  # Heading-error range over which the extra alignment term ramps in.
+  heading_alignment_window_deg: 0.0  # Heading-error range over which the extra alignment term ramps in.
   heading_preview_cap: 0.0      # 0.0 = no extra forward preview from heading mismatch. Increase cautiously; too high causes corner cutting.
 
 # Map-based PP_Controller mode parameters (used when lateral_controller_type: 'pp_map')
 pp_map:
   sample_ds: 0.02                 # [m] Spacing between resampled path points. Up = fewer/coarser points. Down = denser/more detailed path.
-  desired_speed: 0.55             # [m/s] Base cruise speed used to build the map speed profile. Up = faster almost everywhere. Down = slower everywhere.
-  min_speed: 0.4                  # [m/s] Lowest speed the profile is allowed to use in turns. Up = less slowing in corners. Down = more slowing in corners.
+  desired_speed: 0.5             # [m/s] Base cruise speed used to build the map speed profile. Up = faster almost everywhere. Down = slower everywhere.
+  min_speed: 0.3                  # [m/s] Lowest speed the profile is allowed to use in turns. Up = less slowing in corners. Down = more slowing in corners.
   kappa_speed_gain: 1.0           # How strongly curvature reduces speed. Up = slower in bends. Down = keeps more speed in bends.
   max_speed: 0.65                 # [m/s] Maximum speed allowed by the profile. Up = higher straight-line speed. Down = lower overall cap.
-  hard_turn_kappa: 0.55           # [1/m] Curvature threshold for a very sharp turn. Up = fewer turns treated as hard. Down = more turns treated as hard.
+  hard_turn_kappa: 0.58           # [1/m] Curvature threshold for a very sharp turn. Up = fewer turns treated as hard. Down = more turns treated as hard.
   hard_turn_speed: 0.36           # [m/s] Speed cap used once a turn is classified as hard. Up = faster through hairpins. Down = safer/slower hairpins.
   t_clip_min: 0.5                 # [m] Minimum L1 lookahead. Up = smoother, less twitchy, but weaker correction. Down = more aggressive correction.
   t_clip_max: 1.0                 # [m] Maximum L1 lookahead. Up = smoother/wider steering. Down = tighter/more local steering.

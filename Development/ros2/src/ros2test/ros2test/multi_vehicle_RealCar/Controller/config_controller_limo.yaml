@@ -137,9 +137,9 @@ pure_pursuit:
   curvature_threshold: 0.05
   turn_lookahead_offset: 0.18
   turn_lookahead_gain: 1.3
-  turn_preview_cap: 0.03   # [m] Max forward preview added in turns. Up = smoother/wider arc, but more corner cutting. Down = stays closer to the leader's exact arc.
+  turn_preview_cap: 0.0   # [m] Max forward preview added in turns. Up = smoother/wider arc, but more corner cutting. Down = stays closer to the leader's exact arc.
   heading_alignment_gain: 0.0
-  heading_alignment_window_deg: 45.0
+  heading_alignment_window_deg: 0.0
   heading_preview_cap: 0.0
 
 pp_map:

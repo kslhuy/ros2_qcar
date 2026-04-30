@@ -29,6 +29,9 @@ class QCarDeadReckoningOdom(Node):
                 ('encoder_counts_per_rev', 720.0),
                 ('wheel_radius', 0.033),
                 ('pin_to_spur_ratio', 0.09536679536679536),
+                ('linear_velocity_deadband_mps', 0.01),
+                ('angular_velocity_deadband_rad_s', 0.02),
+                ('yaw_rate_ema_alpha', 0.25),
             ],
         )
 
@@ -38,6 +41,16 @@ class QCarDeadReckoningOdom(Node):
         self.imu_topic = str(self.get_parameter('imu_topic').value)
         self.odom_topic = str(self.get_parameter('odom_topic').value)
         self.publish_tf = bool(self.get_parameter('publish_tf').value)
+        self.linear_velocity_deadband_mps = abs(
+            float(self.get_parameter('linear_velocity_deadband_mps').value)
+        )
+        self.angular_velocity_deadband_rad_s = abs(
+            float(self.get_parameter('angular_velocity_deadband_rad_s').value)
+        )
+        self.yaw_rate_ema_alpha = min(
+            max(float(self.get_parameter('yaw_rate_ema_alpha').value), 0.0),
+            1.0,
+        )
 
         publish_rate = max(float(self.get_parameter('publish_rate').value), 1.0)
         encoder_counts_per_rev = float(self.get_parameter('encoder_counts_per_rev').value)
@@ -76,13 +89,24 @@ class QCarDeadReckoningOdom(Node):
 
     def _joint_callback(self, msg: JointState):
         if msg.velocity:
-            self.linear_velocity = float(msg.velocity[0]) * self.cps_to_mps
+            linear_velocity = float(msg.velocity[0]) * self.cps_to_mps
+            if abs(linear_velocity) < self.linear_velocity_deadband_mps:
+                linear_velocity = 0.0
+            self.linear_velocity = linear_velocity
             if not self._joint_logged:
                 self._joint_logged = True
                 self.get_logger().info("QCar joint state connected for odometry")
 
     def _imu_callback(self, msg: Imu):
-        self.yaw_rate = float(msg.angular_velocity.z)
+        yaw_rate = float(msg.angular_velocity.z)
+        if abs(yaw_rate) < self.angular_velocity_deadband_rad_s:
+            yaw_rate = 0.0
+
+        alpha = self.yaw_rate_ema_alpha
+        self.yaw_rate = alpha * yaw_rate + (1.0 - alpha) * self.yaw_rate
+        if abs(self.yaw_rate) < self.angular_velocity_deadband_rad_s:
+            self.yaw_rate = 0.0
+
         if not self._imu_logged:
             self._imu_logged = True
             self.get_logger().info("QCar IMU connected for odometry")
@@ -102,6 +126,13 @@ class QCarDeadReckoningOdom(Node):
             dt = 0.5
 
         self.last_update_time = now
+
+        if (
+            abs(self.linear_velocity) < self.linear_velocity_deadband_mps
+            and abs(self.yaw_rate) < self.angular_velocity_deadband_rad_s
+        ):
+            self.linear_velocity = 0.0
+            self.yaw_rate = 0.0
 
         self.yaw += self.yaw_rate * dt
         self.yaw = math.atan2(math.sin(self.yaw), math.cos(self.yaw))
