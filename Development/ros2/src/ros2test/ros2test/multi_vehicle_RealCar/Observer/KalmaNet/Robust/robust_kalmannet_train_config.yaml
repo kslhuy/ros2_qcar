@@ -160,6 +160,15 @@ augmentation:
   # false = train on clean data only.
   enabled: true
 
+  # Available synthetic attack types:
+  # bias     = add constant offset
+  # scale    = multiply signal
+  # freeze   = hold signal constant
+  # noise    = add random noise
+  # ramp     = add drifting corruption
+  # zero_out = set signal to zero
+  attack_types: ["bias", "scale", "freeze", "noise", "ramp", "zero_out"]
+
   # Single control for the augmentation curriculum:
   # measurement_only = attack updater measurements/GPS only
   # mixed            = use both raw-branch and measurement attacks
@@ -177,15 +186,6 @@ augmentation:
 
   # Independent probability of directly attacking updater measurement channels [psi, v].
   direct_meas_attack_prob: 0.35
-
-  # Available synthetic attack types:
-  # bias     = add constant offset
-  # scale    = multiply signal
-  # freeze   = hold signal constant
-  # noise    = add random noise
-  # ramp     = add drifting corruption
-  # zero_out = set signal to zero
-  attack_types: ["bias", "scale", "freeze", "noise", "ramp", "zero_out"]
 
   # Maximum number of sensor branches attacked at once.
   max_branches_attacked: 2

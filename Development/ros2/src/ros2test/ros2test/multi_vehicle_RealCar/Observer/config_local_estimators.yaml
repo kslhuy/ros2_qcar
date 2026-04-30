@@ -30,6 +30,7 @@ local:
   # ---------------------------------------------------------------------
   common:
     v_lpf_alpha: 0.15  # LPF coefficient for motor_tach applied in VehicleObserver.
+    local_output_lpf_alpha: 0.25  # LPF coefficient applied to final local state [x, y, theta, v, a] before controller/V2V use. Set 1.0 to disable.
     accel_ema_alpha: 0.25  # EMA coefficient for IMU acceleration applied in VehicleObserver.
     gps_valid_hold_mode: adaptive  # adaptive = derive freshness window from measured GPS packet interval; fixed = use gps_valid_hold_seconds below.
     gps_valid_hold_seconds: 0.20  # Fixed fallback only; for 5 Hz GPS this should not be below the packet interval.

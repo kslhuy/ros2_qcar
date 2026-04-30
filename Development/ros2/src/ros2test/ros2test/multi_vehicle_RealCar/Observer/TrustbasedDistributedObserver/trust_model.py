@@ -61,11 +61,13 @@ class TrustConfig:
     distributed_trust_contribution_caps: Tuple[float, ...] = (
         4.0,
         4.0,
-        3.0,
+        1.5,  # Reduced from 3.0 to cap the impact of theta errors during turns
         2.0,
         0.2,
     )
     distributed_trust_accel_weight: float = 0.05
+    distributed_self_turn_distance_gain: float = 2.0
+    distributed_self_turn_velocity_gain: float = 1.0
 
     # Dirichlet parameters
     num_trust_levels: int = 5
@@ -93,7 +95,7 @@ class TrustConfig:
     distributed_trust_covariance_diag: Tuple[float, ...] = (
         1.5,
         1.0,
-        0.5,
+        1.8,  # Increased from 0.5 to reduce sensitivity to theta
         0.5,
         0.25,
     )
@@ -124,6 +126,13 @@ class TrustConfig:
     max_acceleration: float = 3.5
     max_deceleration: float = -6.0
     max_jerk: float = 6.0
+    distance_physical_violation_ratio: float = 1.5
+    distance_source_switch_grace_ratio: float = 3.0
+    severe_v2v_distance_violation_ratio: float = 2.5
+    severe_v2v_distance_score_cap: float = 0.05
+    local_pose_distance_tolerance: float = 0.5
+    local_pose_distance_relative_tolerance: float = 0.1
+    severe_local_pose_distance_ratio: float = 2.0
     temporal_pos_tolerance_m: float = 2.0
     temporal_vel_tolerance: float = 1.0
 
@@ -139,10 +148,8 @@ class TrustConfig:
     gamma_sigmoid_thresh: float = 3.0
     gamma_chi2_dof_local: int = 2
     gamma_chi2_dof_global: int = 5
-
-    # Minimum longitudinal distance limit (meters) for preceding/following cross-check
-    minimum_longitudinal_distance: float = 0.1
-
+    gamma_self_penalty_floor: float = 0.35
+    gamma_self_penalty_exponent: float = 1.0
 
     @classmethod
     def from_dict(cls, d: dict) -> "TrustConfig":
@@ -286,6 +293,7 @@ class TriPTrustModel:
 
         # Per-vehicle history for dynamic scoring
         self.previous_states: Dict[int, VehicleData] = {}
+        self.recent_relative_measurements: Dict[int, Dict[str, float]] = {}
         self.distance_buffers: Dict[int, np.ndarray] = defaultdict(lambda: np.zeros(5))
         self.buffer_size = 5
         self.previous_host_state: Optional[VehicleData] = None
@@ -336,6 +344,11 @@ class TriPTrustModel:
 
         self._update_host_state_cache(host_state, current_time_ns)
         target_id = target_data.vehicle_id
+        self._update_relative_measurement_memory(
+            host_state=host_state,
+            target_data=target_data,
+            current_time_ns=current_time_ns,
+        )
 
         # Initialize or get existing trust score
         if target_id not in self.trust_scores:
@@ -353,6 +366,10 @@ class TriPTrustModel:
 
         # 2. Distance Score
         trust.distance_score = self._calculate_distance_score(host_state, target_data)
+        pose_distance_score, severe_local_pose_mismatch = (
+            self._calculate_local_pose_distance_score(host_state, target_data)
+        )
+        trust.distance_score = min(trust.distance_score, pose_distance_score)
 
         # 3. Acceleration Score
         trust.acceleration_score = self._calculate_acceleration_score(
@@ -396,6 +413,13 @@ class TriPTrustModel:
         # === Calculate Local Trust Sample (gamma_local) ===
         # Weighted combination of component scores
         trust.local_trust_sample = self._compute_local_trust_sample(trust)
+        if severe_local_pose_mismatch:
+            # A strong contradiction between an independent relative-distance
+            # measurement and the reported pose should show up directly in
+            # local trust, not only in distributed trust.
+            trust.local_trust_sample = min(
+                trust.local_trust_sample, trust.distance_score
+            )
 
         # === Calculate Global Trust Sample (gamma_cross) ===
         # Paper-style: gamma_host * gamma_local_peer (with gamma_self modulator)
@@ -678,6 +702,159 @@ class TriPTrustModel:
             timestamp_ns=int(current_time_ns),
         )
 
+    @staticmethod
+    def _state_xy(state) -> Tuple[float, float]:
+        """Extract planar position from either a host-state dict or VehicleData."""
+        if isinstance(state, dict):
+            return (
+                float(state.get("x", state.get(0, 0.0))),
+                float(state.get("y", state.get(1, 0.0))),
+            )
+        return float(state.x), float(state.y)
+
+    @staticmethod
+    def _state_speed_theta(state) -> Tuple[float, float]:
+        """Extract speed and heading from either a host-state dict or VehicleData."""
+        if isinstance(state, dict):
+            velocity = float(state.get("velocity", state.get("v", state.get(3, 0.0))))
+            theta = float(state.get("theta", state.get(2, 0.0)))
+            return velocity, theta
+        return float(state.velocity), float(state.theta)
+
+    def _velocity_vector_xy(self, state) -> np.ndarray:
+        """Map scalar speed and heading into a planar velocity vector."""
+        speed, theta = self._state_speed_theta(state)
+        return np.array([speed * np.cos(theta), speed * np.sin(theta)], dtype=float)
+
+    def _estimate_radial_relative_velocity(self, host_state, target_state) -> float:
+        """
+        Estimate relative speed along the host-target line of sight.
+
+        Falls back to scalar speed difference only when the relative position
+        is degenerate.
+        """
+        host_x, host_y = self._state_xy(host_state)
+        target_x, target_y = self._state_xy(target_state)
+        los = np.array([target_x - host_x, target_y - host_y], dtype=float)
+        los_norm = float(np.linalg.norm(los))
+
+        target_speed, _ = self._state_speed_theta(target_state)
+        host_speed, _ = self._state_speed_theta(host_state)
+        if los_norm <= 1e-6:
+            return float(target_speed - host_speed)
+
+        los_hat = los / los_norm
+        return float(
+            np.dot(
+                self._velocity_vector_xy(target_state) - self._velocity_vector_xy(host_state),
+                los_hat,
+            )
+        )
+
+    @staticmethod
+    def _has_measured_relative_distance(state: VehicleData) -> bool:
+        """True when the relative distance came from an external sensor measurement."""
+        measured_distance = float(getattr(state, "distance_from_host", float("nan")))
+        return bool(np.isfinite(measured_distance) and measured_distance > 0.0)
+
+    @staticmethod
+    def _relative_distance_mode(state: VehicleData) -> str:
+        """Coarse source mode used to detect measured/fallback switching."""
+        return "measured" if TriPTrustModel._has_measured_relative_distance(state) else "fallback_geometry"
+
+    @staticmethod
+    def _has_measured_relative_velocity(state: VehicleData) -> bool:
+        """True when the relative velocity came from an independent measurement."""
+        measured_rel_velocity = float(
+            getattr(state, "relative_velocity_from_host", float("nan"))
+        )
+        return bool(np.isfinite(measured_rel_velocity))
+
+    def _relative_acceleration_limit(self) -> float:
+        """
+        Conservative bound on host-target relative acceleration magnitude.
+
+        Both vehicles may accelerate in opposite directions, so the relative
+        limit is twice the single-vehicle bound.
+        """
+        accel_limit = max(
+            abs(float(self.config.max_acceleration)),
+            abs(float(self.config.max_deceleration)),
+        )
+        return float(2.0 * accel_limit)
+
+    def _update_relative_measurement_memory(
+        self, host_state: Dict, target_data: VehicleData, current_time_ns: int
+    ) -> None:
+        """Persist the latest independent host-target relative measurement."""
+        if not self._has_measured_relative_distance(target_data):
+            return
+
+        measurement_time_ns = int(
+            getattr(target_data, "relative_measurement_timestamp_ns", 0) or 0
+        )
+        if measurement_time_ns <= 0:
+            measurement_time_ns = int(current_time_ns)
+
+        if self._has_measured_relative_velocity(target_data):
+            relative_velocity = float(target_data.relative_velocity_from_host)
+        else:
+            relative_velocity = float(
+                self._estimate_radial_relative_velocity(host_state, target_data)
+            )
+
+        self.recent_relative_measurements[int(target_data.vehicle_id)] = {
+            "distance": float(target_data.distance_from_host),
+            "relative_velocity": (
+                relative_velocity if np.isfinite(relative_velocity) else float("nan")
+            ),
+            "timestamp_ns": float(measurement_time_ns),
+            "source": str(getattr(target_data, "relative_measurement_source", "")),
+        }
+
+    def _resolve_pose_distance_reference(
+        self, host_state: Dict, target_data: VehicleData
+    ) -> Tuple[float, bool, float]:
+        """
+        Resolve the best independent distance reference for pose validation.
+
+        Prefers the current-cycle independent measurement. When that is absent,
+        falls back to the most recent remembered independent measurement and
+        propagates it forward using the remembered relative velocity.
+        """
+        measured_distance = float(getattr(target_data, "distance_from_host", float("nan")))
+        if np.isfinite(measured_distance) and measured_distance > 0.0:
+            return measured_distance, True, 0.0
+
+        remembered = self.recent_relative_measurements.get(int(target_data.vehicle_id))
+        if not remembered:
+            return float("nan"), False, float("nan")
+
+        remembered_distance = float(remembered.get("distance", float("nan")))
+        if not np.isfinite(remembered_distance) or remembered_distance <= 0.0:
+            return float("nan"), False, float("nan")
+
+        current_time_ns = int(
+            getattr(self.current_host_state, "timestamp_ns", 0)
+            or getattr(target_data, "timestamp_ns", 0)
+            or 0
+        )
+        measurement_time_ns = int(remembered.get("timestamp_ns", 0.0) or 0)
+        if current_time_ns <= 0 or measurement_time_ns <= 0:
+            return remembered_distance, True, 0.0
+
+        age_s = max((float(current_time_ns) - float(measurement_time_ns)) / 1e9, 0.0)
+        if age_s > float(self.config.max_message_age_s):
+            return float("nan"), False, float("nan")
+
+        remembered_rel_velocity = float(
+            remembered.get("relative_velocity", float("nan"))
+        )
+        if np.isfinite(remembered_rel_velocity):
+            remembered_distance += remembered_rel_velocity * age_s
+
+        return max(remembered_distance, 0.1), True, age_s
+
     def _calculate_distance_score(
         self, host_state: Dict, target_data: VehicleData
     ) -> float:
@@ -690,14 +867,18 @@ class TriPTrustModel:
         target_id = target_data.vehicle_id
 
         # Prefer measured relative distance (e.g., YOLO/radar) when available.
-        d_current = self._resolve_relative_distance(host_state, target_data)
+        d_current, is_measured = self._resolve_relative_distance(host_state, target_data)
+        current_source_mode = self._relative_distance_mode(target_data)
 
         # Get previous state if available
         if target_id in self.previous_states:
             prev = self.previous_states[target_id]
+            prev_is_measured = self._has_measured_relative_distance(prev)
+            prev_source_mode = self._relative_distance_mode(prev)
+            source_switched = current_source_mode != prev_source_mode
 
             # Previous distance
-            if np.isfinite(float(prev.distance_from_host)) and float(prev.distance_from_host) > 0.0:
+            if prev_is_measured:
                 d_prev = float(prev.distance_from_host)
             else:
                 if self.previous_host_state is not None and self.previous_host_state.timestamp_ns > 0:
@@ -710,26 +891,140 @@ class TriPTrustModel:
                 prev_dy = float(prev.y) - prev_host_y
                 d_prev = float(np.hypot(prev_dx, prev_dy))
 
-            # Expected distance change based on relative velocity
-            v_target = target_data.velocity
-            v_host = host_state.get("velocity", 0.0)
-            v_rel = v_target - v_host
+            # Expected distance change based on relative velocity. Prefer the
+            # independent relative-velocity measurement when available so a
+            # forged target speed/pose does not dominate the local distance
+            # score.
+            v_rel = self._resolve_relative_velocity(host_state, target_data)
+
+            if self._has_measured_relative_velocity(prev):
+                v_rel_prev = float(prev.relative_velocity_from_host)
+            elif self.previous_host_state is not None and self.previous_host_state.timestamp_ns > 0:
+                v_rel_prev = self._estimate_radial_relative_velocity(
+                    self.previous_host_state, prev
+                )
+            else:
+                v_rel_prev = v_rel
 
             # Approximate dt based on timestamps or default
-            dt = 0.1  # Default 100ms update rate
-            d_expected = d_prev + v_rel * dt
+            if prev.timestamp_ns > 0 and target_data.timestamp_ns > prev.timestamp_ns:
+                dt = max((target_data.timestamp_ns - prev.timestamp_ns) / 1e9, 0.01)
+            else:
+                dt = 0.1  # Default 100ms update rate
+
+            # Robust expectation: average of prev and current relative velocity
+            # Prevents attacker from masking a position jump by simultaneously broadcasting a huge velocity
+            v_rel_robust = 0.5 * (v_rel + v_rel_prev)
+            d_expected = d_prev + v_rel_robust * dt
 
             # Calculate error between expected and actual distance
             d_measured = max(float(d_current), 0.1)
             d_error = abs(d_current - d_expected)
+
+            # Additional check: distance cannot change too quickly if previous relative velocity didn't support it
+            actual_change = abs(d_current - d_prev)
+            max_phys_change = abs(v_rel_prev) * dt + 0.5 * self._relative_acceleration_limit() * (dt**2)
+            max_phys_change = max(max_phys_change, 0.5 * float(self.config.stationary_noise_tolerance))
+
+            # If actual change far exceeds physical limits, severely penalize the error.
+            # We care more (apply harsher penalty) if the distance is derived from V2V (fake) rather than a true sensor measurement.
+            violation_ratio = float(self.config.distance_physical_violation_ratio)
+            if source_switched:
+                violation_ratio = max(
+                    violation_ratio,
+                    float(self.config.distance_source_switch_grace_ratio),
+                )
+
+            violation_detected = actual_change > max_phys_change * violation_ratio
+            severe_v2v_violation = (
+                not is_measured
+                and not prev_is_measured
+                and not source_switched
+                and actual_change
+                > max_phys_change * float(self.config.severe_v2v_distance_violation_ratio)
+            )
+
+            if violation_detected:
+                penalty_factor = 1.25 if (is_measured or prev_is_measured or source_switched) else 3.0
+                d_error = max(d_error, actual_change * penalty_factor)
+
             normalized_error = d_error / d_measured
 
             score = max(1.0 - normalized_error, 0.0) ** self.config.weight_distance
+            if severe_v2v_violation:
+                score = min(
+                    score,
+                    float(
+                        np.clip(
+                            self.config.severe_v2v_distance_score_cap,
+                            0.0,
+                            1.0,
+                        )
+                    ),
+                )
         else:
             # First observation - no comparison possible
             score = 1.0
 
         return float(np.clip(score, 0.0, 1.0))
+
+    def _calculate_local_pose_distance_score(
+        self, host_state: Dict, target_data: VehicleData
+    ) -> Tuple[float, bool]:
+        """
+        Compare an independent relative-distance measurement against the
+        distance implied by the received target pose.
+
+        This lets local trust react immediately when the target's attacked
+        x/y state disagrees with a cleaner distance reference.
+        """
+        measured_distance, is_measured, reference_age_s = (
+            self._resolve_pose_distance_reference(host_state, target_data)
+        )
+        if not is_measured:
+            return 1.0, False
+
+        host_x = float(host_state.get("x", host_state.get(0, 0.0)))
+        host_y = float(host_state.get("y", host_state.get(1, 0.0)))
+        reported_dx = float(target_data.x) - host_x
+        reported_dy = float(target_data.y) - host_y
+        reported_distance = float(np.hypot(reported_dx, reported_dy))
+        if not np.isfinite(reported_distance):
+            return 1.0, False
+
+        measured_distance = max(float(measured_distance), 0.1)
+        pose_error = abs(reported_distance - measured_distance)
+        propagation_slack = 0.0
+        if np.isfinite(reference_age_s) and reference_age_s > 0.0:
+            propagation_slack = (
+                0.5 * self._relative_acceleration_limit() * (reference_age_s**2)
+                + float(self.config.stationary_noise_tolerance) * reference_age_s
+            )
+        pose_tolerance = max(
+            float(self.config.local_pose_distance_tolerance),
+            float(self.config.local_pose_distance_relative_tolerance)
+            * measured_distance + propagation_slack,
+            0.5 * float(self.config.stationary_noise_tolerance),
+        )
+        excess_error = max(pose_error - pose_tolerance, 0.0)
+        normalized_error = excess_error / max(
+            measured_distance, pose_tolerance, 0.1
+        )
+        score = max(1.0 - normalized_error, 0.0) ** self.config.weight_distance
+
+        severe_mismatch = pose_error > max(
+            pose_tolerance * float(self.config.severe_local_pose_distance_ratio),
+            pose_tolerance + float(self.config.stationary_noise_tolerance),
+        )
+        if severe_mismatch:
+            score = min(
+                score,
+                float(
+                    np.clip(self.config.severe_v2v_distance_score_cap, 0.0, 1.0)
+                ),
+            )
+
+        return float(np.clip(score, 0.0, 1.0)), bool(severe_mismatch)
 
     def _calculate_acceleration_score(
         self, host_state: Dict, target_data: VehicleData
@@ -773,12 +1068,30 @@ class TriPTrustModel:
         combined_yaw_rate = max(target_yaw_rate, host_yaw_rate)
 
         # 1) Temporal consistency: reported acceleration vs differentiated velocity.
-        a_from_velocity = (v_target - float(prev_target.velocity)) / dt
-        a_error = a_target - a_from_velocity
+        v_rel_now = self._resolve_relative_velocity(host_state, target_data)
+        if self._has_measured_relative_velocity(prev_target):
+            v_rel_prev = float(prev_target.relative_velocity_from_host)
+        elif self.previous_host_state is not None and self.previous_host_state.timestamp_ns > 0:
+            v_rel_prev = self._estimate_radial_relative_velocity(
+                self.previous_host_state, prev_target
+            )
+        else:
+            v_rel_prev = self._estimate_radial_relative_velocity(host_state, prev_target)
+
+        a_rel_reported = a_target - a_host
+        if (
+            self._has_measured_relative_velocity(target_data)
+            and self._has_measured_relative_velocity(prev_target)
+        ):
+            a_from_velocity = (v_rel_now - v_rel_prev) / dt
+            a_error = a_rel_reported - a_from_velocity
+        else:
+            a_from_velocity = (v_target - float(prev_target.velocity)) / dt
+            a_error = a_target - a_from_velocity
         a_tol = (
             float(self.config.acceleration_base_tolerance)
             + float(self.config.acceleration_speed_tolerance_gain)
-            * max(abs(v_target), abs(v_host))
+            * max(abs(v_target), abs(v_host), abs(v_rel_now), abs(v_rel_prev))
             + float(self.config.acceleration_host_tolerance_gain) * abs(a_host)
             + float(self.config.acceleration_turn_tolerance_gain)
             * combined_yaw_rate
@@ -792,11 +1105,9 @@ class TriPTrustModel:
         if self.previous_host_state is not None and self.previous_host_state.timestamp_ns > 0:
             host_prev_x = float(self.previous_host_state.x)
             host_prev_y = float(self.previous_host_state.y)
-            host_prev_v = float(self.previous_host_state.velocity)
         else:
             host_prev_x = host_x
             host_prev_y = host_y
-            host_prev_v = v_host
 
         if np.isfinite(float(prev_target.distance_from_host)) and float(prev_target.distance_from_host) > 0.0:
             d_prev = float(prev_target.distance_from_host)
@@ -807,11 +1118,9 @@ class TriPTrustModel:
                     float(prev_target.y) - host_prev_y,
                 )
             )
-        d_curr = self._resolve_relative_distance(host_state, target_data)
+        d_curr, _ = self._resolve_relative_distance(host_state, target_data)
 
-        v_rel_prev = float(prev_target.velocity) - host_prev_v
-        v_rel_now = v_target - v_host
-        a_rel = a_target - a_host
+        a_rel = a_rel_reported
         d_pred = d_prev + v_rel_prev * dt + 0.5 * a_rel * (dt * dt)
         d_error = d_curr - d_pred
         d_tol = (
@@ -1044,10 +1353,11 @@ class TriPTrustModel:
             prev = float(np.clip(memory.get(target_id, 1.0), 0.0, 1.0))
             updated = (1.0 - decay) * prev
 
-        # Floor: never decay below fallback to prevent values like 1e-20
-        # that can never recover.
-        floor = max(float(self.config.distributed_trust_fallback) * 0.1, 0.01)
-        updated = max(updated, floor)
+            # Floor only the missing-beacon decay path. When a beacon is
+            # actually received and the current sample evaluates to 0.0, keep
+            # that direct contradiction visible instead of lifting it back up.
+            floor = max(float(self.config.distributed_trust_fallback) * 0.1, 0.01)
+            updated = max(updated, floor)
 
         memory[target_id] = updated
         return updated
@@ -1182,65 +1492,52 @@ class TriPTrustModel:
     # ------------------------------------------------------------------ #
 
     def _compute_relative_measurement(
-        self, state_a: Dict, state_b_data: VehicleData
+        self, state_a: Dict, state_b_data: VehicleData, use_sensor: bool = True
     ) -> np.ndarray:
         """
-        Compute a 'fake sensor' relative measurement between two vehicles,
-        acting as an approximation of a distance/velocity sensor (LiDAR/radar).
+        Compute a relative measurement between two vehicles.
 
-        Returns:
-            np.array([relative_distance, relative_velocity])  (2-element vector)
-            where relative_velocity is signed (target - host).
-
-        This measurement is analogous to what MATLAB computes from
-        ``predecessor.state(1) - host_vehicle.state(1)`` and
-        ``predecessor.state(4) - host_vehicle.state(4)``.
-
-        When real LiDAR/radar is available in the future, replace this
-        with actual sensor readings.
+        When use_sensor=True, acts as a 'fake sensor', preferring real LiDAR/radar
+        or YOLO measurements when available.
+        When use_sensor=False, computes the fallback true geometric distance,
+        ignoring any external sensor readings.
         """
-        rel_distance = self._resolve_relative_distance(state_a, state_b_data)
+        if use_sensor:
+            rel_distance, _ = self._resolve_relative_distance(state_a, state_b_data)
+        else:
+            host_x = float(state_a.get("x", state_a.get(0, 0.0)))
+            host_y = float(state_a.get("y", state_a.get(1, 0.0)))
+            dx = float(state_b_data.x) - host_x
+            dy = float(state_b_data.y) - host_y
+            rel_distance = float(np.hypot(dx, dy))
+
         if not bool(self.config.use_relative_velocity_in_relative_trust):
             return np.array([rel_distance], dtype=float)
 
-        rel_velocity = self._resolve_relative_velocity(state_a, state_b_data)
+        if use_sensor:
+            rel_velocity = self._resolve_relative_velocity(state_a, state_b_data)
+        else:
+            vel_a = float(state_a.get("velocity", state_a.get(3, 0.0)))
+            rel_velocity = float(state_b_data.velocity) - vel_a
+            
         return np.array([rel_distance, rel_velocity], dtype=float)
 
-    def _compute_true_relative_measurement(
-        self, host_state: Dict, target_data: VehicleData
-    ) -> np.ndarray:
-        """
-        Compute fallback/true relative measurement from host-target states only.
-
-        This is the baseline used when no external relative sensor (YOLO/radar)
-        measurement is available.
-        """
-        host_x = float(host_state.get("x", host_state.get(0, 0.0)))
-        host_y = float(host_state.get("y", host_state.get(1, 0.0)))
-        dx = float(target_data.x) - host_x
-        dy = float(target_data.y) - host_y
-        rel_distance = float(np.hypot(dx, dy))
-        if not bool(self.config.use_relative_velocity_in_relative_trust):
-            return np.array([rel_distance], dtype=float)
-
-        vel_a = float(host_state.get("velocity", host_state.get(3, 0.0)))
-        rel_velocity = float(target_data.velocity) - vel_a
-        return np.array([rel_distance, rel_velocity], dtype=float)
-
-    def _resolve_relative_distance(self, host_state: Dict, target_data: VehicleData) -> float:
+    def _resolve_relative_distance(self, host_state: Dict, target_data: VehicleData) -> Tuple[float, bool]:
         """
         Resolve host-target distance with sensor-first priority.
 
         Uses externally measured distance (YOLO/radar) when available; otherwise
         falls back to geometric distance from host/target states.
+        Returns:
+            (distance, is_measured)
         """
         measured_distance = float(getattr(target_data, "distance_from_host", float("nan")))
         if np.isfinite(measured_distance) and measured_distance > 0.0:
-            return measured_distance
+            return measured_distance, True
 
         dx = float(target_data.x) - float(host_state.get("x", host_state.get(0, 0.0)))
         dy = float(target_data.y) - float(host_state.get("y", host_state.get(1, 0.0)))
-        return float(np.hypot(dx, dy))
+        return float(np.hypot(dx, dy)), False
 
     def _resolve_relative_velocity(self, host_state: Dict, target_data: VehicleData) -> float:
         """
@@ -1255,9 +1552,7 @@ class TriPTrustModel:
         if np.isfinite(measured_rel_velocity):
             return measured_rel_velocity
 
-        vel_a = float(host_state.get("velocity", host_state.get(3, 0.0)))
-        vel_b = float(target_data.velocity)
-        return vel_b - vel_a
+        return self._estimate_radial_relative_velocity(host_state, target_data)
 
     def _compute_relative_from_estimates(
         self, est_host: VehicleData, est_target: VehicleData
@@ -1276,10 +1571,17 @@ class TriPTrustModel:
         if not bool(self.config.use_relative_velocity_in_relative_trust):
             return np.array([rel_distance], dtype=float)
 
-        rel_velocity = float(est_target.velocity) - float(est_host.velocity)
+        rel_velocity = self._estimate_radial_relative_velocity(est_host, est_target)
         return np.array([rel_distance, rel_velocity], dtype=float)
 
-    def _relative_mahalanobis(self, y_measured: np.ndarray, y_estimated: np.ndarray) -> float:
+    def _relative_mahalanobis(
+        self,
+        y_measured: np.ndarray,
+        y_estimated: np.ndarray,
+        yaw_rate: float = 0.0,
+        distance_turn_gain: float = 0.0,
+        velocity_turn_gain: float = 0.0,
+    ) -> float:
         """
         Mahalanobis distance between measured and estimated relative state,
         using the tau2 covariance diagonal (MATLAB: tau2_matrix_gamma_local).
@@ -1302,10 +1604,50 @@ class TriPTrustModel:
         elif tau2_diag.size < n:
             tau2_diag = np.pad(tau2_diag, (0, n - tau2_diag.size), mode="edge")
         tau2_diag = tau2_diag[:n]
+        yaw_rate = max(float(yaw_rate), 0.0)
+        if tau2_diag.size > 0 and distance_turn_gain > 0.0 and yaw_rate > 0.0:
+            tau2_diag[0] *= 1.0 + float(distance_turn_gain) * yaw_rate
+        if tau2_diag.size > 1 and velocity_turn_gain > 0.0 and yaw_rate > 0.0:
+            tau2_diag[1] *= 1.0 + float(velocity_turn_gain) * yaw_rate
         tau2_inv = 1.0 / np.maximum(tau2_diag, 1e-9)
 
         e = y_estimated - y_measured
         return float(np.dot(e * e, tau2_inv))
+
+    def _compute_gamma_self_penalty(
+        self, gamma_self: float, threshold: float
+    ) -> float:
+        """
+        Convert gamma_self into a soft penalty factor for distributed trust.
+
+        gamma_self is mainly evidence that the host's own estimate/prediction is
+        inconsistent with local relative sensing. That should remain visible,
+        but it should not by itself collapse target trust during short maneuver
+        transients such as turn entry.
+        """
+        gamma_self = float(np.clip(gamma_self, 0.0, 1.0))
+        threshold = max(float(threshold), 1e-6)
+        floor = float(np.clip(self.config.gamma_self_penalty_floor, 0.0, 1.0))
+        exponent = max(float(self.config.gamma_self_penalty_exponent), 1e-6)
+
+        if gamma_self >= threshold:
+            return 1.0
+
+        ratio = gamma_self / threshold
+        return float(np.clip(floor + (1.0 - floor) * (ratio**exponent), floor, 1.0))
+
+    @staticmethod
+    def _should_apply_gamma_self_penalty(relative_measurement_source: str) -> bool:
+        """
+        Decide whether gamma_self should directly modulate target global trust.
+
+        Clean-channel V2V relative measurements are used as an independent
+        trust-only reference against the attacked local-state/control path. A
+        low gamma_self in that case mainly indicates host-estimate
+        contamination, not that the target's fleet broadcast is untrustworthy.
+        """
+        source = str(relative_measurement_source or "").strip().lower()
+        return not source.startswith("v2v_clean")
 
     # ------------------------------------------------------------------ #
     #  Paper-style global trust (MATLAB-unified)                         #
@@ -1406,24 +1748,25 @@ class TriPTrustModel:
         )
 
         # ===== Host's local relative measurement (fake sensor) =====
-        # y_local = [distance(host, target), v_target - v_host]
+        # y_local = [distance(host, target), radial_relative_velocity]
         # In the future this can be replaced by real LiDAR/radar readings.
         y_local = self._compute_relative_measurement(host_state, target_data)
-        y_true = self._compute_true_relative_measurement(host_state, target_data)
+        y_estimated_local = self._compute_relative_measurement(host_state, target_data, use_sensor=False)
 
         y_local_distance = float(y_local[0]) if y_local.size > 0 else _nan
-        y_true_distance = float(y_true[0]) if y_true.size > 0 else _nan
+        # Keep legacy y_true_* log names for compatibility with existing plots/loggers.
+        y_true_distance = float(y_estimated_local[0]) if y_estimated_local.size > 0 else _nan
         yolo_true_rel_dist_error = (
             y_local_distance - y_true_distance
-            if yolo_rel_meas_used_global and y_local.size > 0 and y_true.size > 0
+            if yolo_rel_meas_used_global and y_local.size > 0 and y_estimated_local.size > 0
             else _nan
         )
 
         y_local_rel_velocity = float(y_local[1]) if y_local.size > 1 else _nan
-        y_true_rel_velocity = float(y_true[1]) if y_true.size > 1 else _nan
+        y_true_rel_velocity = float(y_estimated_local[1]) if y_estimated_local.size > 1 else _nan
         yolo_true_rel_vel_error = (
             y_local_rel_velocity - y_true_rel_velocity
-            if yolo_rel_meas_used_global and y_local.size > 1 and y_true.size > 1
+            if yolo_rel_meas_used_global and y_local.size > 1 and y_estimated_local.size > 1
             else _nan
         )
         yolo_rel_distance = (
@@ -1432,6 +1775,16 @@ class TriPTrustModel:
         yolo_rel_velocity = (
             rel_velocity_meas if yolo_rel_meas_used_global and rel_vel_meas_used else _nan
         )
+
+        # Compute turn context once and reuse it for gamma_self and gamma_host.
+        target_yaw_rate = 0.0
+        prev_target = self.previous_states.get(int(target_data.vehicle_id))
+        if prev_target is not None and prev_target.timestamp_ns > 0:
+            dt_target = max((target_data.timestamp_ns - prev_target.timestamp_ns) / 1e9, 0.01)
+            heading_delta_target = self._wrap_angle(float(target_data.theta) - float(prev_target.theta))
+            target_yaw_rate = abs(heading_delta_target) / dt_target
+        host_yaw_rate = self._yaw_rate_from_states(self.previous_host_state, self.current_host_state)
+        turn_context = max(target_yaw_rate, host_yaw_rate)
 
         # ===== gamma_self (MATLAB: gamma_local_our_self) =====
         # Host's OWN global estimate implied relative vs host's local relative.
@@ -1449,36 +1802,14 @@ class TriPTrustModel:
         #                 v_target_est - v_host]
         y_self_est = self._compute_relative_measurement(host_state, host_est_as_vd)
         local_relative_dof = max(1, int(y_local.size))
-        d_self = self._relative_mahalanobis(y_local, y_self_est)
+        d_self = self._relative_mahalanobis(
+            y_local,
+            y_self_est,
+            yaw_rate=turn_context,
+            distance_turn_gain=float(self.config.distributed_self_turn_distance_gain),
+            velocity_turn_gain=float(self.config.distributed_self_turn_velocity_gain),
+        )
         gamma_self = self._distance_to_gamma(d_self, dof=local_relative_dof)
-
-        # New Feature: Fleet-Wide Longitudinal Distance Sanity Check
-        # Validate distances between consecutive vehicles within the host's own global estimation.
-        # If any vehicle is too close to its predecessor (or order is violated), self-trust is broken.
-        if host_fleet_estimates is not None:
-            num_vehicles = host_fleet_estimates.shape[1]
-            min_dist = self.config.minimum_longitudinal_distance
-
-            # We iterate from i=1 to num_vehicles-1 to check ID [i-1] (predecessor) against ID [i] (follower).
-            for i in range(1, num_vehicles):
-                pred_vec = host_fleet_estimates[:, i - 1]
-                follower_vec = host_fleet_estimates[:, i]
-
-                # If either estimate vector is empty/zeroed, we skip it
-                if np.all(pred_vec == 0) or np.all(follower_vec == 0):
-                    continue
-
-                dx = float(pred_vec[0]) - float(follower_vec[0])
-                dy = float(pred_vec[1]) - float(follower_vec[1])
-                follower_theta = float(follower_vec[2])
-
-                # Project the relative position of the predecessor onto the follower's heading.
-                # Since [i-1] is the predecessor, this longitudinal distance should be positive.
-                longitudinal_dist = dx * np.cos(follower_theta) + dy * np.sin(follower_theta)
-
-                if longitudinal_dist < min_dist:
-                    gamma_self = 0.0
-                    break
 
         # ===== gamma_host (MATLAB: gamma_cross) =====
         # Full-state Mahalanobis: Host's entire fleet estimates vs Target's entire fleet estimates
@@ -1491,20 +1822,18 @@ class TriPTrustModel:
         mi_elem_val = -1.0
         v2v_details = {}
 
-        # Compute turn context to adapt theta trust during turns
-        target_yaw_rate = 0.0
-        prev_target = self.previous_states.get(int(target_data.vehicle_id))
-        if prev_target is not None and prev_target.timestamp_ns > 0:
-            dt_target = max((target_data.timestamp_ns - prev_target.timestamp_ns) / 1e9, 0.01)
-            heading_delta_target = self._wrap_angle(float(target_data.theta) - float(prev_target.theta))
-            target_yaw_rate = abs(heading_delta_target) / dt_target
-        host_yaw_rate = self._yaw_rate_from_states(self.previous_host_state, self.current_host_state)
-        turn_context = max(target_yaw_rate, host_yaw_rate)
-
         if target_fleet_estimates is not None and host_fleet_estimates is not None:
 
             # target_fleet_estimates is Dict[int, Dict] parsing Target's broadcast
-            for vid, b_est_dict in target_fleet_estimates.items():
+            for raw_vid, b_est_dict in target_fleet_estimates.items():
+                try:
+                    vid = int(raw_vid)
+                except (TypeError, ValueError):
+                    continue
+                if vid == int(target_data.vehicle_id):
+                    # Do not let a mismatch in the target's own self-state
+                    # entry collapse gamma_host during a local-channel attack.
+                    continue
                 if vid >= host_fleet_estimates.shape[1]:
                     continue
                 a_est_vec = host_fleet_estimates[:, vid]
@@ -1557,8 +1886,7 @@ class TriPTrustModel:
             est_host = neighbor_host_estimates.get(int(target_data.vehicle_id))
             
             if est_target is not None and est_host is not None:
-                # Target's implied relative: [dist(Target_est_host, Target_est_target), v_diff]
-                # Sign convention for velocity is preserved: v_target - v_host.
+                # Target's implied relative: [dist(Target_est_host, Target_est_target), radial_v_diff]
                 y_target_rel = self._compute_relative_from_estimates(est_host, est_target)
 
                 # Compare against our local relative measurement
@@ -1579,9 +1907,14 @@ class TriPTrustModel:
         distributed = gamma_host * gamma_local_peer
 
         # ===== Self-consistency modulator (MATLAB lines 1494-1499) =====
-        if gamma_self < self_trust_threshold:
-            distributed *= gamma_self
-            gamma_host *= gamma_self
+        if (
+            self._should_apply_gamma_self_penalty(source_name_l)
+            and gamma_self < self_trust_threshold
+        ):
+            distributed *= self._compute_gamma_self_penalty(
+                gamma_self=gamma_self,
+                threshold=self_trust_threshold,
+            )
 
         distributed = float(np.clip(distributed, 0.0, 1.0))
 
@@ -2144,6 +2477,7 @@ class TriPTrustModel:
         self.previous_host_state = None
         self.current_host_state = None
         self._host_cycle_timestamp_ns = -1
+        self.recent_relative_measurements.clear()
         self.previous_trust_local.clear()
         self.previous_trust_global.clear()
         self.opinion_vector = {self.vehicle_id: 1.0}

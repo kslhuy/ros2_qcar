@@ -113,13 +113,18 @@ trust:
 
   # Distributed trust covariance parameters (always paper-style)
   distributed_trust_fallback: 0.2
-  distributed_trust_covariance_diag: [2.0, 2.0, 3.0, 2.0, 6.0] # Sigma^2 for gamma_host (x,y,theta,v,a)
+  distributed_trust_covariance_diag: [2.0, 2.0, 3.5, 2.0, 6.0] # Sigma^2 for gamma_host (x,y,theta,v,a)
   # Robust global trust settings. Acceleration is model-derived in the real
   # fleet, so keep it diagnostic but prevent it from dominating gamma_host.
   distributed_trust_state_indices: [0, 1, 2, 3, 4]
-  distributed_trust_contribution_caps: [4.0, 4.0, 3.0, 2.0, 0.2]
+  distributed_trust_contribution_caps: [4.0, 4.0, 2.0, 2.0, 0.2]
   distributed_trust_accel_weight: 0.1
-  distributed_local_tau2_diag: [1.5, 0.5]  # Tau^2 for gamma_local_peer/gamma_self [distance, velocity] (MATLAB tau2_matrix_gamma_local)
+  ## GAMMA Self-Trust Settings
+  distributed_local_tau2_diag: [1.5, 0.6]  # Tau^2 for gamma_local_peer/gamma_self [distance, velocity] (MATLAB tau2_matrix_gamma_local)
+  distributed_self_turn_distance_gain: 1.5
+  distributed_self_turn_velocity_gain: 1.0
+  gamma_self_penalty_floor: 0.4  # if gamma_self can stay low but you do not want global_trust to fall much, increase
+  gamma_self_penalty_exponent: 0.9 # punishment curve is still too sharp, lower gamma_self_penalty_exponent
   # Relative-trust mode:
   # true  = use [distance, relative_velocity]
   # false = use [distance] only (simple mode)
@@ -144,17 +149,19 @@ weight:
   weight_type: trust_based
   
   # Base gains for trust_based mode before per-target normalization
-  w0_fixed: 0.3                   # Nominal maximum gain for the target's own direct broadcast
+  w0_fixed: 0.4                   # Nominal maximum gain for the target's own direct broadcast
   w_self_base: 0.2                # Base gain for self/prediction persistence
   
   # Neighbor weight constraints
   w_cap: 0.4                      # Maximum weight per neighbor (influence cap - 40%)
-  kappa: 2                        # Smaller kappa gives stronger direct/neighbor corrections in small fleets
+  kappa: 3                        # Smaller kappa gives stronger direct/neighbor corrections in small fleets
   
   # Temporal smoothing (EMA)
   eta: 0.15                       # EMA smoothing factor
   enable_smoothing: false         # Enable weight smoothing between updates
   startup_fixed_duration_s: 5.0   # Keep fixed non-trust weights while platoon forms
+  use_gamma_self_weight_adaptation: true
+  gamma_self_weight_floor: 0.25
   
   # Flag-driven w₀ adaptation factors
   # These multiply w₀ when an attack flag fires for the target being estimated
@@ -181,34 +188,81 @@ observer:
   # Attack mitigation
   attack_mitigation: false         # Enable automatic attack mitigation
 
-  # Prediction-only switch (MATLAB-style)
-  use_predict_observer: false
-  max_predict_only_time: 3.0
-  n_good: 3 
-  blend_thresh: 3.0
-  similarity_tolerances: [3.5, 2.0, 0.14, 2.0, 1.0]
+  # State propagation used by the fleet estimator prediction step:
+  # model           = existing bicycle + longitudinal model
+  # clean_data      = test mode: keep current x/y continuity but use the clean
+  #                   target V2V theta/velocity/acceleration as the motion source
+  # mixed_clean_data = use clean target V2V theta, but keep velocity and
+  #                   acceleration from the current estimator state; under
+  #                   attack-triggered clean anchoring, x/y starts from clean pose
+  # relative_host_anchor_mixed = normal operation uses the standard vehicle
+  #                   model; only while attack flags are active does it rebuild
+  #                   target x/y from host pose plus the latest trusted
+  #                   host-target distance, blend clean target theta with host
+  #                   theta, and fall back to host velocity
+  dynamics_prediction_mode: clean_data
+  # Attack-time blend used only by relative_host_anchor_mixed:
+  # theta_attack = circular_mean(clean_theta, host_theta)
+  # with the weights below, and
+  # v_attack = target_w * last_target_v + host_w * host_v
+  # a_attack = target_w * last_target_a + host_w * host_a
+  relative_host_anchor_clean_theta_weight: 1.0
+  relative_host_anchor_host_theta_weight: 0.0
+  relative_host_anchor_target_velocity_weight: 0.1
+  relative_host_anchor_host_velocity_weight: 0.9
+  relative_host_anchor_target_acceleration_weight: 0.1
+  relative_host_anchor_host_acceleration_weight: 0.9
+  # When true, clean_data / mixed_clean_data may re-anchor x/y to the clean
+  # V2V target pose when attack flags are active. When false, keep x/y
+  # continuity from the consensus/rollback estimate even under attack.
+  force_clean_pose_anchor: false
+  # Final output low-pass filter on each target estimate:
+  # x_filt = alpha * x_new + (1 - alpha) * x_prev
+  # lower alpha = smoother but more lag
+  enable_output_low_pass: true
+  output_low_pass_alpha: 1.0
+  # When a target's direct local-state channel is untrusted, use a larger
+  # alpha so host-following motion is not flattened by the output filter.
+  attack_output_low_pass_alpha: 1.0
 
   # Trust-triggered contamination rollback
   rollback_enabled: true
-  rollback_window_size: 15
+  rollback_window_size: 50
+  # Fast rollback triggers:
+  # - final_trust        = fallback, slower because Dirichlet/EMA has memory
+  # - local_est_check    = fastest reaction to local/direct channel corruption
+  # - global_est_check   = react when fleet cross-check fails even before final
+  rollback_on_final_trust: true
+  rollback_on_local_est_check: true
+  rollback_on_global_est_check: true
+  # Extra safety margin for delayed trust detection:
+  # when rollback seeds from the last trusted target snapshot, step back this
+  # many trusted samples first so replay starts from an older, safer pose.
+  # This is safer against contamination, but it also adds temporal lag because
+  # replay does not start from the most recent trusted sample.
+  rollback_trusted_state_guard_steps: 15
+  # Optional cap for cached trusted snapshots per target. Keep this at least
+  # guard_steps + 1; default code also falls back to rollback_window_size.
+  rollback_trusted_state_history_size: 60
   
-  # Kalman-specific parameters (for trust_kalman type)
-  kalman:
-    process_noise: 0.01           # Q - process noise covariance
-    measurement_noise: 0.1        # R - measurement noise covariance
-    initial_covariance: 1.0       # Initial P matrix diagonal
+
 
 # =====================================================================
 # Vehicle Dynamics Parameters (for prediction models)
 # =====================================================================
 vehicle:
   vehicle_type: Qcar
+  # Vehicle-model metadata for prediction. The fleet estimator now treats
+  # `observer.dynamics_prediction_mode` as the global switch; use
+  # `vehicle_models.<id>.dynamics_prediction_mode` for explicit per-target
+  # overrides when needed.
+  dynamics_prediction_mode: model
   wheelbase: 0.256                # QCar wheelbase in meters
   max_velocity: 2.0               # Maximum velocity m/s
   max_acceleration: 2.0           # Match real-QCar longitudinal limit used elsewhere
   max_steering: 0.5               # Maximum steering angle rad
   control_timeout_s: 1.0          # After this, predict targets with constant velocity
-  allow_host_control_fallback: false
+  
   # Longitudinal-model defaults come from `observer_model_source` above.
   # The referenced calibration file injects:
   # - longitudinal_model
@@ -220,6 +274,7 @@ vehicle_models:
   # Example for a Limo target:
   # 3:
   #   vehicle_type: Limo
+  #   dynamics_prediction_mode: dead_reckoning
   #   wheelbase: 0.2
   #   max_velocity: 1.2
   #   max_acceleration: 1.0
@@ -227,7 +282,7 @@ vehicle_models:
   #   velocity_command_tau: 0.35
 
 timestamp_alignment:
-  enabled: true
+  enabled: false
   max_extrapolation_s: 0.5
 
 # =====================================================================

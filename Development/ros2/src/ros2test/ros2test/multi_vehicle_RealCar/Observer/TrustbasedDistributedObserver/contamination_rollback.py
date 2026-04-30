@@ -22,10 +22,11 @@ class ContaminationRollback:
         enabled: bool = False,
         window_size: int = 15,
         trust_threshold: float = 0.5,
-        predict_fn: Optional[
-            Callable[[np.ndarray, Optional[np.ndarray], float, int], np.ndarray]
-        ] = None,
+        predict_fn: Optional[Callable[..., np.ndarray]] = None,
         constraints_fn: Optional[Callable[[np.ndarray, int], np.ndarray]] = None,
+        trusted_state_fn: Optional[
+            Callable[[int], Optional[tuple]]
+        ] = None,
         logger=None,
     ):
         self.state_dim = state_dim
@@ -35,6 +36,7 @@ class ContaminationRollback:
         self.trust_threshold = trust_threshold
         self.predict_fn = predict_fn
         self.constraints_fn = constraints_fn
+        self.trusted_state_fn = trusted_state_fn
         self.logger = logger
         self.buffer: deque = deque(maxlen=max(window_size, 1))
         self.malicious_vehicles: set = set()
@@ -97,17 +99,24 @@ class ContaminationRollback:
             safe_prediction = {
                 "dt": float(prediction.get("dt", 0.0)),
                 "control": None,
+                "force_clean_pose_anchor": bool(
+                    prediction.get("force_clean_pose_anchor", False)
+                ),
+                "attack_relative_host_anchor_active": bool(
+                    prediction.get("attack_relative_host_anchor_active", False)
+                ),
+                "host_anchor_snapshot": None,
             }
             if control is not None:
                 safe_prediction["control"] = np.asarray(control, dtype=float).copy()
+            host_anchor_snapshot = prediction.get("host_anchor_snapshot")
+            if isinstance(host_anchor_snapshot, dict):
+                safe_prediction["host_anchor_snapshot"] = dict(host_anchor_snapshot)
 
             safe_targets[int(target_id)] = {
                 "direct": safe_direct,
                 "neighbors": safe_neighbors,
                 "prediction": safe_prediction,
-                "dynamics_delta": np.asarray(
-                    comp.get("dynamics_delta", np.zeros(self.state_dim)), dtype=float
-                ).copy(),
             }
 
         self.buffer.append(
@@ -123,6 +132,7 @@ class ContaminationRollback:
         trust_scores: Dict[int, float],
         current_time_ns: int,
         fleet_states: np.ndarray,
+        trigger_signals: Optional[Dict[int, Dict[str, object]]] = None,
     ) -> np.ndarray:
         """Detect newly malicious vehicles and trigger rollback if needed.
 
@@ -134,14 +144,28 @@ class ContaminationRollback:
         threshold = float(np.clip(self.trust_threshold, 0.0, 1.0))
         newly_malicious: List[int] = []
         active_malicious: Set[int] = set()
+        trigger_signals = trigger_signals or {}
+        active_trigger_reasons: Dict[int, List[str]] = {}
+        newly_flagged_reasons: Dict[int, List[str]] = {}
 
         for vehicle_id, trust_val in trust_scores.items():
             if vehicle_id == self.vehicle_id:
                 continue
-            if trust_val < threshold:
+            signal = trigger_signals.get(int(vehicle_id), {})
+            reasons: List[str] = []
+            if bool(signal.get("flag_local_est_check", False)):
+                reasons.append("local_est_check")
+            if bool(signal.get("flag_global_est_check", False)):
+                reasons.append("global_est_check")
+            if bool(signal.get("trust_below_threshold", trust_val < threshold)):
+                reasons.append("final_trust")
+
+            if reasons:
                 active_malicious.add(int(vehicle_id))
+                active_trigger_reasons[int(vehicle_id)] = reasons
                 if vehicle_id not in self.malicious_vehicles:
                     newly_malicious.append(vehicle_id)
+                    newly_flagged_reasons[int(vehicle_id)] = reasons
         self.malicious_vehicles = set(active_malicious)
 
         if newly_malicious:
@@ -150,12 +174,16 @@ class ContaminationRollback:
                 current_time_ns,
                 fleet_states,
                 newly_flagged=newly_malicious,
+                active_trigger_reasons=active_trigger_reasons,
+                newly_flagged_reasons=newly_flagged_reasons,
             )
         else:
             self.last_event = self._build_event(
                 current_time_ns=current_time_ns,
                 triggered=False,
                 newly_flagged=[],
+                active_trigger_reasons=active_trigger_reasons,
+                newly_flagged_reasons={},
             )
 
         return fleet_states
@@ -183,6 +211,12 @@ class ContaminationRollback:
             "event_time_ns": self.last_event.get("event_time_ns"),
             "active_malicious": list(self.last_event.get("active_malicious", [])),
             "newly_flagged": list(self.last_event.get("newly_flagged", [])),
+            "active_trigger_reasons": dict(
+                self.last_event.get("active_trigger_reasons", {})
+            ),
+            "newly_flagged_reasons": dict(
+                self.last_event.get("newly_flagged_reasons", {})
+            ),
             "total_rollbacks": int(self.stats.get("total_rollbacks", 0)),
         }
 
@@ -196,6 +230,8 @@ class ContaminationRollback:
         current_time_ns: int,
         fleet_states: np.ndarray,
         newly_flagged: Optional[List[int]] = None,
+        active_trigger_reasons: Optional[Dict[int, List[str]]] = None,
+        newly_flagged_reasons: Optional[Dict[int, List[str]]] = None,
     ) -> np.ndarray:
         """Replay buffered steps while excluding all malicious source contributions."""
         if not self.buffer:
@@ -203,26 +239,55 @@ class ContaminationRollback:
                 current_time_ns=current_time_ns,
                 triggered=False,
                 newly_flagged=newly_flagged or [],
+                active_trigger_reasons=active_trigger_reasons or {},
+                newly_flagged_reasons=newly_flagged_reasons or {},
             )
             return fleet_states
 
         oldest = self.buffer[0]
         corrected_states = np.asarray(oldest["pre_update_states"], dtype=float).copy()
         current_self_state = fleet_states[:, self.vehicle_id].copy()
+        target_replay_start_ns: Dict[int, Optional[int]] = {}
+
+        for target_id in range(self.fleet_size):
+            if target_id == self.vehicle_id or int(target_id) not in malicious_ids:
+                continue
+            trusted_entry = None
+            if callable(self.trusted_state_fn):
+                trusted_entry = self.trusted_state_fn(int(target_id))
+            if trusted_entry is None:
+                continue
+            trusted_state, trusted_time_ns = trusted_entry
+            trusted_state = np.asarray(trusted_state, dtype=float).copy()
+            if trusted_state.size < self.state_dim:
+                trusted_state = np.pad(
+                    trusted_state, (0, self.state_dim - trusted_state.size), mode="constant"
+                )
+            corrected_states[:, target_id] = self._apply_state_constraints(
+                trusted_state[: self.state_dim], target_id=target_id
+            )
+            target_replay_start_ns[int(target_id)] = (
+                None if trusted_time_ns is None else int(trusted_time_ns)
+            )
 
         for step in list(self.buffer):
             step_targets = step.get("targets", {})
+            step_time_ns = int(step.get("time_ns", 0))
             for target_id in range(self.fleet_size):
                 if target_id == self.vehicle_id:
                     continue
                 comp = step_targets.get(target_id)
                 if comp is None:
                     continue
+                replay_start_ns = target_replay_start_ns.get(int(target_id))
+                if replay_start_ns is not None and step_time_ns <= replay_start_ns:
+                    continue
                 corrected_states[:, target_id] = self._replay_without_malicious(
                     comp=comp,
                     previous_state=corrected_states[:, target_id],
                     malicious_ids=malicious_ids,
                     target_id=target_id,
+                    step_time_ns=step_time_ns,
                 )
 
         corrected_states[:, self.vehicle_id] = current_self_state
@@ -234,8 +299,15 @@ class ContaminationRollback:
             current_time_ns=current_time_ns,
             triggered=True,
             newly_flagged=newly_flagged or [],
+            active_trigger_reasons=active_trigger_reasons or {},
+            newly_flagged_reasons=newly_flagged_reasons or {},
         )
-        self._log_trigger(current_time_ns, malicious_ids, newly_flagged or [])
+        self._log_trigger(
+            current_time_ns,
+            malicious_ids,
+            newly_flagged or [],
+            active_trigger_reasons or {},
+        )
 
         return corrected_states
 
@@ -244,6 +316,8 @@ class ContaminationRollback:
         current_time_ns: Optional[int],
         triggered: bool,
         newly_flagged: List[int],
+        active_trigger_reasons: Optional[Dict[int, List[str]]] = None,
+        newly_flagged_reasons: Optional[Dict[int, List[str]]] = None,
     ) -> Dict[str, object]:
         return {
             "enabled": bool(self.enabled),
@@ -251,6 +325,14 @@ class ContaminationRollback:
             "event_time_ns": None if current_time_ns is None else int(current_time_ns),
             "active_malicious": sorted(int(vid) for vid in self.malicious_vehicles),
             "newly_flagged": sorted(int(vid) for vid in newly_flagged),
+            "active_trigger_reasons": {
+                int(vid): list(reasons)
+                for vid, reasons in (active_trigger_reasons or {}).items()
+            },
+            "newly_flagged_reasons": {
+                int(vid): list(reasons)
+                for vid, reasons in (newly_flagged_reasons or {}).items()
+            },
             "total_rollbacks": int(self.stats.get("total_rollbacks", 0)),
         }
 
@@ -259,14 +341,19 @@ class ContaminationRollback:
         current_time_ns: int,
         malicious_ids: Set[int],
         newly_flagged: List[int],
+        active_trigger_reasons: Dict[int, List[str]],
     ) -> None:
         if self.logger is None or not hasattr(self.logger, "logger"):
             return
         self.logger.logger.info(
-            "Contamination rollback triggered at %d ns; active malicious=%s; newly flagged=%s",
+            "Contamination rollback triggered at %d ns; active malicious=%s; newly flagged=%s; reasons=%s",
             int(current_time_ns),
             sorted(int(vid) for vid in malicious_ids),
             sorted(int(vid) for vid in newly_flagged),
+            {
+                int(vid): list(reasons)
+                for vid, reasons in active_trigger_reasons.items()
+            },
         )
 
     def _apply_state_constraints(
@@ -292,6 +379,7 @@ class ContaminationRollback:
         previous_state: np.ndarray,
         malicious_ids: Set[int],
         target_id: int,
+        step_time_ns: Optional[int] = None,
     ) -> np.ndarray:
         """Rebuild one target update while excluding all malicious contributors."""
         previous_state = np.asarray(previous_state, dtype=float).copy()
@@ -327,18 +415,27 @@ class ContaminationRollback:
         prediction = comp.get("prediction", {})
         dt = float(prediction.get("dt", 0.0))
         control = prediction.get("control")
+        force_clean_pose_anchor = bool(
+            prediction.get("force_clean_pose_anchor", False)
+        )
+        attack_relative_host_anchor_active = bool(
+            prediction.get("attack_relative_host_anchor_active", False)
+        )
+        host_anchor_snapshot = prediction.get("host_anchor_snapshot")
         if control is not None:
             control = np.asarray(control, dtype=float).copy()
 
         if callable(self.predict_fn) and dt > 0.0:
             predicted_state = self.predict_fn(
-                consensus_state, control, dt, int(target_id)
+                consensus_state,
+                control,
+                dt,
+                int(target_id),
+                current_time_ns=step_time_ns,
+                force_clean_pose_anchor=force_clean_pose_anchor,
+                attack_relative_host_anchor_active=attack_relative_host_anchor_active,
+                host_anchor_snapshot=host_anchor_snapshot,
             )
             return self._apply_state_constraints(predicted_state, target_id=target_id)
 
-        legacy_delta = np.asarray(
-            comp.get("dynamics_delta", np.zeros(self.state_dim)), dtype=float
-        )
-        return self._apply_state_constraints(
-            consensus_state + legacy_delta, target_id=target_id
-        )
+        return consensus_state
