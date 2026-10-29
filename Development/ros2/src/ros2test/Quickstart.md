@@ -3,6 +3,11 @@
 The current package name is `ros2test`. Older examples that use
 `limo_nav_huy_test` or `limo_bringup` are obsolete for this workspace.
 
+For developing algorithms in `QCar2_Cran` and using the same code on the vehicle,
+see [the shared algorithm workflow](../../../../SHARED_ALGORITHMS.md).
+`QCAR_ALGORITHM_SOURCE` selects a live development checkout, a versioned
+algorithm package, or the original `embedded` runtime.
+
 ## Build
 
 ```bash

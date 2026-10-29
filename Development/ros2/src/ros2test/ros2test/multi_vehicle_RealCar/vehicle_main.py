@@ -16,6 +16,12 @@ import signal
 import time
 from threading import Event
 
+from pathlib import Path
+from qcar_algorithms import activate as activate_algorithm_source
+
+algorithm_source = activate_algorithm_source(Path(__file__).resolve().parent)
+print(f"[ALGORITHMS] {algorithm_source['mode']}: {algorithm_source['root']}")
+
 from config_main import VehicleMainConfig
 from vehicle_logic import VehicleLogic
 from pal.products.qcar import IS_PHYSICAL_QCAR

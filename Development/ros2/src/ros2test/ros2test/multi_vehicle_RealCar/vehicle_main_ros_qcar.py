@@ -60,6 +60,15 @@ else:
     print(f"[PATH ERROR] QCar module path not found: {qcar_module_path}")
     raise FileNotFoundError(f"Required directory not found: {qcar_module_path}")
 
+from qcar_algorithms import activate as activate_algorithm_source
+
+algorithm_source = activate_algorithm_source(current_dir)
+print(f"[ALGORITHMS] {algorithm_source['mode']}: {algorithm_source['root']}")
+if algorithm_source.get('commit'):
+    print(f"[ALGORITHMS] commit={algorithm_source['commit']} dirty={algorithm_source.get('dirty')}")
+if algorithm_source.get('sha256'):
+    print(f"[ALGORITHMS] sha256={algorithm_source['sha256']}")
+
 from config_main import VehicleMainConfig
 from vehicle_logic import VehicleLogic
 from command_types import CommandType

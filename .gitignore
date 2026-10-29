@@ -30,3 +30,10 @@ docker/libraries/resources/pretrained_models/yolov8s-seg.pt
 **/angles_new.mat
 **/distances_new.mat
 **/distance_new.mat
+
+# Shared algorithm build artifacts
+dist/
+shared_algorithms/build/
+shared_algorithms/*.egg-info/
+**/qcar_algorithms.egg-info/
+.pytest_cache/

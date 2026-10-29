@@ -1,0 +1,20 @@
+{
+    "folders": [
+        {
+            "name": "ros2_qcar - hardware and ROS",
+            "path": "."
+        },
+        {
+            "name": "QCar2_Cran - algorithm development",
+            "path": "../QCar2_Cran"
+        }
+    ],
+    "settings": {
+        "terminal.integrated.env.windows": {
+            "QCAR_ALGORITHM_SOURCE": "${workspaceFolder:QCar2_Cran - algorithm development}"
+        },
+        "terminal.integrated.env.linux": {
+            "QCAR_ALGORITHM_SOURCE": "${workspaceFolder:QCar2_Cran - algorithm development}"
+        }
+    }
+}
